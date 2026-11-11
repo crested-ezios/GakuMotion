@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GkMotionData.hpp"
+#include "GkLog.hpp"
 #include "GkBlendshapePlayer.hpp"
 #include "GkEyePose.hpp"
 #include "GkGroundAnchor.hpp"
@@ -628,9 +629,9 @@ namespace GakuMotion
 				fnSetLocalRotation(live.helper, q.x, q.y, q.z, q.w);
 				applied |= 1u << side;
 			}
-			if (!b.waistSupportDiagnosticLogged && fnLogInfo)
+			if (!b.waistSupportDiagnosticLogged)
 			{
-				fnLogInfo(
+				GM_DEBUG(
 					"[GakuMotion][WaistSupport][Experimental] actor=%p appliedMask=%u (Waist_H only; scoped acceptance passed, broader scope unverified)",
 					b.actor, applied);
 				b.waistSupportDiagnosticLogged = true;
@@ -845,10 +846,9 @@ namespace GakuMotion
 					b.groundLift = lift;
 					b.calibratedRootHeight = rootHeightCalibration.Match(offsets, present);
 				}
-				if (fnLogInfo)
-					fnLogInfo(
-						"[GakuMotion][GroundAnchor] actor=%p version=%u valid=%d lift=%.4f (foot/toe markers; actor pivot floor)",
-						b.actor, clip.version, int(b.clipGroundAnchored), b.groundLift);
+				GM_DEBUG(
+					"[GakuMotion][GroundAnchor] actor=%p version=%u valid=%d lift=%.4f (foot/toe markers; actor pivot floor)",
+					b.actor, clip.version, int(b.clipGroundAnchored), b.groundLift);
 			}
 		}
 
@@ -958,17 +958,10 @@ namespace GakuMotion
 			cachedAnimator = b.cachedAnimator;
 
 			// ---- PROBE A1: is the actor already in a dance pose at bind time? ----
-			// H3 hypothesis: BindActor() runs from Tick(), so if the official
-			// animation already advanced, restLocal[] would capture a DANCE POSE
-			// instead of the rest pose. VERDICT 2026-10-05: H3 is EXCLUDED -- A1 and
-			// A2 agree to three decimals (Hips 0.0620 vs 0.0619), so the capture
-			// happens while the character is idle. restLocal[] is now reference-only
-			// (the gkclip write path does not compose it), but the aux solver still
-			// uses rest-relative bases, so a wrong capture would still twist sleeves.
-			//
-			// Method: read localRotation for a few bones BEFORE the Rebind() above
-			// neutralises the Animator, then compare against what the capture loop
-			// stores. A large gap means we were already mid-dance.
+			// Opt-in only (GAKUMOTION_ENABLE_GEOMETRY_PROBE). The question this
+			// answered -- "is BindActor capturing a dance pose instead of rest" --
+			// was settled on 2026-10-05; keeping it on costs 9 lines per bind.
+#if GAKUMOTION_ENABLE_GEOMETRY_PROBE
 			if (fnLogInfo && fnGetLocalRotation)
 			{
 				static const int kProbeBones[] = {0, 7, 8, 13, 14, 15, 16, 17, 18};
@@ -989,6 +982,7 @@ namespace GakuMotion
 						pw[0], pw[1], pw[2], pw[3]);
 				}
 			}
+#endif // GAKUMOTION_ENABLE_GEOMETRY_PROBE
 
 			// Snap actor to clean Prefab Bind Pose before measuring restRotations
 			// Detach runtimeAnimatorController to eliminate Idle animation/controller pollution
@@ -1021,9 +1015,9 @@ namespace GakuMotion
 					b.animatorRebound = true;
 				}
 			}
-			if (anim && fnLogInfo)
+			if (anim)
 			{
-				fnLogInfo("[GakuMotion][Animator] actor=%p policy=%s controllerDetached=%d rebind=%d",
+				GM_DEBUG("[GakuMotion][Animator] actor=%p policy=%s controllerDetached=%d rebind=%d",
 				          actor, preserveAnimatorForSecondaryPhysics ? "preserve-graph(experimental)" : "legacy-mute",
 				          int(b.animatorControllerDetached), int(b.animatorRebound));
 			}
@@ -1123,6 +1117,7 @@ namespace GakuMotion
 					b.groundLift = (stature > 0.05f && stature < 5.0f) ? stature : 0.0f;
 				}
 
+#if GAKUMOTION_ENABLE_GEOMETRY_PROBE
 				if (fnLogInfo)
 				{
 					float ap[3]{0, 0, 0};
@@ -1214,6 +1209,7 @@ namespace GakuMotion
 					segDir(0, 7, "Hips->Spine");
 					segDir(7, 54, "Spine->UpperChest");
 				}
+#endif // GAKUMOTION_ENABLE_GEOMETRY_PROBE
 			}
 
 			// Capture Bind Pose for all mapped bones.
@@ -1278,6 +1274,7 @@ namespace GakuMotion
 			// a previous analysis ended up comparing one clip's rest against another
 			// clip's delta.
 			probeFirstFrameDone = false;
+#if GAKUMOTION_ENABLE_GEOMETRY_PROBE
 			if (fnLogInfo && fnGetLocalRotation)
 			{
 				static const int kProbeBones[] = {
@@ -1309,6 +1306,7 @@ namespace GakuMotion
 					          hid, clip.bones[i].name.c_str(), rl.x, rl.y, rl.z, rl.w, devDeg);
 				}
 			}
+#endif // GAKUMOTION_ENABLE_GEOMETRY_PROBE
 
 			// ---------------------------------------------------------------------
 			// ---------------------------------------------------------------------
@@ -2285,9 +2283,9 @@ namespace GakuMotion
 								// rotation, so the control path stays bit-identical.
 								const float eyeGain = eyePoseRelativeGain ? b.eyeTargetFrame->gain : 1.0f;
 								supported = MapHeadSpaceEyeDelta(*b.eyeTargetFrame, hid, rVmd, h.Inverse()*p, eyeGain, gkLocalOut);
-								if (supported && !b.eyeGainLogged && fnLogInfo)
+								if (supported && !b.eyeGainLogged)
 								{
-									fnLogInfo("[GakuMotion][Eye] %s relative gain %.4f (%s)",
+									GM_DEBUG("[GakuMotion][Eye] %s relative gain %.4f (%s)",
 									          b.eyeTargetFrame->character, eyeGain,
 									          eyePoseRelativeGain ? "geometry-relative" : "raw 1:1");
 									b.eyeGainLogged = true;
@@ -2754,6 +2752,7 @@ namespace GakuMotion
 				//
 				// Bones 1..6 and 19,20: the whole leg chain including toes, since a
 				// "horizontal split" could equally be a foot-pitch problem.
+#if GAKUMOTION_ENABLE_GEOMETRY_PROBE
 				if (probeA3Pending && isGkClip && fnGetLocalRotation && fnGetWorldRotation
 					&& ((hid >= 1 && hid <= 6) || hid == 19 || hid == 20))
 				{
@@ -2847,6 +2846,7 @@ namespace GakuMotion
 						          devId(qEngWorld));
 					}
 				}
+#endif // GAKUMOTION_ENABLE_GEOMETRY_PROBE
 
 				// ---- PROBE A3: write-then-readback on the first playback frame ----
 				// Rules out the last class of silent failure: the value being handed
@@ -2855,6 +2855,7 @@ namespace GakuMotion
 				// the following line, or a host that recomputes locals internally).
 				// Reading back what the engine actually stored cannot lie.
 				// One frame only, three representative bones.
+#if GAKUMOTION_ENABLE_GEOMETRY_PROBE
 				if (probeA3Pending && fnGetLocalRotation && (hid == 0 || hid == 14 || hid == 18))
 				{
 					float back[4]{0.0f, 0.0f, 0.0f, 1.0f};
@@ -2938,6 +2939,7 @@ namespace GakuMotion
 						}
 					}
 				}
+#endif // GAKUMOTION_ENABLE_GEOMETRY_PROBE
 
 				// 51 骨骼动作缺失 UpperChest 保护：自动同步 Chest (hid=8) 旋转，彻底根治肩膀-胸腔接缝破坑
 				if (hid == 8 && !b.upperChestInClip && b.upperChestTransform)
@@ -3063,6 +3065,7 @@ namespace GakuMotion
 			// needs it too, and A8's guard (fnGetWorldPosition) is independent of
 			// A9's (fnGetTransformName). Declaring it inside A9's if-block would
 			// make A8 fail to compile-scope the moment the name getter is absent.
+#if GAKUMOTION_ENABLE_GEOMETRY_PROBE
 			int iHips = -1, iLThigh = -1, iRThigh = -1, iLKnee = -1, iRKnee = -1;
 			int iLFoot = -1, iRFoot = -1, iRoot = -1, iLToes = -1, iRToes = -1;
 			for (size_t k = 0; k < clip.bones.size(); ++k)
@@ -3256,6 +3259,7 @@ namespace GakuMotion
 					          iHips, iLThigh, iRThigh, iLKnee, iRKnee, iLFoot, iRFoot);
 				}
 			}
+#endif // GAKUMOTION_ENABLE_GEOMETRY_PROBE
 
 			// Opt-in geometry diagnostics; normal playback must not stream probes.
 #if defined(GAKUMOTION_ENABLE_GEOMETRY_PROBE) && GAKUMOTION_ENABLE_GEOMETRY_PROBE

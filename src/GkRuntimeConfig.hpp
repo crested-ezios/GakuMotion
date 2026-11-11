@@ -520,7 +520,7 @@ namespace GakuMotion
 				"  \"poll_interval_seconds\": 0.5,\n"
 				"  \"playback_speed_multiplier\": 1.0,   // 播放速度倍率 [0.1, 5.0]；有音频时以音频为主时钟保持同步\n"
 				"\n"
-				"  \"selected_motion\": \"test_motion\",\n"
+				"  \"selected_motion\": \"\",   // 留空 = 启动时不选曲；填入曲库内的曲目名可自动选中\n"
 				"  \"import_backend\": \"csharp\",      // VMD 导入后端：csharp（原生导入，需配套 DLL）\n"
 				"  \"autoplay\": false,\n"
 				"  \"camera\": {\n"

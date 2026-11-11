@@ -1,4 +1,5 @@
 #pragma once
+#include "GkLog.hpp"
 
 // Included in the plugin's private namespace after GkStageRuntime.hpp.
 // The native actor LateUpdate runs before Motion's post-actor callback. Its
@@ -120,10 +121,10 @@ namespace ActorGroundShadow
 				"[GakuMotion][FootAO] native refresh raised a managed exception; disabled until plugin restart");
 			return false;
 		}
-		if (!logged && g_hostContext.logInfo)
+		if (!logged)
 		{
 			logged = true;
-			g_hostContext.logInfo("[GakuMotion][FootAO] native left/right foot AO refreshed after final MMD pose");
+			GM_DEBUG("[GakuMotion][FootAO] native left/right foot AO refreshed after final MMD pose");
 		}
 		return true;
 	}

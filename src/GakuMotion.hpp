@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GkMotionData.hpp"
+#include "GkLog.hpp"
 #include "GkIdolController.hpp"
 #include "GkMotionPlayer.hpp"
 #include "GkLookAtManager.hpp"
@@ -2441,7 +2442,7 @@ namespace GakuMotion
 			++injectionSession;
 			ResetSoleObservation();
 			player.controller.SetTargetActor(a);
-			LogInfo("[GakuMotion][Target] selected one current scene actor");
+			LogDebug("[GakuMotion][Target] selected one current scene actor");
 		}
 
 		void CycleTargetActor()
@@ -2963,6 +2964,13 @@ namespace GakuMotion
 		void LogWarn(const std::string& message) const
 		{
 			if (fnLogWarn) fnLogWarn("%s", message.c_str());
+		}
+
+		// Release builds compile this to nothing (GAKUMOTION_LOG_FLOOR), which is
+		// exactly what a scene-selection trace should do.
+		void LogDebug(const std::string& message) const
+		{
+			GM_DEBUG("%s", message.c_str());
 		}
 
 		// 相对路径一律相对 localRoot 解析；绝对路径原样返回

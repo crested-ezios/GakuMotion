@@ -1,4 +1,5 @@
 #pragma once
+#include "GkLog.hpp"
 
 #include "minhook/include/MinHook.h"
 #include "GakuLocalifyCameraWrite.h"
@@ -177,10 +178,7 @@ namespace CameraBridge
 			vcamStateOffset >= 0 ? vcamStateOffset + unboxedCameraStateLensOffset + unboxedLensFovOffset : -1,
 			item.originalStateFov);
 		trackedVcams.push_back(item);
-		if (g_hostContext.logInfo)
-		{
-			g_hostContext.logInfo("[GakuMotion][Cinemachine] Tracked virtual camera %p (saved FOV=%.2f)", vcam, item.originalFov);
-		}
+		GM_DEBUG("[GakuMotion][Cinemachine] Tracked virtual camera %p (saved FOV=%.2f)", vcam, item.originalFov);
 	}
 
 	inline void ResolveAllVirtualCameras(void* camera)
@@ -392,10 +390,7 @@ namespace CameraBridge
 				{
 					trackedModel = *reinterpret_cast<void**>(reinterpret_cast<char*>(ctrl) + actCtrlModelOffset);
 				}
-				if (g_hostContext.logInfo)
-				{
-					g_hostContext.logInfo("[GakuMotion][DoF] Tracked PhotographyActivityController %p, Model %p", trackedActCtrl, trackedModel);
-				}
+				GM_DEBUG("[GakuMotion][DoF] Tracked PhotographyActivityController %p, Model %p", trackedActCtrl, trackedModel);
 			}
 		}
 	}

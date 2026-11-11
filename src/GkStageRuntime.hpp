@@ -1,4 +1,5 @@
 #pragma once
+#include "GkLog.hpp"
 
 // Included inside the plugin's private namespace, after CameraBridge.
 // No managed instance is retained between actions. Cached values below are
@@ -611,8 +612,7 @@ std::string HelperGetObjectName(void* obj)
 std::vector<void*> HelperFindSceneRoots()
 {
 	auto roots = StageLoader::Roots();
-	if (g_hostContext.logInfo) g_hostContext.logInfo(
-		"[GakuMotion][Stage] scan scene=%d generation=%llu roots=%zu objects=%zu",
+	GM_DEBUG("[GakuMotion][Stage] scan scene=%d generation=%llu roots=%zu objects=%zu",
 		StageLoader::currentScene, static_cast<unsigned long long>(StageLoader::generation), roots.size(), StageLoader::objects.size());
 	return roots;
 }

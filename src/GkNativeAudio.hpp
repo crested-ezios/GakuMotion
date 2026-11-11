@@ -1,4 +1,5 @@
 #pragma once
+#include "GkLog.hpp"
 
 // Included in the plugin's private namespace, after ActorGroundShadow.
 // Custom.acf's CategoryName table contains Bgm / Se / Voice. Only Bgm and
@@ -124,8 +125,8 @@ namespace NativeAudio
 		const Status bgmStatus = g_bgmLease.Sync(BackendFor(bgm), active, 1);
 		const Status voiceStatus = g_voiceLease.Sync(BackendFor(voice), active, 1);
 		static Status previousBgm = Status::Idle, previousVoice = Status::Idle;
-		if ((previousBgm != bgmStatus || previousVoice != voiceStatus) && g_hostContext.logInfo)
-			g_hostContext.logInfo("[GakuMotion][NativeAudio] Bgm=%s Voice=%s performance=%d",
+		if (previousBgm != bgmStatus || previousVoice != voiceStatus)
+			GM_DEBUG("[GakuMotion][NativeAudio] Bgm=%s Voice=%s performance=%d",
 				StatusName(bgmStatus), StatusName(voiceStatus), active);
 		previousBgm = bgmStatus; previousVoice = voiceStatus;
 	}

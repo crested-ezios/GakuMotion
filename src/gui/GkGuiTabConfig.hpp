@@ -60,7 +60,7 @@ namespace GakuMotion
 			}
 		}
 		ImGui::Separator();
-		ImGui::TextUnformatted("快捷键：F9 播放/暂停　F10 停止复位　,/. 上/下一曲　-/= 进度±5s　\\ 实验视线三态　F11 重载覆盖　Ctrl+F11 覆盖总开关");
+		ImGui::TextUnformatted("快捷键：F9 播放/暂停　F10 停止复位　,/. 上/下一曲　-/= 进度±5s　\\ 实验视线三态　Shift+F11 重载覆盖　Ctrl+F11 覆盖总开关");
 	}
 } // namespace GakuMotion
 #endif

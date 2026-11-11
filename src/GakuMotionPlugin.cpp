@@ -5,6 +5,7 @@
 #include "GkCaptureSafety.hpp"
 #include "GkGmlClient.hpp"
 #include "GakuMotion.hpp"
+#include "GkLog.hpp"
 #include "GkCsharpImport.hpp"
 #include "GkHotkey.hpp"
 #include "GakuSafeBoneLookup.h"
@@ -91,6 +92,32 @@ namespace
 
 	static void MotionSetMotionPlaying(bool playing) { GakuMotion::host::SetPlaying(playing); }
 	static bool MotionIsMotionPlaying() { return GakuMotion::host::IsPlayingFlag(); }
+
+	// Identity-bearing fields of StatusSummary(), with the moving clock removed.
+	// Comparing the whole summary would fire on every frame of playback because
+	// "time=9.74/110.57s" changes continuously; comparing this fires exactly
+	// when something STRUCTURAL changed (track, state, bone count, clock source,
+	// override set) or when the user seeked.
+	static std::string StatusFingerprint(const std::string& summary)
+	{
+		std::string out;
+		size_t pos = 0;
+		while (pos <= summary.size())
+		{
+			const size_t bar = summary.find(" | ", pos);
+			const std::string field = summary.substr(pos, bar == std::string::npos ? std::string::npos : bar - pos);
+			const bool structural = field.rfind("state=", 0) == 0 || field.rfind("motion=", 0) == 0
+				|| field.rfind("bones=", 0) == 0 || field.rfind("gaze=", 0) == 0
+				|| field.rfind("overrides=", 0) == 0 || field.rfind("clk=", 0) == 0
+				|| field.rfind("secondary=", 0) == 0;
+			if (structural) out += field;
+			else if (field.rfind("seeks=", 0) == 0) out += field.substr(0, field.find(' '));
+			out.push_back('|');
+			if (bar == std::string::npos) break;
+			pos = bar + 3;
+		}
+		return out;
+	}
 
 	MotionHostContext g_hostContext{};
 	std::mutex g_lifecycleMutex;
@@ -1982,8 +2009,7 @@ void MotionRuntimeReady(void*)
 		ctrl.faceApi.getModelName = HelperGetFaceModelName;
 		ctrl.faceApi.reportMikuMouthFit = [](const char* decision, const char* faceName)
 		{
-			if (g_hostContext.logInfo) g_hostContext.logInfo(
-				"[GakuMotion][MikuMouthFit] decision=%s actual_face=%s (prefab identity; asset bytes not runtime-verified)",
+			GM_DEBUG("[GakuMotion][MikuMouthFit] decision=%s actual_face=%s (prefab identity; asset bytes not runtime-verified)",
 				decision, faceName);
 		};
 		if (g_hostContext.logInfo)
@@ -2431,10 +2457,8 @@ void MotionActorTick(void*, void* activeActor, float deltaTime)
 		g_shoeProbeSceneName = name;
 #endif
 		g_motionSceneAllowed = core.InjectionAllowed();
-		if (g_hostContext.logInfo)
-			g_hostContext.logInfo(
-				"[GakuMotion][Scene] handle=%d name=%s custom_motion=%s (bindings discarded)",
-				sceneHandle, name.c_str(), g_motionSceneAllowed ? "allowed" : "blocked");
+		GM_DEBUG("[GakuMotion][Scene] handle=%d name=%s custom_motion=%s (bindings discarded)",
+			sceneHandle, name.c_str(), g_motionSceneAllowed ? "allowed" : "blocked");
 	}
 
 	// All actors share one physical playback clock. Target identity and roster
@@ -2517,14 +2541,11 @@ void MotionActorTick(void*, void* activeActor, float deltaTime)
 		// 「暂停一段时间后无人操作却自动 prev/next 切歌」。
 		{
 			const bool focused = IsGameForeground();
-			const bool wasFocused = g_hotkeys.ForegroundFocused();
 			g_hotkeys.SetForegroundWindowFocused(focused);
 			g_hotkeys.NewFrame();
-			if (focused != wasFocused && g_hostContext.logInfo)
-			{
-				g_hostContext.logInfo("[GakuMotion][Hotkey] foreground focus %s -> %s (edge baseline rebuilt)",
-				                      wasFocused ? "in" : "out", focused ? "in" : "out");
-			}
+			// The former "foreground focus in -> out" line fired on every alt-tab
+			// and carried no user-visible meaning; the edge baseline rebuild is
+			// unconditional and needs no trace.
 		}
 		auto keyPressed = [&core](int vk)
 		{
@@ -2573,6 +2594,7 @@ void MotionActorTick(void*, void* activeActor, float deltaTime)
 			else
 			{
 				// Stopped: 若尚未载入曲目，则按曲目库当前下标补载
+				bool startable = true;
 				if (player.clip.total_frames == 0)
 				{
 					if (core.motions.empty()) core.RefreshMotionLibrary();
@@ -2584,15 +2606,20 @@ void MotionActorTick(void*, void* activeActor, float deltaTime)
 					}
 					else
 					{
-						std::string localRoot = WidePathToNarrow(
-							g_hostContext.localRoot ? g_hostContext.localRoot : L"gakumas-local");
-						player.LoadMotion(GakuMotion::Core::Instance().motionsRoot + "/test_motion");
+						// 2026-11-11: 旧兜底加载 "<motionsRoot>/test_motion"，那是研发用的
+						// 固定曲目，用户安装里根本不存在，只会静默播一个空表演。曲库为空
+						// 是用户状态，不是隐藏默认曲：说清楚并保持传输状态不变。
+						startable = false;
+						GM_WARN("[GakuMotion] F9 ignored: the motion library is empty; import a VMD or drop a gkclip first");
 					}
 				}
-				player.Play();
-				NotifyHostMotionPlaying(true);
-				if (g_hostContext.logInfo) g_hostContext.logInfo("[GakuMotion] Hotkey F9: Started playing | %s",
-				                                                 core.StatusSummary().c_str());
+				if (startable)
+				{
+					player.Play();
+					NotifyHostMotionPlaying(true);
+					GM_INFO("[GakuMotion] Hotkey F9: Started playing | %s",
+					        core.StatusSummary().c_str());
+				}
 			}
 		}
 
@@ -2652,7 +2679,7 @@ void MotionActorTick(void*, void* activeActor, float deltaTime)
 			}
 		}
 
-		// F11/Ctrl+F11 are registered with the Loader so Localify conflicts
+		// Shift+F11/Ctrl+F11 are registered with the Loader so Localify conflicts
 		// cannot bypass its registry through this actor polling path.
 
 		// 既有热键：'[' / ']' 臂部 roll 微调；';' 切换 useRestRotations
@@ -2675,19 +2702,24 @@ void MotionActorTick(void*, void* activeActor, float deltaTime)
 			                                                 player.controller.useRestRotations ? "TRUE" : "FALSE");
 		}
 
-		// 低频状态日志（每 5s 真实时钟打一次，杜绝多 Actor 累加刷屏）
-		static auto s_lastStatusLogTime = std::chrono::steady_clock::now();
-		if (std::chrono::duration<float>(now - s_lastStatusLogTime).count() >= 5.0f)
+		// 状态心跳：结构变化立刻打，否则 30 s 一条。旧版固定 5 s，782 s 的会话里
+		// 142 条中 130 条内容完全相同；而切曲/暂停这些真正要看的事件反而淹没在里面。
+		static std::string s_lastStatusFingerprint;
+		static auto s_lastStatusEmit = std::chrono::steady_clock::now();
+		const float sinceStatusEmit = std::chrono::duration<float>(now - s_lastStatusEmit).count();
+		if (sinceStatusEmit >= 0.25f) // 去抖：最多 4 次/秒，顺带避免每帧构造摘要
 		{
-			s_lastStatusLogTime = now;
-			if (g_hostContext.logInfo)
+			const std::string summary = core.StatusSummary();
+			const std::string fingerprint = StatusFingerprint(summary);
+			if (fingerprint != s_lastStatusFingerprint || sinceStatusEmit >= 30.0f)
 			{
+				s_lastStatusFingerprint = fingerprint;
+				s_lastStatusEmit = now;
 				// ASCII only: the host decodes log lines as ANSI, so a Chinese
 				// literal here arrives as mojibake (was "本帧覆盖生效"). It also
 				// adds nothing -- the count is already in StatusSummary()'s
 				// "overrides=ON(n)" field.
-				g_hostContext.logInfo("[GakuMotion][Status] %s",
-				                      core.StatusSummary().c_str());
+				GM_INFO("[GakuMotion][Status] %s", summary.c_str());
 			}
 		}
 	}
@@ -2823,8 +2855,9 @@ void MotionActorTick(void*, void* activeActor, float deltaTime)
 			if (reason != g_physicsReason)
 			{
 				g_physicsReason = reason;
-				if (g_hostContext.logInfo) g_hostContext.logInfo(
-					"[GakuMotion][Physics] requested=%d actual=%d reason=%s", requested, g_physicsActual,
+				// Transient by design: native_pending resolves to native within a
+				// frame or two, so this is a trace, not a warning.
+				GM_DEBUG("[GakuMotion][Physics] requested=%d actual=%d reason=%s", requested, g_physicsActual,
 					reason.c_str());
 			}
 		}
@@ -3051,12 +3084,16 @@ GakuStatus MotionActivate(const GakuHostApi* host, void** pluginState)
 	else
 		GakuMotion::host::Warn(
 			"[GakuMotion] hotkey service unavailable (status=%d); Ctrl+M disabled", hotkey);
+	// Plain F11 belongs to Localify (toggle-fullscreen). Registering it here too
+	// made the loader refuse BOTH bindings, so the user lost fullscreen and the
+	// reload. Shift+F11 keeps the pair distinct without touching Localify.
 	const auto reloadKey = GakuMotion::host::RegisterHotkey(kReloadOverridesActionId,
-		"Reload bone overrides", VK_F11, 0, ReloadOverridesHotkey);
+		"Reload bone overrides", VK_F11, GAKU_HOTKEY_MOD_SHIFT, ReloadOverridesHotkey);
 	const auto toggleKey = GakuMotion::host::RegisterHotkey(kToggleOverridesActionId,
 		"Toggle bone overrides", VK_F11, GAKU_HOTKEY_MOD_CTRL, ToggleOverridesHotkey);
 	if (reloadKey != GAKU_OK || toggleKey != GAKU_OK)
-		GakuMotion::host::Warn("[GakuMotion] F11 registrations: reload=%d toggle=%d", reloadKey, toggleKey);
+		GakuMotion::host::Warn("[GakuMotion] hotkey registrations: Shift+F11 reload=%d Ctrl+F11 toggle=%d",
+			reloadKey, toggleKey);
 	GakuMotion::host::Info("[GakuMotion][GakuLoader] ABI v1 services connected; camera hooks leased from the loader; KineTexture consumer active");
 	return GAKU_OK;
 }
@@ -3111,6 +3148,32 @@ void RenderGmlMotion(void*)
 #endif
 }
 }
+
+namespace GakuMotion::Log {
+// Single choke point for every GakuMotion diagnostic that goes through GkLog.
+// Kept out of the anonymous namespace above so the header declaration resolves
+// to external linkage; the wire levels stay exactly the three the ABI defines.
+void Write(Level level, const char* format, ...)
+{
+	if (!format) return;
+	char buffer[2048]{};
+	va_list args;
+	va_start(args, format);
+	std::vsnprintf(buffer, sizeof(buffer), format, args);
+	va_end(args);
+	switch (level)
+	{
+	case Level::Error: MotionLogError("%s", buffer); break;
+	case Level::Warn: MotionLogWarn("%s", buffer); break;
+	case Level::Info: MotionLogInfo("%s", buffer); break;
+	case Level::Debug:
+		// Reachable only from a development build: GM_DEBUG compiles to nothing
+		// when GAKUMOTION_LOG_FLOOR > 0, so release never emits this path.
+		MotionLogInfo("[D] %s", buffer);
+		break;
+	}
+}
+} // namespace GakuMotion::Log
 
 extern "C" GAKU_PLUGIN_EXPORT GakuStatus GakuPlugin_Query(
 	uint32_t requestedAbi, uint32_t outputSize, GakuPluginDescriptor* output)
