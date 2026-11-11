@@ -21,6 +21,7 @@ inline GakuDesktopUiService desktop{};
 inline GakuDesktopWindowService desktopWindow{};
 inline GakuFileDialogService fileDialog{};
 inline GakuFileDropService fileDrop{};
+inline GakuFileDragService fileDrag{};
 inline GakuHotkeyService hotkeys{};
 inline GakuAppearanceService appearance{};
 inline GakuPathsV1 paths{};
@@ -68,6 +69,11 @@ inline GakuStatus Connect(const GakuHostApi* host) {
     fileDrop = {};
     Query(GAKU_SERVICE_FILE_DROP, fileDrop);
     if (!fileDrop.setTarget || !fileDrop.poll) fileDrop = {};
+    // Hover feedback is optional: a host without it simply never lights the
+    // drop region, and the drop itself keeps working through fileDrop.
+    fileDrag = {};
+    Query(GAKU_SERVICE_FILE_DRAG, fileDrag);
+    if (!fileDrag.peek) fileDrag = {};
     // Hotkeys are optional: older hosts still load, they just cannot open the
     // controls panel with a key.
     hotkeys = {};

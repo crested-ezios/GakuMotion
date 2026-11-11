@@ -47,23 +47,64 @@ namespace
 		selectedActorEpoch = epoch;
 	}
 
-	// A host extension boundary fake. The production library still submits its
-	// actual table rectangle, performs both poll calls and opens the real modal.
+	// A host extension boundary fake. The production library submits the whole
+	// client area as its target, performs both poll calls and opens the real modal.
 	struct FileDropHost
 	{
 		GakuFileDropService previous{host::fileDrop};
+		GakuFileDragService previousDrag{host::fileDrag};
 		GakuFileDropTarget target{};
 		std::vector<std::string> queued;
+		std::string dragged;
+		uint32_t draggedCount{0}, generation{0};
+		bool dragging{false}, inside{false}, blocked{false}, elevated{true};
 		bool enabled{false};
 		int consumed{0}, polls{0}, registrations{0};
-		FileDropHost() { host::fileDrop = {GAKU_FILE_DROP_VERSION, sizeof(GakuFileDropService), this, SetTarget, Poll}; }
-		~FileDropHost() { host::fileDrop = previous; }
+		FileDropHost()
+		{
+			host::fileDrop = {GAKU_FILE_DROP_VERSION, sizeof(GakuFileDropService), this, SetTarget, Poll};
+			host::fileDrag = {GAKU_FILE_DRAG_VERSION, sizeof(GakuFileDragService), this, Peek};
+		}
+		~FileDropHost() { host::fileDrop = previous; host::fileDrag = previousDrag; }
+		// Simulates one OS drag: the packed payload is copied once, exactly like
+		// the host does, and every new drag bumps the generation.
+		void BeginDrag(const std::vector<std::string>& files)
+		{
+			dragged.clear();
+			for (const auto& file : files) { dragged.append(file); dragged.push_back('\0'); }
+			draggedCount = static_cast<uint32_t>(files.size());
+			++generation;
+			dragging = true;
+		}
+		void EndDrag() { dragging = false; inside = false; dragged.clear(); draggedCount = 0; }
 		static GakuStatus SetTarget(void* context, const GakuFileDropTarget* value)
 		{
 			auto& self = *static_cast<FileDropHost*>(context);
 			self.enabled = value != nullptr;
 			if (value) { self.target = *value; ++self.registrations; }
 			else self.queued.clear();
+			return GAKU_OK;
+		}
+		static GakuStatus Peek(void* context, uint32_t size, GakuFileDragState* state, uint32_t capacity, char* paths)
+		{
+			auto& self = *static_cast<FileDropHost*>(context);
+			if (!state || size < sizeof(*state)) return GAKU_E_SIZE;
+			*state = {GAKU_FILE_DRAG_VERSION, sizeof(*state), 0u, 0u, 0u, 0u, -1.0f, -1.0f};
+			// Host capability survives an idle drag, exactly like the broker reports it.
+			if (self.blocked)
+				state->flags = GAKU_FILE_DRAG_HOST_BLOCKED | (self.elevated ? GAKU_FILE_DRAG_HOST_ELEVATED : 0u);
+			if (!self.dragging) return GAKU_OK;
+			state->flags = GAKU_FILE_DRAG_ACTIVE | (self.inside ? GAKU_FILE_DRAG_INSIDE_TARGET : 0u) |
+				(self.blocked ? GAKU_FILE_DRAG_HOST_BLOCKED : 0u) |
+				(self.blocked && self.elevated ? GAKU_FILE_DRAG_HOST_ELEVATED : 0u);
+			state->generation = self.generation;
+			state->fileCount = self.draggedCount;
+			state->requiredBytes = static_cast<uint32_t>(self.dragged.size());
+			state->x = self.inside ? self.target.left + 1.0f : self.target.left - 50.0f;
+			state->y = self.target.top + 1.0f;
+			if (!paths && !capacity) return GAKU_OK;
+			if (!paths || capacity < state->requiredBytes) return GAKU_E_SIZE;
+			std::memcpy(paths, self.dragged.data(), self.dragged.size());
 			return GAKU_OK;
 		}
 		static GakuStatus Poll(void* context, uint32_t size, GakuFileDropResult* result, uint32_t capacity, char* paths)
@@ -791,20 +832,21 @@ int main(int argc, char** argv)
 		FileDropHost drop;
 		app.contextPatch = [](GuiContext& context) { context.fnImportMotion = CountImportRequest; };
 		app.Settle();
-		const auto validTableTarget = [&]() {
-			const auto* table = app.LibraryTableWindow();
-			return table && drop.enabled && drop.target.right > drop.target.left && drop.target.bottom > drop.target.top &&
-				drop.target.left >= table->OuterRectClipped.Min.x - .5f && drop.target.top >= table->OuterRectClipped.Min.y - .5f &&
-				drop.target.right <= table->OuterRectClipped.Max.x + .5f && drop.target.bottom <= table->OuterRectClipped.Max.y + .5f;
+		// 命中区已放宽到整块客户区：只要曲库页在绘制，登记的目标就必须等于宿主
+		// 视口，且不受表格是否为空、过滤后是否零行影响。
+		const auto validClientTarget = [&]() {
+			const auto client = ImGui::GetIO().DisplaySize;
+			return drop.enabled && drop.target.left == 0.0f && drop.target.top == 0.0f &&
+				drop.target.right == client.x && drop.target.bottom == client.y;
 		};
-		Check(validTableTarget(), "file drop registers the actual visible library table rectangle");
+		Check(validClientTarget(), "file drop registers the whole client area instead of the table rectangle");
 		std::snprintf(app.core.gui.libraryFilter.InputBuf, sizeof(app.core.gui.libraryFilter.InputBuf), "no matching song");
 		app.core.gui.libraryFilter.Build(); app.Settle();
-		Check(validTableTarget(), "fully filtered library retains a nonempty visible table drop target");
+		Check(validClientTarget(), "a fully filtered library still accepts drops anywhere in the client area");
 		app.core.gui.libraryFilter.Clear();
 		const auto originalMotions = app.core.motions;
 		app.core.motions.clear(); ++app.core.libraryRevision; app.Settle();
-		Check(validTableTarget(), "empty library retains a nonempty visible table drop target");
+		Check(validClientTarget(), "a library with no songs still accepts drops anywhere in the client area");
 		app.core.motions = originalMotions; ++app.core.libraryRevision; app.Settle();
 
 		const auto sources = app.fixture / L"拖入来源 日本語";
@@ -865,6 +907,81 @@ int main(int argc, char** argv)
 		app.Click("取消删除"); app.Settle();
 		Check(importRequests == requestsBefore && SnapshotFiles(app.fixture) == before,
 			"all blocked drop paths preserve source bytes and playlist state");
+
+		// 命中区是整块宿主客户区：曲库页活动时登记的矩形必须覆盖整个视口，
+		// 而不是表格那一小块。这是"任意位置投递都能导入"在插件侧的自动断言。
+		const ImVec2 client = ImGui::GetIO().DisplaySize;
+		Check(drop.enabled && drop.target.left == 0.0f && drop.target.top == 0.0f &&
+			drop.target.right == client.x && drop.target.bottom == client.y,
+			"an active library page registers the whole host client area as the drop target");
+		// 拖放视觉三态直接由宿主悬停状态驱动，不依赖真实鼠标拖拽。
+		app.core.gui.libraryUiNotice.clear();
+		Check(QueryDropVisual().visual == DropVisual::Idle, "no active OS drag leaves the library region unstyled");
+		drop.BeginDrag({utf8(motion), utf8(camera)});
+		drop.inside = false;
+		app.Frame();
+		Check(QueryDropVisual().visual == DropVisual::Armed && QueryDropVisual().accepted == 2,
+			"a drag hovering the window arms the region with a neutral border and no fill");
+		drop.inside = true;
+		app.Frame();
+		Check(QueryDropVisual().visual == DropVisual::Hover && QueryDropVisual().accepted == 2,
+			"entering the target brightens acceptable files");
+		drop.BeginDrag({utf8(unsupported)});
+		app.Frame();
+		Check(QueryDropVisual().visual == DropVisual::Invalid && QueryDropVisual().accepted == 0,
+			"an unsupported payload switches the region to the warning colour before the drop");
+		// 静默拒绝会让用户以为文件没投递成功，从而反复拖拽重试。页面内必须留一行
+		// 说明，但仍然不得弹出任何窗口。
+		app.core.gui.libraryUiNotice.clear();
+		drop.queued = {utf8(unsupported)};
+		app.Frame();
+		Check(!app.core.gui.libraryUiNotice.empty() && !g_libraryModal.isOpen && drop.queued.empty(),
+			"an unsupported drop is rejected with an inline notice and no modal");
+		drop.EndDrag();
+		app.Frame();
+		Check(QueryDropVisual().visual == DropVisual::Idle, "finishing the drag clears every drop decoration");
+		// 切到非曲库页后必须停止续登记，宿主下一帧就让目标过期，否则拖放会绕过
+		// 页面状态直接导入。夹具没有宿主的逐帧过期机制，所以这里断言插件侧的真实
+		// 契约：不再登记（目标过期本身由 Loader 的 broker 契约测试覆盖）。
+		app.Click("动作");
+		app.Settle();
+		const int motionPageRegistrations = drop.registrations;
+		app.Frame();
+		app.Frame();
+		Check(drop.registrations == motionPageRegistrations,
+			"a non-library page stops renewing the drop target so the host lets it expire");
+		app.Click("曲库");
+		app.Settle();
+		Check(drop.enabled && drop.target.right == client.x && drop.target.bottom == client.y,
+			"returning to the library page restores the whole-client drop target");
+		// GakuMotion 被禁用时（不在偶像摄影/更衣室）整块面板不绘制，同样不得续登记。
+		const int disabledRegistrations = drop.registrations;
+		app.contextPatch = [](GuiContext& context) { context.injectionAllowed = false; };
+		app.Frame();
+		app.Frame();
+		app.contextPatch = nullptr;
+		Check(drop.registrations == disabledRegistrations,
+			"a disabled GakuMotion panel never renews the drop target");
+		app.Frame();
+		// A host running above Explorer's integrity level can never see a shell
+		// drag; the page must report that instead of leaving the user to guess why
+		// the region stays dark and the cursor shows no-drop.
+		Check(!QueryDropVisual().hostBlocked && !QueryDropVisual().hostElevated,
+			"a same-integrity host reports drag hover as available");
+		drop.blocked = true;
+		app.Frame();
+		Check(QueryDropVisual().hostBlocked && QueryDropVisual().hostElevated &&
+			QueryDropVisual().visual == DropVisual::Idle,
+			"an elevated host reports the blocked hover capability with no drag in flight");
+		// Blocked without elevation must not be blamed on administrator rights:
+		// the panel wording differs, so the reported reason has to differ too.
+		drop.elevated = false;
+		app.Frame();
+		Check(QueryDropVisual().hostBlocked && !QueryDropVisual().hostElevated,
+			"a blocked host that is not elevated keeps the administrator claim out of the panel");
+		drop.elevated = true;
+		drop.blocked = false;
+		app.Frame();
 
 		// Missing-glyph fallback widths conceal Chinese-label overflow. Exercise
 		// the actual Windows CJK font when it is available on the test machine.
