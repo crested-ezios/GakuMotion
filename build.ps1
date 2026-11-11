@@ -49,20 +49,26 @@ if ([string]::IsNullOrWhiteSpace($sdk)) {
 if ([string]::IsNullOrWhiteSpace($sdk)) { throw 'Windows SDK not found; pass -WindowsSdkRoot.' }
 $sdkVersion = Get-ChildItem -LiteralPath (Join-Path $sdk 'Include') -Directory | Sort-Object Name -Descending | Select-Object -First 1
 if (-not $sdkVersion) { throw 'Windows SDK Include directory not found.' }
-$env:INCLUDE = @((Join-Path $msvc.FullName 'include'), (Join-Path $sdk "Include\$($sdkVersion.Name)\ucrt"),
-    (Join-Path $sdk "Include\$($sdkVersion.Name)\um"), (Join-Path $sdk "Include\$($sdkVersion.Name)\shared")) -join ';'
-$env:LIB = @((Join-Path $msvc.FullName 'lib\x64'), (Join-Path $sdk "Lib\$($sdkVersion.Name)\ucrt\x64"),
-    (Join-Path $sdk "Lib\$($sdkVersion.Name)\um\x64")) -join ';'
-$env:PATH = (Join-Path $msvc.FullName 'bin\Hostx64\x64') + ';' + (Join-Path $sdk "bin\$($sdkVersion.Name)\x64") + ';' + $env:PATH
 if ($Target -eq 'Preflight') { Write-Host 'Build inputs, MSVC and Windows SDK found.'; exit 0 }
 if ($Target -eq 'Runtime' -or $Target -eq 'All') {
+    # Some hosts expose PATH / Path / path as three separate process environment
+    # keys. MSBuild's ToolTask copies them into a case-insensitive dictionary and
+    # throws MSB6001 ("an item with the same key has already been added") before
+    # CL runs. Collapse them to one entry so the toolchain starts at all.
+    $pathValue = (($env:Path -split ';') | Where-Object { $_ } | Select-Object -Unique) -join ';'
+    foreach ($key in @('PATH', 'Path', 'path')) { [Environment]::SetEnvironmentVariable($key, $null, 'Process') }
+    $env:Path = $pathValue
     $msbuild = Join-Path $vs 'MSBuild\Current\Bin\MSBuild.exe'
     $toolset = if ([IO.File]::Exists((Join-Path $vs 'MSBuild\Microsoft\VC\v180\Platforms\x64\PlatformToolsets\v145\Toolset.props'))) { 'v145' } else { 'v143' }
     $nativeOutput = Join-Path $OutputRoot 'native'
     $nativeObjects = Join-Path $OutputRoot 'obj\native'
     New-Item -ItemType Directory -Path $nativeOutput,$nativeObjects -Force | Out-Null
+    # Trailing separators are forward slashes on purpose: PowerShell re-quotes an
+    # argument that contains a space (e.g. a checkout under "D:\... \Gakumas Develop\...")
+    # and a trailing backslash then escapes the closing quote, so MSBuild sees a
+    # literal quote and reports MSB1008 "only one project can be specified".
     & $msbuild (Join-Path $repo 'GakuMotion.vcxproj') '/p:Configuration=Release ImGui' '/p:Platform=x64' "/p:PlatformToolset=$toolset" `
-        "/p:OutDir=$nativeOutput\" "/p:IntDir=$nativeObjects\" "/p:ImGuiIncludeDir=$(Join-Path $repo 'deps\imgui')" `
+        "/p:OutDir=$nativeOutput/" "/p:IntDir=$nativeObjects/" "/p:ImGuiIncludeDir=$(Join-Path $repo 'deps\imgui')" `
         "/p:KineTextureIncludeDir=$(Join-Path $repo 'deps\KineTexture\src')" '/p:GkCaptureDiagnostics=false' '/nologo' '/verbosity:minimal'
     if ($LASTEXITCODE -ne 0) { throw ('Runtime build failed: ' + $LASTEXITCODE) }
 }
@@ -81,6 +87,15 @@ if ($Target -eq 'NativeAOT' -or $Target -eq 'All') {
     } finally { Pop-Location }
 }
 if ($Target -ne 'Contracts') { Write-Host 'Requested product build completed locally.'; exit 0 }
+# The CL/LIB/PATH defaults are only needed by the manual contracts compile below.
+# MSBuild resolves the VC toolset itself, and mutating PATH beforehand breaks
+# ToolTask on hosts that expose Path/PATH/path as separate environment keys
+# ("An item with the same key has already been added", MSB6001).
+$env:INCLUDE = @((Join-Path $msvc.FullName 'include'), (Join-Path $sdk "Include\$($sdkVersion.Name)\ucrt"),
+    (Join-Path $sdk "Include\$($sdkVersion.Name)\um"), (Join-Path $sdk "Include\$($sdkVersion.Name)\shared")) -join ';'
+$env:LIB = @((Join-Path $msvc.FullName 'lib\x64'), (Join-Path $sdk "Lib\$($sdkVersion.Name)\ucrt\x64"),
+    (Join-Path $sdk "Lib\$($sdkVersion.Name)\um\x64")) -join ';'
+$env:PATH = (Join-Path $msvc.FullName 'bin\Hostx64\x64') + ';' + (Join-Path $sdk "bin\$($sdkVersion.Name)\x64") + ';' + $env:PATH
 $compiler = Join-Path $msvc.FullName 'bin\Hostx64\x64\cl.exe'
 $exe = Join-Path $OutputRoot 'stage_runtime_contracts.exe'
 $obj = Join-Path $OutputRoot 'stage_runtime_contracts.obj'
