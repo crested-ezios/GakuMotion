@@ -74,7 +74,7 @@ if ($Target -eq 'Runtime' -or $Target -eq 'All') {
             '/DWIN32', '/DNDEBUG', '/D_WINDOWS', '/D_USRDLL', '/DGKMOTION_ENABLE_IMGUI',
             "/I$(Join-Path $repo 'include')", "/I$(Join-Path $repo 'src')",
             "/I$(Join-Path $repo 'deps/KineTexture/src')", "/I$(Join-Path $repo 'deps/imgui')",
-            "/Fo$nativeObjects\") + $sources + @('winmm.lib', 'user32.lib', 'comdlg32.lib',
+            "/Fo$nativeObjects/") + $sources + @('winmm.lib', 'user32.lib', 'comdlg32.lib',
             '/link', "/OUT:$(Join-Path $nativeOutput 'GakuMotion.dll')", '/SUBSYSTEM:WINDOWS', '/OPT:REF', '/OPT:ICF')
         & $compiler @args
         if ($LASTEXITCODE -ne 0) { throw ('Portable runtime build failed: ' + $LASTEXITCODE) }
@@ -137,5 +137,23 @@ try {
     if ($LASTEXITCODE -ne 0) { throw ('Synthetic contract build failed: ' + $LASTEXITCODE) }
     & $exe
     if ($LASTEXITCODE -ne 0) { throw ('Synthetic contract tests failed: ' + $LASTEXITCODE) }
+    $captureExe = Join-Path $OutputRoot 'live_capture_contracts.exe'
+    $captureObj = Join-Path $OutputRoot 'live_capture_contracts.obj'
+    $captureArgs = @('/nologo', '/std:c++20', '/utf-8', '/EHsc', '/MT', '/W4',
+        "/I$(Join-Path $repo 'src')", "/I$(Join-Path $repo 'include')",
+        (Join-Path $repo 'tests\test_live_capture_guard.cpp'), "/Fe:$captureExe", "/Fo:$captureObj")
+    & $compiler @captureArgs
+    if ($LASTEXITCODE -ne 0) { throw ('Live capture contract build failed: ' + $LASTEXITCODE) }
+    & $captureExe
+    if ($LASTEXITCODE -ne 0) { throw ('Live capture contract tests failed: ' + $LASTEXITCODE) }
+    $coreExe = Join-Path $OutputRoot 'synthetic_core.exe'
+    $coreObj = Join-Path $OutputRoot 'synthetic_core.obj'
+    $coreArgs = @('/nologo', '/std:c++20', '/utf-8', '/EHsc', '/MT', '/W3',
+        "/I$(Join-Path $repo 'src')", "/I$(Join-Path $repo 'include')", "/I$(Join-Path $repo 'deps/KineTexture/src')",
+        (Join-Path $repo 'tests\test_refresh_core.cpp'), "/Fe:$coreExe", "/Fo:$coreObj", 'winmm.lib', 'user32.lib')
+    & $compiler @coreArgs
+    if ($LASTEXITCODE -ne 0) { throw ('Synthetic core build failed: ' + $LASTEXITCODE) }
+    & $coreExe $repo
+    if ($LASTEXITCODE -ne 0) { throw ('Synthetic core tests failed: ' + $LASTEXITCODE) }
 } finally { Pop-Location }
 Write-Host 'Synthetic contracts passed.'

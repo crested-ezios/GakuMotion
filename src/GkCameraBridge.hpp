@@ -105,6 +105,43 @@ namespace CameraBridge
 	inline void* focalModel = nullptr;
 	inline float originalFocalPoint = 0.0f;
 	inline bool originalFocalPointSaved = false, focalPointModified = false;
+	inline bool OnUnityThread();
+	inline bool liveDofMetadataReported = false;
+
+	// Read-only metadata probe: identify the Live volume API before attempting
+	// any focus mutation. The logged classes are candidates, not proof that a
+	// particular loaded object is the active blended volume.
+	inline void ReportLiveDofMetadata()
+	{
+		if (liveDofMetadataReported || !OnUnityThread() || !g_gameAssembly || !g_hostContext.logInfo) return;
+		liveDofMetadataReported = true;
+		const auto api = GroundShadowProbeBootstrap::Resolve(g_gameAssembly);
+		struct Candidate { const char* assembly; const char* nameSpace; const char* name; };
+		const Candidate candidates[] = {
+			{"vl-unity.Runtime.dll", "VL.Rendering", "VLDOF"},
+			{"vl-unity.Runtime.dll", "VL.Rendering", "DepthOfFieldData"},
+			{"Unity.RenderPipelines.Core.Runtime.dll", "UnityEngine.Rendering", "VolumeManager"},
+			{"Unity.RenderPipelines.Core.Runtime.dll", "UnityEngine.Rendering", "VolumeStack"},
+			{"Unity.RenderPipelines.Core.Runtime.dll", "UnityEngine.Rendering", "FloatParameter"},
+			{"Unity.RenderPipelines.Core.Runtime.dll", "UnityEngine.Rendering", "ClampedFloatParameter"}
+		};
+		for (const auto& candidate : candidates)
+		{
+			void* klass = FindClass(candidate.assembly, candidate.nameSpace, candidate.name);
+			const std::string fields = BodyShadowBootstrap::AllFields(g_gameAssembly, api, klass);
+			g_hostContext.logInfo("[GakuMotion][LiveDoFProbe] type=%s.%s fields=%s", candidate.nameSpace, candidate.name, fields.c_str());
+			if (!klass || !api.method.methods || !api.method.name || !api.method.count) continue;
+			void* iterator = nullptr;
+			for (unsigned i = 0; i < 96; ++i)
+			{
+				const void* method = api.method.methods(klass, &iterator);
+				if (!method) break;
+				const char* name = api.method.name(method);
+				if (name) g_hostContext.logInfo("[GakuMotion][LiveDoFProbe] type=%s.%s method=%s argc=%u",
+					candidate.nameSpace, candidate.name, name, api.method.count(method));
+			}
+		}
+	}
 
 	inline bool ReadNativeFov(void* object, int offset, float& value)
 	{
@@ -560,6 +597,7 @@ namespace CameraBridge
 	inline void Write(void* camera, void* transform, const GakuMotion::CameraFrame& frame)
 	{
 		if (!OnUnityThread() || !ready || !IsAlive(camera) || !IsAlive(transform)) return;
+		if (GakuMotion::Core::Instance().liveTakeoverActive) ReportLiveDofMetadata();
 		void* cameraSelf = Self(camera);
 		void* transformSelf = Self(transform);
 		if (!cameraSelf || !transformSelf) return;

@@ -33,6 +33,8 @@ namespace GakuMotion::capture
         void (*pageChanged)(bool) = nullptr;
         void (*observe)(const Event&) = nullptr;
         bool (*continueCapture)(const char*) = nullptr;
+        bool (*liveTakeoverActive)() = nullptr;
+        bool (*onUnityThread)() = nullptr;
     };
 
     // Async state machines move from the entry method's stack to a UniTask
@@ -40,7 +42,7 @@ namespace GakuMotion::capture
     // with a depth for overlapping tasks, never the address of MoveNext.self.
     struct LeaseLedger
     {
-        struct Entry { void* owner{}; unsigned operation{}, depth{}; };
+        struct Entry { void* owner{}; unsigned operation{}, depth{}, suspendedDepth{}; };
         std::array<Entry, 64> entries{};
         enum class BeginResult { Existing, Acquired, Full };
         BeginResult Begin(void* owner, unsigned operation, bool first)
@@ -56,7 +58,7 @@ namespace GakuMotion::capture
                 }
             }
             if (!empty) return BeginResult::Full;
-            *empty = {owner, operation, 1};
+            *empty = {owner, operation, 1, 0};
             return BeginResult::Acquired;
         }
         bool End(void* owner, unsigned operation)
@@ -75,6 +77,8 @@ namespace GakuMotion::capture
             for (const auto& e : entries) n += e.depth;
             return n;
         }
+        Entry* Find(void* owner, unsigned operation)
+        { for (auto& e : entries) if (e.depth && e.owner == owner && e.operation == operation) return &e; return nullptr; }
     };
 
     using MoveNextFn = void (*)(void*, void*);
@@ -96,6 +100,7 @@ namespace GakuMotion::capture
     inline Callbacks callbacks{};
     inline LeaseLedger ledger{};
     inline std::atomic<bool> ready{false}, pageStable{true};
+    inline std::atomic<bool> liveReady{false}, liveAutoUnknown{false};
     inline bool attempted = false;
     inline std::array<void*, 16> hookTargets{};
     inline unsigned hookCount = 0;
@@ -201,12 +206,15 @@ namespace GakuMotion::capture
         host::Error("[GakuMotion][CaptureGuard] disabled: %s", reason);
     }
     inline bool Ready() { return ready.load(std::memory_order_acquire); }
+    inline bool LiveReady() { return liveReady.load(std::memory_order_acquire) && !liveAutoUnknown.load(std::memory_order_acquire); }
+    inline bool LiveAutoPhotoIdle() { return LiveReady() && ledger.Count() == 0; }
     inline bool IsPageStable() { return pageStable.load(std::memory_order_acquire); }
     inline bool IsCurrentCostumePage(void* currentTopClass)
     {
         return IsPageStable() && currentTopClass && currentTopClass == costumeClass;
     }
     inline bool Active() { return callbacks.customActive && callbacks.customActive(); }
+    inline bool LiveActive() { return callbacks.liveTakeoverActive && callbacks.liveTakeoverActive(); }
     inline void SetPageStable(bool value)
     {
         const bool old = pageStable.exchange(value, std::memory_order_acq_rel);
@@ -271,6 +279,103 @@ namespace GakuMotion::capture
     }
     inline void Run(Machine& m, void* self, void* methodInfo)
     {
+        if (&m == &autoPhoto)
+        {
+            if (!callbacks.onUnityThread || !callbacks.onUnityThread())
+            {
+                liveAutoUnknown.store(true, std::memory_order_release);
+                // Never touch the non-atomic task ledger or call restoration
+                // off-thread. In an active Live takeover, reject the task.
+                if (LiveActive())
+                {
+                    if (!Cancel(m, self, "Live capture arrived off the Unity thread"))
+                        Fault("off-thread Live capture cancellation failed");
+                }
+                else if (m.original) m.original(self, methodInfo);
+                return;
+            }
+            auto uncertain = [&](const char* reason)
+            {
+                if (LiveActive() && Active())
+                {
+                    // The capture may proceed only after checked restoration;
+                    // without a trackable completion, leave GM suspended.
+                    const bool restored = callbacks.beginSuspend && callbacks.beginSuspend(m.label);
+                    if (!restored)
+                    {
+                        liveAutoUnknown.store(true, std::memory_order_release);
+                        if (!Cancel(m, self, reason)) Fault("untracked Live automatic capture cancellation failed");
+                        return;
+                    }
+                }
+                liveAutoUnknown.store(true, std::memory_order_release);
+                if (m.original) m.original(self, methodInfo);
+            };
+            // Observe every automatic task, but never cancel or suspend an
+            // inactive session. Pending tasks prevent a new Live takeover.
+            int before = 0; void* owner = nullptr;
+            if (!ReadState(m, self, before, owner) || !owner)
+            {
+                uncertain("Live automatic capture state unavailable");
+                return;
+            }
+            if (before == -2) { if (m.original) m.original(self, methodInfo); return; }
+            const auto added = ledger.Begin(owner, m.operation, before == -1);
+            if (added == LeaseLedger::BeginResult::Full)
+            {
+                uncertain("Live automatic capture tracker full");
+                return;
+            }
+            auto* entry = ledger.Find(owner, m.operation);
+            if (added == LeaseLedger::BeginResult::Acquired &&
+                ((LiveActive() && Active()) || (entry && entry->suspendedDepth)))
+            {
+                if (!callbacks.beginSuspend || !callbacks.beginSuspend(m.label))
+                {
+                    if (!Cancel(m, self, "GakuMotion could not restore Live before automatic capture"))
+                        Fault("Live automatic capture cancellation failed");
+                    if (callbacks.endSuspend) callbacks.endSuspend(m.label);
+                    ledger.End(owner, m.operation);
+                    return;
+                }
+                entry = ledger.Find(owner, m.operation);
+                if (!entry)
+                {
+                    liveAutoUnknown.store(true, std::memory_order_release);
+                    if (!Cancel(m, self, "Live automatic capture tracking changed"))
+                        Fault("Live automatic capture tracking changed");
+                    return;
+                }
+                ++entry->suspendedDepth;
+            }
+            else if (added == LeaseLedger::BeginResult::Existing && entry && entry->suspendedDepth &&
+                (!callbacks.continueCapture || !callbacks.continueCapture(m.label)))
+            {
+                if (!Cancel(m, self, "Live capture continuation could not confirm restoration"))
+                    Fault("Live capture continuation cancellation failed");
+                --entry->suspendedDepth;
+                ledger.End(owner, m.operation);
+                if (callbacks.endSuspend) callbacks.endSuspend(m.label);
+                return;
+            }
+            if (m.original) m.original(self, methodInfo);
+            int after = 0; void* afterOwner = nullptr;
+            if (!ReadState(m, self, after, afterOwner) || (after != -2 && afterOwner != owner))
+            {
+                liveAutoUnknown.store(true, std::memory_order_release);
+                if (LiveActive()) Fault("Live automatic capture completion unavailable");
+                return;
+            }
+            if (after == -2)
+            {
+                entry = ledger.Find(owner, m.operation);
+                const bool suspended = entry && entry->suspendedDepth;
+                if (suspended) --entry->suspendedDepth;
+                ledger.End(owner, m.operation);
+                if (suspended && callbacks.endSuspend) callbacks.endSuspend(m.label);
+            }
+            return;
+        }
         // Automatic/public captures are native-owned. An inactive GM session
         // also leaves manual tasks entirely native, including their awaits.
         // Do not inspect a state machine or touch scene/restore/lease state.
@@ -357,6 +462,8 @@ namespace GakuMotion::capture
     inline void Shutdown()
     {
         ready.store(false, std::memory_order_release);
+        liveReady.store(false, std::memory_order_release);
+        liveAutoUnknown.store(false, std::memory_order_release);
         // Host shutdown may run off the Unity thread. The runtime owns native
         // restoration; never call its page-transition callback from teardown.
         pageStable.store(false, std::memory_order_release);
@@ -505,6 +612,25 @@ namespace GakuMotion::capture
             Hook("OutGame.OnNodeDidChange", did, reinterpret_cast<void*>(&DidChange), reinterpret_cast<void**>(&didChangeOriginal)) &&
             Hook("OutGame.OnDestroy", destroy, reinterpret_cast<void*>(&OutGameDestroy), reinterpret_cast<void**>(&outGameDestroyOriginal));
         if (!installed) { Shutdown(); return false; }
+        // Live hooks are optional for the existing Photography feature. The
+        // Live takeover must fail closed unless both exact hooks are leased.
+        void* liveScene = findClass("Assembly-CSharp.dll", "Campus.Live", "LiveScenePresenter");
+        const void* liveMove = liveScene ? prepare(liveButton, liveScene, "<OnPhotoButtonAsync>d__") : nullptr;
+        const void* autoMove = liveScene ? prepare(autoPhoto, liveScene, "<AutoPhotoAsync>d__") : nullptr;
+        const unsigned priorHooks = hookCount;
+        const bool liveInstalled = callbacks.onUnityThread && liveMove && autoMove &&
+            Hook(liveButton.label, liveMove, reinterpret_cast<void*>(&LiveButtonMoveNext), reinterpret_cast<void**>(&liveButton.original)) &&
+            Hook(autoPhoto.label, autoMove, reinterpret_cast<void*>(&AutoPhotoMoveNext), reinterpret_cast<void**>(&autoPhoto.original));
+        if (!liveInstalled)
+            while (hookCount > priorHooks)
+            {
+                void* target = hookTargets[--hookCount];
+                if (host::hooks.release) host::hooks.release(host::hooks.context, target);
+                hookTargets[hookCount] = nullptr;
+            }
+        liveReady.store(liveInstalled, std::memory_order_release);
+        host::Info("[GakuMotion][LiveGuard] manual_metadata=%d auto_metadata=%d installed=%d",
+            liveMove != nullptr, autoMove != nullptr, liveInstalled);
         ready.store(true, std::memory_order_release);
         host::Info("[GakuMotion][CaptureGuard] ready; Photography manual shutter blocked only while GM session active; native capture unchanged");
         return true;

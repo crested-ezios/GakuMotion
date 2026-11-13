@@ -94,6 +94,10 @@ namespace GakuMotion
 		}
 		if (overlay.cameraSettingsPending) ImGui::TextDisabled("正在应用镜头设置…");
 		ImGui::TextWrapped("选择“游戏”恢复游戏手动镜头，并保留 GakuMotion 镜头参数。");
+		ImGui::BeginDisabled(!settings.enabled);
+		if (ImGui::Checkbox("镜头随主角色朝向", &settings.followPlacementYaw)) changed = true;
+		ImGui::EndDisabled();
+		ImGui::TextWrapped("开启后，镜头位置和方向跟随主角色的站位朝向；可通过下方保存镜头设置保留。");
 		if (userMode == 0 && !ctx.cameraSnapshot.hasTrack)
 		{
 			ImGui::PushStyleColor(ImGuiCol_Text, GuiTheme::WarningColor());

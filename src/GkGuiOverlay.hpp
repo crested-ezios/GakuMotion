@@ -54,12 +54,38 @@ namespace GakuMotion
 		float fps{60}, scale{0.083f};
 		bool detectCuts{true};
 	};
+	struct GuiEnsembleFollower
+	{
+		uint64_t actorToken{0};
+		std::string motionKey;
+		float offsetSeconds{0};
+		bool active{false};
+		uint64_t bindingGeneration{0};
+		Vector3 position{};
+		float yawDegrees{0};
+		float wristTwistShare{0}, forearmAxisDegrees{45};
+		bool armLocked{false};
+	};
+
+	struct GuiArmCalibration
+	{
+		uint64_t token{0};
+		float share{0}, degrees{45};
+		bool locked{false}, bound{false}, primary{false};
+	};
 
 	struct GuiContext
 	{
 		// ---- 只读状态 ----
 		bool injectionAllowed{false};
 		std::string injectionNotice;
+		bool liveObserved{false}, livePaused{false};
+		bool liveViewingConfirmed{false};
+		bool liveTakeoverActive{false}, liveTakeoverAvailable{false};
+		float liveTime{0}, liveDuration{0};
+		std::string liveControlNotice;
+		void (*fnSetLivePaused)(void*, bool){nullptr};
+		void (*fnSetLiveTakeover)(void*, bool){nullptr};
 		MotionPlayer* player{nullptr};
 		CameraController::Snapshot cameraSnapshot;
 		void (*fnSetCameraSettings)(void*, const CameraSettings&){nullptr};
@@ -117,6 +143,7 @@ namespace GakuMotion
 		int musicVolumeSupport{0};
 		std::string musicVolumeNotice;
 		void (*fnSetInitialPosition)(void*, const Vector3&){nullptr};
+		void (*fnSetInitialYaw)(void*, float){nullptr};
 		void (*fnSaveInitialPosition)(void*){nullptr};
 
 		// ---- 场景与舞台 (Phase 1 & 2 官方舞台挂载与绿幕) ----
@@ -140,11 +167,25 @@ namespace GakuMotion
 		// 普通动作页始终选择单个角色，空名单不表示驱动全部。
 		unsigned knownActorCount{0};
 		std::vector<GuiSceneActor> sceneActors;
+		std::vector<GuiArmCalibration> sceneArmCalibrations;
+		void (*fnSetSceneArm)(void*, uint64_t, uint64_t, int, float){nullptr};
 		uint64_t actorRosterEpoch{0};
 		void (*fnSelectTargetActor)(void*, uint64_t token, uint64_t epoch){nullptr};
 		void (*fnClearTargetActor)(void* self){nullptr}; // Legacy developer callback: reselect bound/first actor
 		void (*fnNextTargetActor)(void* self){nullptr}; // Legacy developer callback: cycle current actors
 		void (*fnPickFocusedActor)(void* self){nullptr}; // Legacy developer callback: select bound actor
+		std::array<GuiEnsembleFollower, 2> ensembleFollowers{};
+		std::string ensembleNotice;
+		void (*fnAlignEnsemble)(void*){nullptr};
+		std::vector<std::string> ensemblePresetNames;
+		std::string ensemblePresetNotice;
+		void (*fnSaveEnsemblePreset)(void*, const char*){nullptr};
+		void (*fnApplyEnsemblePreset)(void*, const char*){nullptr};
+		void (*fnSetEnsembleFollower)(void*, int, uint64_t, uint64_t, const char*, float, uint64_t){nullptr};
+		void (*fnClearEnsembleFollower)(void*, int, uint64_t){nullptr};
+		void (*fnSetEnsemblePosition)(void*, int, uint64_t, uint64_t, uint64_t, const Vector3&){nullptr};
+		void (*fnSetEnsembleYaw)(void*, int, uint64_t, uint64_t, uint64_t, float){nullptr};
+		void (*fnSetFollowerArm)(void*, int, uint64_t, uint64_t, uint64_t, int, float){nullptr};
 
 		// ---- 写动作（回调到 Core） ----
 		void* self{nullptr};
@@ -163,6 +204,13 @@ namespace GakuMotion
 		void (*fnStepFrame)(void* self, int delta){nullptr};
 		void (*fnReloadMotion)(void* self){nullptr};
 		void (*fnSetPhysicsBackend)(void* self, int backend){nullptr};
+		void (*fnSetAuxDriveMode)(void* self, int mode){nullptr};
+		void (*fnCaptureWristDiagnostic)(void* self){nullptr};
+		void (*fnSetWristTwistShare)(void* self, float value){nullptr};
+		void (*fnSetForearmAxisAdjustment)(void* self, float degrees){nullptr};
+		bool forearmAxisLocked{false};
+		std::string forearmAxisNotice;
+		void (*fnSetForearmAxisLock)(void* self, bool locked){nullptr};
 		// 进度拖动三段式：拖动中冻结主时钟（否则滑条每帧被播放时钟覆盖回原位而回弹）
 		void (*fnScrubBegin)(void* self, float seconds){nullptr};
 		void (*fnScrubUpdate)(void* self, float seconds){nullptr};
@@ -259,6 +307,19 @@ namespace GakuMotion
 		float solePlotSpanM{.65f};
 		float initialPositionEdit[3]{};
 		bool initialPositionEditing{false};
+		float initialYawEdit{0};
+		bool initialYawEditing{false};
+		uint64_t initialPlacementActorToken{0};
+		uint64_t armCalibrationToken{0};
+		uint64_t armCalibrationEpoch{0};
+		char ensemblePresetName[128] = "默认队形";
+		uint64_t ensembleDraftEpoch{0};
+		std::array<uint64_t, 2> ensembleDraftActor{};
+		std::array<std::string, 2> ensembleDraftMotion{};
+		std::array<float, 2> ensembleDraftOffset{};
+		std::array<uint64_t, 2> ensemblePositionGeneration{};
+		std::array<Vector3, 2> ensemblePositionDraft{};
+		std::array<float, 2> ensembleYawDraft{};
 #ifdef GKMOTION_GUI_ACTIVE
 		ImGuiTextFilter motionFilter;
 #ifdef GKMOTION_GUI_TEST
@@ -354,6 +415,23 @@ namespace GakuMotion
 					ImGui::Spacing();
 					ImGui::Separator();
 					ImGui::Spacing();
+					if (ctx.liveObserved)
+					{
+						ImGui::Text("Live: %.1f / %.1f 秒 (%s)", ctx.liveTime, ctx.liveDuration,
+						            ctx.livePaused ? "已暂停" : "播放中");
+						ImGui::BeginDisabled(!ctx.liveViewingConfirmed || ctx.liveTakeoverActive || !ctx.fnSetLivePaused);
+						if (ImGui::Button(ctx.livePaused ? "继续 Live" : "暂停 Live") && ctx.fnSetLivePaused)
+							ctx.fnSetLivePaused(ctx.self, !ctx.livePaused);
+						ImGui::EndDisabled();
+						if (!ctx.liveControlNotice.empty()) ImGui::TextWrapped("%s", ctx.liveControlNotice.c_str());
+						if (!ctx.liveViewingConfirmed) ImGui::TextWrapped("尚未确认 Live 观看模式，暂停控制不可用。");
+						ImGui::BeginDisabled(!ctx.liveTakeoverAvailable || !ctx.fnSetLiveTakeover);
+						if (ImGui::Button(ctx.liveTakeoverActive ? "退出 Live 动作接管" : "启用 Live 动作接管") && ctx.fnSetLiveTakeover)
+							ctx.fnSetLiveTakeover(ctx.self, !ctx.liveTakeoverActive);
+						ImGui::EndDisabled();
+						if (!ctx.liveTakeoverAvailable) ImGui::TextWrapped("等待角色、拍照保护和 Live 状态就绪。");
+						ImGui::Spacing();
+					}
 					if (!ctx.stageSettings.loadReplacementKey.empty())
 						ImGui::TextWrapped("已保留实验舞台选择；可在下方开发者选项中修改或恢复原生背景。");
 					if (ImGui::CollapsingHeader("开发者选项"))

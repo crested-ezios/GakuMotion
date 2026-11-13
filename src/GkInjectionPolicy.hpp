@@ -8,8 +8,8 @@ namespace GakuMotion::injection
 {
 	// OutGame hosts both Home and Costume. Its scene name alone never grants
 	// permission. Costume must be selected from the actual page lifecycle.
-	enum class Context : uint8_t { Unknown, Photography, Costume };
-	enum class OwnerRole : uint8_t { Other, Photography, OutGame };
+	enum class Context : uint8_t { Unknown, Photography, Costume, Live };
+	enum class OwnerRole : uint8_t { Other, Photography, OutGame, Live };
 
 	// Value-only presenter evidence. PreviewContext below also requires an
 	// exact Active Scene observed in the human-operated DevReview samples.
@@ -31,6 +31,7 @@ namespace GakuMotion::injection
 			if (!Valid()) return Context::Unknown;
 			if (role == OwnerRole::Photography) return Context::Photography;
 			if (role == OwnerRole::OutGame && costumePage) return Context::Costume;
+			if (role == OwnerRole::Live) return Context::Live;
 			return Context::Unknown;
 		}
 		bool OwnsActor(int actorSceneHandle) const noexcept
@@ -67,6 +68,17 @@ namespace GakuMotion::injection
 		if (activeScene == "env_3d_dress_dressroom-00-00-noon" && presenterScene == "OutGame" &&
 			owner.role == OwnerRole::OutGame && owner.costumePage) return Context::Costume;
 		return Context::Unknown;
+	}
+
+	// Explicit per-session Live admission. The ordinary preview policy above
+	// never grants Live merely from a scene name or a discovered owner.
+	inline Context LiveTakeoverContext(const OwnerSnapshot& owner, uintptr_t expectedOwner, int expectedScene,
+		bool enabled, bool viewing, bool paused, bool liveGuardReady) noexcept
+	{
+		return enabled && viewing && paused && liveGuardReady && owner.Valid() &&
+			owner.role == OwnerRole::Live && expectedOwner && expectedScene &&
+			owner.presenterIdentity == expectedOwner && owner.sceneHandle == expectedScene
+			? Context::Live : Context::Unknown;
 	}
 
 	struct Snapshot

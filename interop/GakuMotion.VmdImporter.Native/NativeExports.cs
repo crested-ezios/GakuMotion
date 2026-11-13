@@ -32,6 +32,22 @@ internal static unsafe class NativeExports
     [UnmanagedCallersOnly(EntryPoint = "GkVmdImporter_AbiVersion")]
     public static int AbiVersion() => 3;
 
+    // A separate read-only ABI; it neither rewrites nor reimports the song.
+    [UnmanagedCallersOnly(EntryPoint = "GkVmdFormation_ReadOrigin")]
+    public static int ReadFormationOrigin(byte* directoryUtf8, float* xyz)
+    {
+        if (directoryUtf8 == null || xyz == null) return InvalidArgument;
+        try
+        {
+            string? directory = Marshal.PtrToStringUTF8((IntPtr)directoryUtf8);
+            if (string.IsNullOrEmpty(directory)) return InvalidArgument;
+            var origin = SourceFormation.ReadOrigin(directory);
+            xyz[0] = origin.X; xyz[1] = origin.Y; xyz[2] = origin.Z;
+            return Ok;
+        }
+        catch { return Failed; }
+    }
+
     [UnmanagedCallersOnly(EntryPoint = "GkCameraImporter_AbiVersion")]
     public static int CameraAbiVersion() => 1;
 

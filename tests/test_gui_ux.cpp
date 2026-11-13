@@ -13,6 +13,9 @@
 
 using namespace GakuMotion;
 
+// The headless harness does not load the host plugin's logging service.
+namespace GakuMotion::Log { void Write(Level, const char*, ...) {} }
+
 namespace
 {
 	struct Item
@@ -38,6 +41,19 @@ namespace
 	void AudioSeekPaused(float) {}
 	int importRequests = 0;
 	void CountImportRequest(void*, const MotionImportRequest&) { ++importRequests; }
+	std::map<void*, Vector3> formationPositions;
+	std::map<void*, Quaternion> formationRotations;
+	bool formationSourceUnavailable = false;
+	void FormationPosition(void* actor, float* out)
+	{ const auto p = formationPositions[actor]; out[0] = p.x; out[1] = p.y; out[2] = p.z; }
+	void FormationRotation(void* actor, float* out)
+	{ const auto q = formationRotations[actor]; out[0] = q.x; out[1] = q.y; out[2] = q.z; out[3] = q.w; }
+	bool FormationOrigin(const std::string& directory, Vector3& out)
+	{
+		if (formationSourceUnavailable) return false;
+		out = directory.ends_with("B") ? Vector3{1,0,0} : Vector3{};
+		return true;
+	}
 	int actorSelections = 0;
 	uint64_t selectedActorToken = 0, selectedActorEpoch = 0;
 	void SelectSceneActor(void*, uint64_t token, uint64_t epoch)
@@ -445,6 +461,8 @@ namespace
 		app.core.camera.settings.transformTrack.position = {0.2f, 0.3f, 0.4f};
 		app.core.camera.Publish();
 		app.Settle();
+		app.Click("镜头随主角色朝向"); app.Settle();
+		Check(app.core.camera.settings.followPlacementYaw, "camera-facing checkbox reaches the camera runtime");
 		ImRect rangeRect;
 		if (app.Find("VMD 运镜范围", rangeRect))
 		{
@@ -459,6 +477,7 @@ namespace
 			restored.configRoot = app.core.configRoot;
 			Check(restored.LoadCameraSettings() && std::fabs(restored.camera.settings.vmdRangeScale - app.core.camera.settings.vmdRangeScale) < 1e-5f,
 				"VMD camera range slider persists through the camera settings save button");
+			Check(restored.camera.settings.followPlacementYaw, "camera-facing checkbox is saved by the existing save button");
 		}
 		Check(!app.ItemWithLabel("启用 GakuMotion 镜头接管") && !app.ItemWithLabel("启用 MMD 镜头接管"),
 			"camera page has no separate takeover checkbox");
@@ -490,6 +509,354 @@ namespace
 			app.Text().find("镜头: 游戏") != std::string::npos,
 			"page Game selection releases takeover, synchronizes the player and disables inactive camera parameters");
 	}
+
+	void TestAuxDriveModeControls(const std::filesystem::path& root)
+	{
+		Harness app(root);
+		app.windowHeight = 1400;
+		app.core.gui.activePage = GuiPage::Motion;
+		app.Settle();
+		app.Click("高级动作设置"); app.Settle();
+		ImRect header;
+		if (app.Find("高级动作设置", header))
+			if (auto* page = FindResponsiveWindow("/##gkmotion_main_content_"))
+				page->Scroll.y = (std::max)(0.0f, page->Scroll.y + header.Min.y - page->InnerRect.Min.y - 40.0f);
+		app.Settle();
+		const char* labels[] = {"正常：拟合模型", "静默：锁定初始姿态", "归零：单位旋转",
+		                        "回放：录制数据", "旧版：世界空间解算"};
+		for (int mode = 1; mode < kAuxModeCount; ++mode)
+		{
+			app.Click("##aux_drive_mode"); app.Click(labels[mode]); app.Settle();
+			Check(app.core.player.controller.auxDriveMode == mode, "auxiliary mode selector applies the chosen runtime mode");
+		}
+		app.core.player.controller.CycleAuxDriveMode(); app.Settle();
+		Check(app.core.player.controller.auxDriveMode == kAuxNormal && app.Text().find(labels[0]) != std::string::npos,
+		      "F8-style cycling is reflected in the selector");
+		app.Click("##aux_drive_mode"); app.Click(labels[1]); app.Settle();
+		app.Click("##aux_drive_mode"); app.Click(labels[0]); app.Settle();
+		Check(app.core.player.controller.auxDriveMode == kAuxNormal, "selector restores normal mode directly");
+		app.Click("记录手腕诊断"); app.Settle();
+		Check(app.core.player.controller.wristDiagnosticPending && app.Text().find("诊断请求已发送") != std::string::npos,
+		      "wrist diagnostic button reports that capture is waiting for a pose");
+		app.core.player.controller.wristDiagnosticPending = false;
+		app.core.player.controller.wristDiagnosticStatus = 2;
+		app.core.player.controller.wristDiagnosticTime = 20.23f;
+		app.core.player.controller.wristDiagnosticCount = 2;
+		Check(app.Text().find("第 2 次") != std::string::npos, "completed wrist capture displays its updated count");
+		app.core.player.controller.wristDiagnosticStatus = 3;
+		Check(app.Text().find("记录失败") != std::string::npos, "unavailable logger is visible to the user");
+		app.core.player.controller.wristTwistShare = -0.5f; app.Settle();
+		app.Click("前臂扭转分担 [实验]"); app.Settle();
+		Check(std::fabs(app.core.player.controller.wristTwistShare) < 0.2f,
+		      "twist share slider queues its centered value to the active controller");
+		app.core.player.controller.forearmAxisAdjustmentDeg = -30.0f; app.Settle();
+		app.Click("前臂轴向校正 [实验]"); app.Settle();
+		Check(std::fabs(app.core.player.controller.forearmAxisAdjustmentDeg) < 18.0f,
+		      "forearm axis slider queues a centered correction");
+		app.core.configRoot = app.fixture.string();
+		app.core.LoadForearmAxisLock(); app.Settle();
+		Check(app.core.forearmAxisLocked && app.core.player.controller.forearmAxisAdjustmentDeg == 45.0f &&
+		      app.ItemWithLabel("前臂轴向校正 [实验]") &&
+		      (app.ItemWithLabel("前臂轴向校正 [实验]")->flags & ImGuiItemFlags_Disabled),
+		      "first launch defaults to a locked 45 degree forearm correction");
+		app.Click("前臂轴向校正 [实验]"); app.Settle();
+		Check(app.core.player.controller.forearmAxisAdjustmentDeg == 45.0f,
+		      "locked forearm slider cannot alter the default correction");
+		app.Click("锁定并保存前臂校正"); app.Settle();
+		Check(!app.core.forearmAxisLocked && std::filesystem::exists(app.fixture / "forearm_axis_lock.json"),
+		      "unlock control persists the unlocked setting");
+		app.Click("前臂轴向校正 [实验]"); app.Settle();
+		Check(std::fabs(app.core.player.controller.forearmAxisAdjustmentDeg) < 18.0f,
+		      "unlocked forearm correction can be changed");
+		app.Click("锁定并保存前臂校正"); app.Settle();
+		Core reloaded;
+		reloaded.configRoot = app.fixture.string();
+		reloaded.LoadForearmAxisLock();
+		Check(app.core.forearmAxisLocked && reloaded.forearmAxisLocked &&
+		      std::fabs(reloaded.player.controller.forearmAxisAdjustmentDeg - app.core.player.controller.forearmAxisAdjustmentDeg) < .01f,
+		      "locking saves the selected correction across a new core instance");
+		const auto badFile = app.fixture / "forearm_axis_lock.json";
+		{ std::ofstream out(badFile, std::ios::binary | std::ios::trunc); out << "invalid"; }
+		reloaded.LoadForearmAxisLock();
+		Check(!reloaded.forearmAxisLocked && reloaded.player.controller.forearmAxisAdjustmentDeg == 0.0f &&
+		      !reloaded.SaveForearmAxisLock(true), "invalid saved calibration fails closed and is not overwritten");
+	}
+
+	void TestEnsembleControls(const std::filesystem::path& root)
+	{
+		Harness app(root);
+		app.windowHeight = 1400;
+		app.core.gui.activePage = GuiPage::Motion;
+		app.core.player.state = PlaybackState::Preview;
+		void* a = reinterpret_cast<void*>(0xa1000), *b = reinterpret_cast<void*>(0xb1000), *c = reinterpret_cast<void*>(0xc1000);
+		app.core.PublishSceneActors({{a, 1, ""}, {b, 2, ""}, {c, 3, ""}});
+		app.Settle();
+		ImRect mainPositionRect, ensembleHeaderRect;
+		if (app.Find("##pos_x", mainPositionRect) && app.Find("多人同步播放（最多三人）", ensembleHeaderRect))
+			Check(mainPositionRect.Min.y < ensembleHeaderRect.Min.y, "main placement is above multiplayer controls");
+		app.Click("多人同步播放（最多三人）");
+		app.Settle();
+		Check(app.ItemWithLabel("##ensemble_actor") && app.ItemWithLabel("##ensemble_motion"),
+		      "ensemble panel exposes actor and motion selectors");
+		const auto roster = app.core.BuildGuiContext().sceneActors;
+		// Calibrate an actor before it has an ensemble binding.
+		app.Click("多人同步播放（最多三人）"); app.Settle();
+		if (auto* page = FindResponsiveWindow("/##gkmotion_main_content_")) page->Scroll.y = 0.0f;
+		app.Settle();
+		if (!app.ItemWithLabel("校正角色")) app.Click("高级动作设置");
+		app.Settle();
+		ImRect prebindHeader;
+		if (app.Find("高级动作设置", prebindHeader))
+			if (auto* page = FindResponsiveWindow("/##gkmotion_main_content_"))
+				page->Scroll.y = (std::max)(0.0f, page->Scroll.y + prebindHeader.Min.y - page->InnerRect.Min.y - 30.0f);
+		app.Settle();
+		app.Click("校正角色"); app.Click((roster[2].label + "##arm_" + std::to_string(roster[2].token)).c_str()); app.Settle();
+		Check(app.core.gui.armCalibrationToken == roster[2].token && app.Text().find("尚未绑定动作") != std::string::npos,
+		      "unbound scene actor is selectable and identified as awaiting a motion");
+		app.Click("+0.1°"); app.Settle();
+		EnsembleRuntime::ArmCalibration preset;
+		Check(app.core.ensemble.GetArmCalibration(roster[2].token, preset) && std::fabs(preset.degrees - 45.1f) < .01f,
+		      "unbound actor accepts an independent calibration before binding");
+		app.Click("高级动作设置"); app.Settle();
+		app.Click("多人同步播放（最多三人）"); app.Settle();
+		const std::string actorB = roster[1].label + "##ensemble_" + std::to_string(roster[1].token);
+		const std::string actorC = roster[2].label + "##ensemble_" + std::to_string(roster[2].token);
+		app.Click("##ensemble_actor", 0); app.Click(actorB.c_str());
+		app.Click("##ensemble_motion", 0); app.Click("Song B##ensemble_motion_B");
+		app.Click("绑定动作", 0); app.Settle();
+		Check(app.core.ensemble.Followers()[0].actorToken == roster[1].token &&
+		      app.core.ensemble.Followers()[0].motionKey == "B",
+		      "first follower controls enqueue and bind its selected actor and clip");
+		app.Click("##ensemble_actor", 1); app.Click(actorC.c_str());
+		app.Click("##ensemble_motion", 1); app.Click("Song A##ensemble_motion_A");
+		app.Click("绑定动作", 1); app.Settle();
+		Check(app.core.ensemble.Followers()[1].actorToken == roster[2].token &&
+		      app.core.ensemble.Followers()[1].motionKey == "A",
+		      "second follower controls bind a different actor and clip");
+		const auto& f0 = app.core.ensemble.Followers()[0];
+		const auto& f1 = app.core.ensemble.Followers()[1];
+		const auto epoch = app.core.sceneActorRegistry.Epoch();
+		Check(std::fabs(f1.player->controller.forearmAxisAdjustmentDeg - 45.1f) < .01f,
+		      "the pre-binding calibration is applied when that actor is bound");
+		app.core.ensemble.SetArmCalibration(1, f1.actorToken, epoch, f1.bindingGeneration, 2, 0, app.core.sceneActorRegistry);
+		Check(f0.player->controller.forearmAxisAdjustmentDeg == 45.0f && f1.player->controller.forearmAxisAdjustmentDeg == 45.0f &&
+		      f0.player->controller.wristTwistShare == 0.0f && f1.player->controller.wristTwistShare == 0.0f,
+		      "both follower calibrations start independently at 45 degrees and zero share");
+		Check(app.core.ensemble.SetArmCalibration(0, f0.actorToken, epoch, f0.bindingGeneration, 1, 27.5f, app.core.sceneActorRegistry) &&
+		      f0.player->controller.forearmAxisAdjustmentDeg == 27.5f && f1.player->controller.forearmAxisAdjustmentDeg == 45.0f,
+		      "editing one follower leaves the other unchanged");
+		Check(!app.core.ensemble.SetArmCalibration(0, f0.actorToken, epoch, f0.bindingGeneration + 1, 1, 20, app.core.sceneActorRegistry) &&
+		      f0.player->controller.forearmAxisAdjustmentDeg == 27.5f,
+		      "a stale binding cannot be adjusted");
+		Check(app.core.ensemble.SetArmCalibration(0, f0.actorToken, epoch, f0.bindingGeneration, 0, 0.5f, app.core.sceneActorRegistry) &&
+		      app.core.ensemble.SetArmCalibration(0, f0.actorToken, epoch, f0.bindingGeneration, 2, 0, app.core.sceneActorRegistry) &&
+		      f0.player->controller.forearmAxisAdjustmentDeg == 45.0f && f0.player->controller.wristTwistShare == 0.0f,
+		      "reset restores 45 degrees and zero share");
+		Check(app.core.ensemble.SetArmCalibration(0, f0.actorToken, epoch, f0.bindingGeneration, 3, 1, app.core.sceneActorRegistry) &&
+		      !app.core.ensemble.SetArmCalibration(0, f0.actorToken, epoch, f0.bindingGeneration, 1, 20, app.core.sceneActorRegistry) &&
+		      app.core.ensemble.SetArmCalibration(0, f0.actorToken, epoch, f0.bindingGeneration, 3, 0, app.core.sceneActorRegistry),
+		      "follower lock prevents axis edits and can be released");
+		app.Click("多人同步播放（最多三人）"); app.Settle();
+		if (auto* page = FindResponsiveWindow("/##gkmotion_main_content_")) page->Scroll.y = 0.0f;
+		app.Settle();
+		if (!app.ItemWithLabel("校正角色")) app.Click("高级动作设置");
+		app.Settle();
+		ImRect armHeader;
+		if (app.Find("高级动作设置", armHeader))
+			if (auto* page = FindResponsiveWindow("/##gkmotion_main_content_"))
+				page->Scroll.y = (std::max)(0.0f, page->Scroll.y + armHeader.Min.y - page->InnerRect.Min.y - 30.0f);
+		app.Settle();
+		app.Click("校正角色"); app.Click((roster[1].label + "##arm_" + std::to_string(roster[1].token)).c_str()); app.Settle();
+		Check(app.core.gui.armCalibrationToken == roster[1].token, "calibration selector chooses the first follower");
+		app.Click("+0.1°"); app.Settle();
+		Check(std::fabs(f0.player->controller.forearmAxisAdjustmentDeg - 45.1f) < 0.01f &&
+		      f1.player->controller.forearmAxisAdjustmentDeg == 45.0f,
+		      "0.1 degree button adjusts only the selected follower");
+		app.Click("设为 +45°"); app.Settle();
+		Check(f0.player->controller.forearmAxisAdjustmentDeg == 45.0f, "45 degree shortcut reaches the selected follower");
+		app.core.ensemble.SetArmCalibration(0, f0.actorToken, epoch, f0.bindingGeneration, 0, .5f, app.core.sceneActorRegistry);
+		app.Click("重置前臂校正"); app.Settle();
+		Check(f0.player->controller.wristTwistShare == 0.0f && f0.player->controller.forearmAxisAdjustmentDeg == 45.0f,
+		      "actual reset button restores both follower settings");
+		app.Click("高级动作设置"); app.Settle();
+		app.Click("多人同步播放（最多三人）"); app.Settle();
+		app.core.player.state = PlaybackState::Playing; app.Settle();
+		const auto* actorCombo = app.ItemWithLabel("##ensemble_actor");
+		Check(actorCombo && (actorCombo->flags & ImGuiItemFlags_Disabled),
+		      "ensemble configuration is disabled while playback owns actors");
+		const auto* positionControl = app.ItemWithLabel("##ensemble_pos_x");
+		Check(positionControl && !(positionControl->flags & ImGuiItemFlags_Disabled),
+		      "each follower position remains adjustable during playback");
+		const auto* mainYaw = app.ItemWithLabel("##main_yaw");
+		const auto* followerYaw = app.ItemWithLabel("##ensemble_yaw");
+		Check(mainYaw && followerYaw && !(mainYaw->flags & ImGuiItemFlags_Disabled) &&
+		      !(followerYaw->flags & ImGuiItemFlags_Disabled), "main and follower yaw controls remain usable during playback");
+		ImRect yawRect;
+		if (app.Find("##ensemble_yaw", yawRect, 0))
+		{
+			auto& input = ImGui::GetIO();
+			const auto center = yawRect.GetCenter();
+			input.AddMousePosEvent(center.x, center.y); app.Frame();
+			input.AddMouseButtonEvent(0, true); app.Frame();
+			input.AddMousePosEvent(center.x + 40.0f, center.y); app.Frame();
+			input.AddMouseButtonEvent(0, false); app.Settle();
+			Check(app.core.ensemble.Followers()[0].player->controller.initialYawDegrees > 0 &&
+			      app.core.ensemble.Followers()[1].player->controller.initialYawDegrees == 0 &&
+			      app.core.player.controller.initialYawDegrees == 0,
+			      "turning one follower leaves the other two orientations unchanged");
+		}
+		ImRect positionRect;
+		if (app.Find("##ensemble_pos_x", positionRect, 0))
+		{
+			auto& input = ImGui::GetIO();
+			const auto center = positionRect.GetCenter();
+			input.AddMousePosEvent(center.x, center.y); app.Frame();
+			input.AddMouseButtonEvent(0, true); app.Frame();
+			input.AddMousePosEvent(center.x + 40.0f, center.y); app.Frame();
+			input.AddMouseButtonEvent(0, false); app.Settle();
+			Check(app.core.ensemble.Followers()[0].player->controller.initialPositionOffset.x > 0.0f &&
+			      app.core.ensemble.Followers()[1].player->controller.initialPositionOffset.x == 0.0f,
+			      "dragging a follower's position updates that follower only");
+			app.Click("重置角色站位", 0); app.Settle();
+			Check(app.core.ensemble.Followers()[0].player->controller.initialPositionOffset.x == 0.0f &&
+			      app.core.ensemble.Followers()[0].player->controller.initialYawDegrees == 0.0f,
+			      "the follower reset clears both position and yaw while playing");
+		}
+		ImRect mainYawRect;
+		if (app.Find("##main_yaw", mainYawRect))
+		{
+			auto& input = ImGui::GetIO();
+			const auto center = mainYawRect.GetCenter();
+			input.AddMousePosEvent(center.x, center.y); app.Frame();
+			input.AddMouseButtonEvent(0, true); app.Frame();
+			input.AddMousePosEvent(center.x + 35.0f, center.y); app.Frame();
+			input.AddMouseButtonEvent(0, false); app.Settle();
+			Check(app.core.player.controller.initialYawDegrees > 0 &&
+			      app.core.ensemble.Followers()[1].player->controller.initialYawDegrees == 0,
+			      "main yaw adjusts only the primary actor");
+			app.Click("重置站位"); app.Settle();
+			Check(app.core.player.controller.initialYawDegrees == 0, "main placement reset clears yaw");
+		}
+		app.core.player.state = PlaybackState::Preview; app.Settle();
+		app.Click("解除绑定", 0); app.Settle();
+		Check(!app.core.ensemble.Followers()[0].player && app.core.ensemble.Followers()[1].player,
+		      "removing one follower leaves the other binding intact");
+		Check(!app.core.ensemble.SetSceneArmCalibration(roster[2].token, epoch + 1, 1, 12, app.core.sceneActorRegistry),
+		      "stale scene roster cannot modify a calibration");
+		app.core.ensemble.SetSceneArmCalibration(roster[2].token, epoch, 1, 33, app.core.sceneActorRegistry);
+		app.core.SetTargetActor(c);
+		Check(app.core.player.controller.targetActor == c && app.core.player.controller.forearmAxisAdjustmentDeg == 33.0f,
+		      "a configured scene actor retains its calibration when selected as primary");
+		app.core.SetTargetActor(a);
+		Check(app.core.player.controller.targetActor == a && app.core.player.controller.forearmAxisAdjustmentDeg != 33.0f,
+		      "switching primary actors restores each actor's own calibration");
+	}
+	void TestFormationAlignment(const std::filesystem::path& root)
+	{
+		Harness app(root);
+		app.windowHeight = 1400;
+		app.core.gui.activePage = GuiPage::Motion;
+		app.core.player.state = PlaybackState::Preview;
+		void* a = reinterpret_cast<void*>(0xa2000), *b = reinterpret_cast<void*>(0xb2000), *c = reinterpret_cast<void*>(0xc2000);
+		formationPositions = {{a,{2,0,5}}, {b,{11,0,7}}, {c,{-3,0,10}}};
+		formationRotations = {{a,Quaternion::FromEulerDegreesXYZ(0,30,0)}, {b,Quaternion::FromEulerDegreesXYZ(0,-40,0)},
+		                      {c,Quaternion::FromEulerDegreesXYZ(0,90,0)}};
+		app.core.configRoot = (app.fixture / "formation-config").string();
+		app.core.ensemblePresetPath = app.core.configRoot + "/ensemble_position_presets.json";
+		app.core.fnReadFormationOrigin = FormationOrigin;
+		app.core.player.controller.fnGetWorldPosition = FormationPosition;
+		app.core.player.controller.fnGetWorldRotation = FormationRotation;
+		app.core.PublishSceneActors({{a,1,""},{b,2,""},{c,3,""}});
+		app.core.player.controller.SetInitialYawDegrees(20);
+		app.core.player.clip.format = MotionClip::Format::kGkClip;
+		app.core.player.clip.root_positions = {Vector3{}};
+		const auto roster = app.core.BuildGuiContext().sceneActors;
+		const auto epoch = app.core.sceneActorRegistry.Epoch();
+		Check(app.core.ensemble.Set(0, roster[1].token, epoch, app.core.motions[1], 0, app.core.sceneActorRegistry,
+		                            app.core.player, app.core.globalOverrides, true) &&
+		      app.core.ensemble.Set(1, roster[2].token, epoch, app.core.motions[0], 0, app.core.sceneActorRegistry,
+		                            app.core.player, app.core.globalOverrides, true), "formation test binds both source tracks");
+		auto bind = [](MotionPlayer& player, void* actor)
+		{
+			IdolBoneBinding binding; binding.actor = actor; binding.actorTransform = actor; binding.bindPoseCaptured = true;
+			binding.clipGroundAnchored = true; player.controller.bindings[actor] = binding;
+		};
+		bind(app.core.player, a);
+		auto& f0 = *app.core.ensemble.Followers()[0].player;
+		auto& f1 = *app.core.ensemble.Followers()[1].player;
+		bind(f0, b); bind(f1, c);
+		app.Settle();
+		if (!app.ItemWithLabel("以主角色对齐原曲队形")) app.Click("多人同步播放（最多三人）");
+		app.Settle();
+		app.Click("以主角色对齐原曲队形"); app.Settle();
+		const Quaternion basis = Quaternion::FromEulerDegreesXYZ(0,50,0);
+		const Vector3 expected = formationPositions[a] + basis.Rotate({1,0,0});
+		const Vector3 actual = formationPositions[b] + f0.controller.initialPositionOffset;
+		Check(std::fabs(actual.x-expected.x)<1e-4f && std::fabs(actual.z-expected.z)<1e-4f &&
+		      std::fabs(f0.controller.initialYawDegrees-90.0f)<1e-4f &&
+		      std::fabs(f1.controller.initialYawDegrees+40.0f)<1e-4f,
+		      "button restores source formation and compensates each actor's native facing");
+		const Quaternion followerBasis = Quaternion::FromEulerDegreesXYZ(0,f0.controller.initialYawDegrees,0) * formationRotations[b];
+		const Vector3 travel = followerBasis.Rotate({0,0,1}), mainTravel = basis.Rotate({0,0,1});
+		Check(std::fabs(travel.x-mainTravel.x)<1e-4f && std::fabs(travel.z-mainTravel.z)<1e-4f,
+		      "all source motion travel uses the primary actor's world-facing basis");
+		const auto firstOffset = f0.controller.initialPositionOffset;
+		app.Click("以主角色对齐原曲队形"); app.Settle();
+		Check(std::fabs(f0.controller.initialPositionOffset.x-firstOffset.x)<1e-4f &&
+		      std::fabs(f0.controller.initialPositionOffset.z-firstOffset.z)<1e-4f,
+		      "repeating formation alignment does not accumulate offsets");
+		formationSourceUnavailable = true;
+		app.Click("以主角色对齐原曲队形"); app.Settle();
+		Check(std::fabs(f0.controller.initialPositionOffset.x-firstOffset.x)<1e-4f &&
+		      app.core.ensembleNotice.find("原始 VMD") != std::string::npos,
+		      "missing source fails visibly without changing actor placement");
+		formationSourceUnavailable = false;
+		app.Click("保存当前多人站位"); app.Settle();
+		Check(app.core.ensemblePresets.size() == 1 && app.core.ensemblePresetNotice.find("已保存") != std::string::npos,
+		      "actual save button writes the selected three-role position preset");
+		Core reloaded;
+		reloaded.configRoot = app.core.configRoot;
+		reloaded.ensemblePresetPath = app.core.ensemblePresetPath;
+		Check(reloaded.LoadEnsemblePresetFile() && reloaded.ensemblePresets.size() == 1,
+		      "formation position preset reloads in a new core instance");
+		const Vector3 desiredA = formationPositions[a] + app.core.player.controller.initialPositionOffset;
+		const Vector3 desiredB = formationPositions[b] + f0.controller.initialPositionOffset;
+		const Vector3 desiredC = formationPositions[c] + f1.controller.initialPositionOffset;
+		formationPositions[a] = {15,0,-3}; formationPositions[b] = {-2,0,4}; formationPositions[c] = {9,0,3};
+		formationRotations[a] = Quaternion::FromEulerDegreesXYZ(0,-15,0);
+		formationRotations[b] = Quaternion::FromEulerDegreesXYZ(0,10,0);
+		formationRotations[c] = Quaternion::FromEulerDegreesXYZ(0,5,0);
+		app.core.player.controller.SetInitialPositionOffset({}); app.core.player.controller.SetInitialYawDegrees(0);
+		f0.controller.SetInitialPositionOffset({}); f0.controller.SetInitialYawDegrees(0);
+		f1.controller.SetInitialPositionOffset({}); f1.controller.SetInitialYawDegrees(0);
+		app.Click("应用多人站位预设"); app.Settle();
+		auto near = [](const Vector3& x, const Vector3& y) { return std::fabs(x.x-y.x)<1e-4f && std::fabs(x.y-y.y)<1e-4f && std::fabs(x.z-y.z)<1e-4f; };
+		Check(near(formationPositions[a] + app.core.player.controller.initialPositionOffset, desiredA) &&
+		      near(formationPositions[b] + f0.controller.initialPositionOffset, desiredB) &&
+		      near(formationPositions[c] + f1.controller.initialPositionOffset, desiredC) &&
+		      std::fabs(app.core.player.controller.initialYawDegrees - 65.0f) < .001f &&
+		      std::fabs(f0.controller.initialYawDegrees - 40.0f) < .001f &&
+		      std::fabs(f1.controller.initialYawDegrees - 45.0f) < .001f,
+		      "preset restores world positions and facing even after actor spawn orientations change");
+		{ std::ofstream out(app.core.ensemblePresetPath, std::ios::binary | std::ios::trunc); out << "broken preset"; }
+		app.core.QueueEnsemblePresetCommand(Core::GuiAction::SaveEnsemblePreset, "默认队形");
+		app.core.ProcessPendingGuiCommands();
+		std::ifstream brokenFile(app.core.ensemblePresetPath, std::ios::binary);
+		std::string preserved((std::istreambuf_iterator<char>(brokenFile)), std::istreambuf_iterator<char>());
+		Check(preserved == "broken preset" && app.core.ensemblePresetNotice.find("无效") != std::string::npos,
+		      "saving never overwrites an invalid existing preset file");
+		const Vector3 appliedB = f0.controller.initialPositionOffset;
+		app.core.QueueEnsemblePresetCommand(Core::GuiAction::ApplyEnsemblePreset, "默认队形");
+		app.core.sceneActorRegistry.Publish({{a,1,""},{b,2,""}});
+		app.core.ProcessPendingGuiCommands();
+		Check(near(f0.controller.initialPositionOffset, appliedB) && app.core.ensemblePresetNotice.find("变化") != std::string::npos,
+		      "a queued preset cannot affect actors after the scene roster changes");
+		{ std::ofstream out(app.core.ensemblePresetPath, std::ios::binary | std::ios::trunc); out << "broken preset"; }
+		Check(!reloaded.LoadEnsemblePresetFile() && reloaded.ensemblePresets.size() == 1,
+		      "invalid preset file is rejected without discarding the last valid snapshot");
+		app.core.player.controller.bindings.clear();
+	}
+
 }
 
 void ImGuiTestEngineHook_ItemAdd(ImGuiContext* context, ImGuiID id, const ImRect& rect, const ImGuiLastItemData* data)
@@ -503,7 +870,7 @@ void ImGuiTestEngineHook_ItemAdd(ImGuiContext* context, ImGuiID id, const ImRect
 	// This vendored BeginCombo emits ItemAdd but no ItemInfo. Identify its real
 	// submitted item by the current ID stack without changing production code.
 	if (context->CurrentWindow && !context->CurrentWindow->IDStack.empty())
-		for (const char* label : {"##play_mode", "##playback_speed", "##camera_quick_mode", "##physics_engine_select", "##drive_actor_combo", "##camera_mode", "跟随部位"})
+		for (const char* label : {"##play_mode", "##playback_speed", "##camera_quick_mode", "##physics_engine_select", "##drive_actor_combo", "##camera_mode", "跟随部位", "##ensemble_actor", "##ensemble_motion", "##aux_drive_mode", "校正角色"})
 			if (ImHashStr(label, 0, context->CurrentWindow->IDStack.back()) == id) items[id].label = label;
 }
 void ImGuiTestEngineHook_ItemInfo(ImGuiContext*, ImGuiID id, const char* label, ImGuiItemStatusFlags status)
@@ -540,6 +907,9 @@ int main(int argc, char** argv)
 	TestCameraPursuitControls(root);
 	TestCameraFollowTargetControls(root);
 	TestUnifiedCameraModeControls(root);
+	TestAuxDriveModeControls(root);
+	TestEnsembleControls(root);
+	TestFormationAlignment(root);
 	{
 		const ImGuiConfigFlags originalConfigFlags = io.ConfigFlags;
 		io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; // Escape closes native combo popups.
@@ -595,14 +965,14 @@ int main(int argc, char** argv)
 		const auto ordinaryText = app.Text();
 		Check(!app.ItemWithLabel("只驱动当前绑定角色") && !app.ItemWithLabel("下一个场景角色") &&
 			!app.ItemWithLabel("驱动全部场景角色") && !app.ItemWithLabel("##facial_actor_combo") &&
-			!app.ItemWithLabel("实验：四角色 Miku 嘴形拟合") && ordinaryText.find("表情适配角色") == std::string::npos &&
+			!app.ItemWithLabel("实验：Miku 嘴形拟合") && ordinaryText.find("表情适配角色") == std::string::npos &&
 			ordinaryText.find("实验：视线") == std::string::npos && ordinaryText.find("表情随驱动角色自动适配") != std::string::npos,
 			"ordinary Motion page exposes one actor selector and automatic facial adaptation without experimental controls");
 
 		app.core.gui.activePage = GuiPage::Developer;
 		app.core.gui.developerMode = false;
 		app.Settle();
-		Check(!app.ItemWithLabel("实验：四角色 Miku 嘴形拟合") && !app.ItemWithLabel("DesktopOn（强制桌面追焦）"),
+		Check(!app.ItemWithLabel("实验：Miku 嘴形拟合") && !app.ItemWithLabel("DesktopOn（强制桌面追焦）"),
 			"developer motion experiments stay hidden while developer mode is off");
 		app.core.gui.developerMode = true;
 		app.Settle(); app.Click("动作", 1); app.Settle();
@@ -612,12 +982,12 @@ int main(int argc, char** argv)
 		Check(!app.core.player.controller.IsExperimentalWaistSupportEnabled(), "developer waist checkbox disables support");
 		app.Click("实验：腰部支撑（默认开启）");
 		Check(app.core.player.controller.IsExperimentalWaistSupportEnabled(), "developer waist checkbox reenables support");
-		const auto* fitCheckbox = app.ItemWithLabel("实验：四角色 Miku 嘴形拟合");
+		const auto* fitCheckbox = app.ItemWithLabel("实验：Miku 嘴形拟合");
 		Check(fitCheckbox && (fitCheckbox->status & ImGuiItemStatusFlags_Checked) && app.core.player.controller.facialMikuMouthFit,
 			"developer Motion tab exposes the Miku experiment checked by default");
-		app.Click("实验：四角色 Miku 嘴形拟合");
+		app.Click("实验：Miku 嘴形拟合");
 		Check(app.core.config.facialMikuMouthFit == 0, "developer Miku experiment checkbox actually disables the configured fit");
-		app.Click("实验：四角色 Miku 嘴形拟合");
+		app.Click("实验：Miku 嘴形拟合");
 		Check(app.core.config.facialMikuMouthFit == 1, "developer Miku experiment checkbox can reenable the configured fit");
 		const auto gazeText = app.Text();
 		const auto* gazeControl = app.ItemWithLabel("DesktopOn（强制桌面追焦）");
@@ -1119,6 +1489,38 @@ int main(int argc, char** argv)
         context.fnPlaylistAction(context.self, static_cast<int>(GuiPlaylistAction::DeleteFiles), secondKey.c_str(), 1);
         Check(preview.motions.size() == 2, "standalone mock deletes after import is no longer busy");
     }
+	{
+		Harness app(root);
+		app.core.enforceInjectionPolicy = true;
+		app.core.liveObservation = {true, false, 12.0f, 150.0f};
+		app.core.liveOwnerToken = 55;
+		app.core.liveOwnerScene = 73;
+		app.core.liveViewingConfirmed = true;
+		app.Settle();
+		app.Click("暂停 Live");
+		Check(app.core.livePauseRequest == 1 && app.core.livePauseRequestOwner == 55 && app.core.livePauseRequestScene == 73,
+			"Live pause button queues an owner-scoped pause while injection remains disabled");
+		app.core.liveObservation.paused = true;
+		app.Settle();
+		app.Click("继续 Live");
+		Check(app.core.livePauseRequest == 2 && app.core.livePauseRequestOwner == 55,
+			"Live resume button queues an owner-scoped resume");
+		app.core.livePauseRequest = 0;
+		app.core.liveViewingConfirmed = false;
+		app.Settle();
+		app.Click("继续 Live");
+		Check(app.core.livePauseRequest == 0, "unconfirmed viewing mode cannot queue Live control");
+		app.core.liveViewingConfirmed = true;
+		app.core.liveTakeoverAvailable = true;
+		app.Settle(); app.Click("启用 Live 动作接管");
+		Check(app.core.liveTakeoverRequest == 1 && app.core.liveTakeoverRequestOwner == 55 && app.core.liveTakeoverRequestScene == 73,
+			"Live takeover enable is scoped to the observed owner");
+		app.core.liveTakeoverActive = true;
+		app.core.enforceInjectionPolicy = false;
+		app.Settle(); app.Click("退出 Live 动作接管");
+		Check(app.core.liveTakeoverRequest == 2 && app.core.liveTakeoverRequestOwner == 55,
+			"active Live takeover exposes an owner-scoped restore button");
+	}
 	ImGui::DestroyContext();
 	std::printf("GUI UX interaction checks: %d passed, %d failed\n", passed, failed);
 	return failed ? EXIT_FAILURE : EXIT_SUCCESS;

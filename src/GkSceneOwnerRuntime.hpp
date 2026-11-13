@@ -14,6 +14,7 @@ namespace SceneOwnerRuntime
 	};
 	inline void *baseClass = nullptr, *photoClass = nullptr, *outGameClass = nullptr, *sceneClass = nullptr;
 	inline StageLoader::Handle typeHandle = nullptr;
+	inline StageLoader::Handle liveTypeHandle = nullptr;
 	inline const void* currentPresenter = nullptr;
 	inline void* (*handleTarget)(StageLoader::Handle) = nullptr;
 	inline const char* (*className)(void*) = nullptr;
@@ -64,7 +65,8 @@ namespace SceneOwnerRuntime
 		auto& owner = result.owner;
 		owner.presenterIdentity = reinterpret_cast<uintptr_t>(root);
 		owner.role = klass == photoClass ? GakuMotion::injection::OwnerRole::Photography :
-			klass == outGameClass ? GakuMotion::injection::OwnerRole::OutGame : GakuMotion::injection::OwnerRole::Other;
+			klass == outGameClass ? GakuMotion::injection::OwnerRole::OutGame :
+			klass == g_liveApi.sceneClass ? GakuMotion::injection::OwnerRole::Live : GakuMotion::injection::OwnerRole::Other;
 		exception = nullptr;
 		void* go = g_faceRuntime.invoke(StageLoader::componentGo, root, nullptr, &exception);
 		if (!go || exception) { result.reason = "presenter-gameobject-unconfirmed"; return result; }
@@ -141,7 +143,40 @@ namespace SceneOwnerRuntime
 		} rooted{StageLoader::newHandle(array, false)};
 		if (!rooted.handle) { result.reason = "active-presenter-array-unrooted"; return result; }
 		const uintptr_t count = StageLoader::arrayLength(array);
-		if (count != 1) { result.reason = "exact-photography-presenter-not-unique"; return result; }
+		if (count != 1)
+		{
+			// Live does not populate CampusScenePresenterBase.Instance in the
+			// observed viewing scene. Search only if there are no active Photography
+			// owners and the active scene explicitly identifies a Live scene.
+			// The result is evidence only: PreviewContext still denies injection.
+			if (count == 0 && (activeScene == "Live" || activeScene.rfind("env_3d_live_", 0) == 0) && g_liveApi.sceneClass)
+			{
+				if (!liveTypeHandle)
+				{
+					void* liveType = il2cpp_type_get_object(il2cpp_class_get_type(g_liveApi.sceneClass));
+					if (liveType) liveTypeHandle = StageLoader::newHandle(liveType, false);
+				}
+				void* liveType = liveTypeHandle ? handleTarget(liveTypeHandle) : nullptr;
+				if (!liveType) { result.reason = "live-presenter-type-unconfirmed"; return result; }
+				void* liveArgs[]{liveType, &includeInactive};
+				exception = nullptr;
+				void* liveArray = g_faceRuntime.invoke(StageLoader::findAll, nullptr, liveArgs, &exception);
+				if (!liveArray || exception) { result.reason = "live-presenter-query-unconfirmed"; return result; }
+				ArrayRoot liveRoot{StageLoader::newHandle(liveArray, false)};
+				if (!liveRoot.handle) { result.reason = "live-presenter-array-unrooted"; return result; }
+				if (StageLoader::arrayLength(liveArray) != 1)
+				{ result.reason = "live-presenter-not-unique"; return result; }
+				void** liveItems = reinterpret_cast<void**>(static_cast<char*>(liveArray) + 32);
+				if (!liveItems[0] || g_faceRuntime.objectClass(liveItems[0]) != g_liveApi.sceneClass)
+				{ result.reason = "live-presenter-type-mismatch"; return result; }
+				result = ReadCandidate(liveItems[0]);
+				result.context = GakuMotion::injection::Context::Unknown;
+				if (result.owner.Valid()) result.reason = "live-presenter-observed-read-only";
+				return result;
+			}
+			result.reason = "exact-photography-presenter-not-unique";
+			return result;
+		}
 		// Same validated x64 Object[] layout as the existing rooted Stage bridge.
 		void** items = reinterpret_cast<void**>(static_cast<char*>(array) + 32);
 		if (!items[0] || g_faceRuntime.objectClass(items[0]) != photoClass)
@@ -172,7 +207,9 @@ namespace SceneOwnerRuntime
 	inline void Shutdown()
 	{
 		if (typeHandle && StageLoader::freeHandle) StageLoader::freeHandle(typeHandle);
+		if (liveTypeHandle && StageLoader::freeHandle) StageLoader::freeHandle(liveTypeHandle);
 		typeHandle = nullptr;
+		liveTypeHandle = nullptr;
 		cached = {}; cachedFrame = INT_MIN; ready = false;
 	}
 

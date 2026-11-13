@@ -673,6 +673,65 @@ namespace GakuMotion
 		// 实机靶向对照组：辅助骨驱动模式（详见 AuxDriveMode 注释）
 		// 由 control.json (`aux.mode`) 声明式驱动，或由热键 F8 现场循环切换。
 		int auxDriveMode{kAuxNormal};
+		float wristTwistShare{0.0f}; // Opt-in: move hand-axis twist to the forearm while preserving hand world pose.
+		float forearmAxisAdjustmentDeg{0.0f}; // Fixed-axis experiment, independent of the wrist rotation.
+		bool wristDiagnosticPending{false};
+		int wristDiagnosticStatus{0}; // 0=idle, 1=waiting for pose, 2=logged, 3=logger unavailable
+		float wristDiagnosticTime{0.0f};
+		uint64_t wristDiagnosticCount{0};
+
+		static Quaternion WristTwistShareRotation(const Quaternion& handLocal, float fraction) noexcept
+		{
+			if (!std::isfinite(fraction) || fraction == 0.0f) return Quaternion::Identity();
+			fraction = (std::clamp)(fraction, -1.0f, 1.0f);
+			float x = handLocal.x, w = handLocal.w;
+			if (w < 0.0f || (w == 0.0f && x < 0.0f)) { x = -x; w = -w; }
+			if (x * x + w * w < 1e-12f) return Quaternion::Identity();
+			const float halfAngle = std::atan2(x, w) * fraction;
+			return Quaternion(std::sin(halfAngle), 0.0f, 0.0f, std::cos(halfAngle));
+		}
+
+		// One bounded snapshot, on the Unity thread after the motion and auxiliary
+		// writes. It observes transforms only; it does not modify the pose.
+		void CaptureWristDiagnostic(const IdolBoneBinding& b, float timeSeconds, int appliedOverrides)
+		{
+			if (!wristDiagnosticPending) return;
+			wristDiagnosticPending = false;
+			if (!fnLogInfo) { wristDiagnosticStatus = 3; return; }
+			fnLogInfo("[GakuMotion][WristDiag] actor=%p time=%.4f aux=%d twistShare=%.3f forearmAxisDeg=%.1f overrides=%d getters(localRot=%d worldRot=%d localPos=%d worldPos=%d parent=%d)",
+			          b.actor, timeSeconds, auxDriveMode, wristTwistShare, forearmAxisAdjustmentDeg, appliedOverrides,
+			          fnGetLocalRotation != nullptr, fnGetWorldRotation != nullptr, fnGetLocalPosition != nullptr,
+			          fnGetWorldPosition != nullptr, fnGetTransformParent != nullptr);
+			auto capture = [&](const char* label, void* transform)
+			{
+				if (!transform) { fnLogInfo("[GakuMotion][WristDiag] %s missing", label); return; }
+				float lr[4]{0,0,0,1}, wr[4]{0,0,0,1}, lp[3]{}, wp[3]{};
+				if (fnGetLocalRotation) fnGetLocalRotation(transform, lr);
+				if (fnGetWorldRotation) fnGetWorldRotation(transform, wr);
+				if (fnGetLocalPosition) fnGetLocalPosition(transform, lp);
+				if (fnGetWorldPosition) fnGetWorldPosition(transform, wp);
+				void* parent = fnGetTransformParent ? fnGetTransformParent(transform) : nullptr;
+				const std::string parentName = parent && fnGetTransformName ? fnGetTransformName(parent) : "";
+				fnLogInfo("[GakuMotion][WristDiag] %s parent=%s localRot=(%.6f,%.6f,%.6f,%.6f) worldRot=(%.6f,%.6f,%.6f,%.6f) localPos=(%.6f,%.6f,%.6f) worldPos=(%.6f,%.6f,%.6f)",
+				          label, parentName.c_str(), lr[0],lr[1],lr[2],lr[3], wr[0],wr[1],wr[2],wr[3],
+				          lp[0],lp[1],lp[2],wp[0],wp[1],wp[2]);
+			};
+			capture("LeftUpperArm", b.leftArmAux.upperArm);
+			capture("LeftForeArm", b.leftArmAux.foreArm);
+			capture("LeftForeArm_Roll_H", b.leftArmAux.foreArmRollH);
+			capture("LeftForeArm_H", b.leftArmAux.foreArmH);
+			capture("LeftHand", b.leftArmAux.hand);
+			capture("LeftHand_H", b.leftArmAux.handH);
+			capture("RightUpperArm", b.rightArmAux.upperArm);
+			capture("RightForeArm", b.rightArmAux.foreArm);
+			capture("RightForeArm_Roll_H", b.rightArmAux.foreArmRollH);
+			capture("RightForeArm_H", b.rightArmAux.foreArmH);
+			capture("RightHand", b.rightArmAux.hand);
+			capture("RightHand_H", b.rightArmAux.handH);
+			wristDiagnosticTime = timeSeconds;
+			++wristDiagnosticCount;
+			wristDiagnosticStatus = 2;
+		}
 
 		// =====================================================================
 		// 真值标定模型驱动（模式 0 / Plan A）
@@ -2108,6 +2167,30 @@ namespace GakuMotion
 			Vector3 vmdRootPos;
 			std::vector<Quaternion> vmdRotations;
 			clip.Sample(currentTimeSeconds, vmdRootPos, vmdRotations);
+			Quaternion wristShare[2]{Quaternion::Identity(), Quaternion::Identity()};
+			bool wristShareActive[2]{false, false};
+			if (clip.IsLocalDeltaStream() && (wristTwistShare != 0.0f || forearmAxisAdjustmentDeg != 0.0f))
+			{
+				for (int side = 0; side < 2; ++side)
+				{
+					const int foreHid = 15 + side, handHid = 17 + side;
+					int foreIndex = -1, handIndex = -1;
+					for (size_t i = 0; i < clip.bones.size() && i < b.boneTransforms.size(); ++i)
+					{
+						if (!b.boneTransforms[i]) continue;
+						if (clip.bones[i].humanoid_id == foreHid) foreIndex = static_cast<int>(i);
+						if (clip.bones[i].humanoid_id == handHid) handIndex = static_cast<int>(i);
+					}
+					if (foreIndex >= 0 && handIndex > foreIndex && static_cast<size_t>(handIndex) < vmdRotations.size() &&
+					    static_cast<size_t>(handIndex) < clip.bone_parent_hids.size() &&
+					    clip.bone_parent_hids[handIndex] == foreHid)
+					{
+						wristShare[side] = WristTwistShareRotation(vmdRotations[handIndex], wristTwistShare) *
+							Quaternion::FromEulerDegreesXYZ(forearmAxisAdjustmentDeg, 0.0f, 0.0f);
+						wristShareActive[side] = true;
+					}
+				}
+			}
 			if (facialTimeSeconds < 0.0f) facialTimeSeconds = currentTimeSeconds;
 			if (facialTimeSeconds != currentTimeSeconds && std::any_of(clip.bones.begin(), clip.bones.end(),
 				[](const auto& bone) { return bone.head_space_eye_delta; }))
@@ -2147,6 +2230,8 @@ namespace GakuMotion
 				curActorPos = Vector3(aPos[0], aPos[1], aPos[2]);
 				curActorRot = Quaternion(aRot[0], aRot[1], aRot[2], aRot[3]);
 			}
+			const Quaternion placementYaw = initialYawDegrees == 0.0f ? Quaternion::Identity() :
+				Quaternion::FromEulerDegreesXYZ(0.0f, initialYawDegrees, 0.0f);
 
 			// Anchor supported v2+ clips to the actor pivot using one clip-wide
 			// FK floor offset. Bind-time hips height never enters that path.
@@ -2161,17 +2246,28 @@ namespace GakuMotion
 					(rootHeightCalibrationEnabled ? b.calibratedRootHeight : 0.0f),
 					b.restRootPos.z + vmdRootPos.z
 				);
-				Vector3 worldTarget = curActorPos + curActorRot.Rotate(localTarget) + initialPositionOffset;
+				// Rotate the clip's travel around its first sampled root, not the scene
+				// origin: changing facing preserves the chosen starting placement.
+				Vector3 yawTravelAdjustment{};
+				if (initialYawDegrees != 0.0f && !clip.root_positions.empty())
+				{
+					const Vector3 worldTravel = curActorRot.Rotate(vmdRootPos - clip.root_positions.front());
+					yawTravelAdjustment = placementYaw.Rotate(worldTravel) - worldTravel;
+				}
+				Vector3 worldTarget = curActorPos + curActorRot.Rotate(localTarget) + initialPositionOffset + yawTravelAdjustment;
 				if (fnSetWorldPosition)
 				{
 					fnSetWorldPosition(b.rootTransform, worldTarget.x, worldTarget.y, worldTarget.z);
 				}
 				else if (fnSetLocalPosition)
 				{
-					localTarget = localTarget + curActorRot.Inverse().Rotate(initialPositionOffset);
+					localTarget = localTarget + curActorRot.Inverse().Rotate(initialPositionOffset + yawTravelAdjustment);
 					fnSetLocalPosition(b.rootTransform, localTarget.x, localTarget.y, localTarget.z);
 				}
 			}
+			// Turn the pose and clip travel without changing the actor transform;
+			// yaw neither orbits the scene origin nor accumulates across frames.
+			if (initialYawDegrees != 0.0f) curActorRot = placementYaw * curActorRot;
 
 			// 3. Bone World Rotations
 			bool hasDynamicArm = (armOffsetPitch != 0.0f || armOffsetYaw != 0.0f || armOffsetRoll != 0.0f);
@@ -2283,6 +2379,32 @@ namespace GakuMotion
 				{
 					// The delta IS the local rotation. See the proof above.
 					gkLocalOut = rVmd;
+					if (hid == 0 && initialYawDegrees != 0.0f && !fnSetLocalRotation)
+					{
+						// The degraded path writes world rotations, so apply yaw in world space.
+						gkLocalOut = placementYaw * gkLocalOut;
+					}
+					else if (hid == 0 && initialYawDegrees != 0.0f && fnGetTransformParent && fnGetWorldRotation)
+					{
+						// Convert the world-up turn to the actual Hips parent frame;
+						// descendants keep their authored locals and follow the root.
+						Quaternion parentRotation = Quaternion::Identity();
+						bool parentRotationValid = true;
+						if (void* parent = fnGetTransformParent(trans))
+						{
+							float q[4]{0, 0, 0, 1};
+							fnGetWorldRotation(parent, q);
+							const float length = std::sqrt(q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]);
+							parentRotationValid = std::isfinite(length) && length > 1e-6f;
+							if (parentRotationValid)
+								parentRotation = Quaternion(q[0]/length, q[1]/length, q[2]/length, q[3]/length);
+						}
+						if (parentRotationValid)
+						{
+							const Quaternion localYaw = parentRotation.Inverse() * placementYaw * parentRotation;
+							gkLocalOut = localYaw * gkLocalOut;
+						}
+					}
 					if (clip.bones[i].head_space_eye_delta)
 					{
 						if (!b.eyeFrameResolved)
@@ -2487,7 +2609,7 @@ namespace GakuMotion
 							const Quaternion qOffLocal = parentWorld.Inverse() * qOff * parentWorld;
 							gkLocalOut = off->spaceWorld
 								             ? (qOffLocal * gkLocalOut)
-								             : (gkLocalOut * qOffLocal);
+								             : (gkLocalOut * qOff);
 						}
 						++appliedOverrides;
 					}
@@ -2507,6 +2629,26 @@ namespace GakuMotion
 					{
 						rTarget = rTarget * qArmRight;
 						if (isGkClip) gkLocalOut = gkLocalOut * qArmRight;
+					}
+				}
+
+				// Transfer axial rotation from hand to forearm. Forearm offsets lie
+				// along local X; the inverse hand pre-rotation preserves P*L exactly.
+				if (isGkClip && hid >= 15 && hid <= 18)
+				{
+					const int side = (hid == 15 || hid == 17) ? 0 : 1;
+					if (wristShareActive[side])
+					{
+						if (hid == 15 || hid == 16)
+						{
+							gkLocalOut = gkLocalOut * wristShare[side];
+							rTarget = rTarget * wristShare[side];
+						}
+						else
+						{
+							gkLocalOut = wristShare[side].Inverse() * gkLocalOut;
+							if (writtenWorldRotValid[15 + side]) rTarget = writtenWorldRots[15 + side] * gkLocalOut;
+						}
 					}
 				}
 
@@ -3056,6 +3198,7 @@ namespace GakuMotion
 			// This opt-in geometric support sees the completed main pose and arm
 			// auxiliary postpass. It writes only exact Waist_H local transforms.
 			ApplyWaistSupport(b);
+			CaptureWristDiagnostic(b, currentTimeSeconds, appliedOverrides);
 
 			// ---- PROBE A9: WHO is this actor, and what are its real bone lengths? ----
 			// WHY THIS EXISTS. A8 measured thighLen 0.3496 m against 0.4558 m in
@@ -3470,11 +3613,19 @@ namespace GakuMotion
 		// accumulate translation. RestoreMute still returns to the original scene.
 		// Zero this extra placement before measuring the unmodified motion stream.
 		Vector3 initialPositionOffset{0.0f, 0.0f, 0.0f};
+		float initialYawDegrees{0.0f};
 
 		bool SetInitialPositionOffset(const Vector3& offset)
 		{
 			if (!std::isfinite(offset.x) || !std::isfinite(offset.y) || !std::isfinite(offset.z)) return false;
 			initialPositionOffset = offset;
+			return true;
+		}
+
+		bool SetInitialYawDegrees(float degrees)
+		{
+			if (!std::isfinite(degrees)) return false;
+			initialYawDegrees = std::remainder(degrees, 360.0f);
 			return true;
 		}
 

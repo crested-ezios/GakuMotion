@@ -4,6 +4,7 @@
 #include "GkLog.hpp"
 #include "GkIdolController.hpp"
 #include "GkMotionPlayer.hpp"
+#include "GkEnsembleRuntime.hpp"
 #include "GkLookAtManager.hpp"
 #include "GkRuntimeConfig.hpp"
 #include "GkBoneOverride.hpp"
@@ -12,6 +13,7 @@
 #include "GkLibraryState.hpp"
 #include "GkLibraryDelete.hpp"
 #include "GkInjectionPolicy.hpp"
+#include "GkLiveObservation.hpp"
 #include "GkCaptureSafety.hpp"
 #include "GkStageLoadSettings.hpp"
 #include "GkDataLayout.hpp"
@@ -72,6 +74,32 @@ namespace GakuMotion
 		}
 
 		MotionPlayer player;
+		EnsembleRuntime ensemble;
+		bool ensembleRestoreUnconfirmed{false};
+		std::string ensembleNotice;
+		struct EnsemblePresetRole { bool enabled{false}; Vector3 world{}; float heading{0}; };
+		struct EnsemblePreset { std::string name; std::array<EnsemblePresetRole, 3> roles{}; };
+		std::vector<EnsemblePreset> ensemblePresets;
+		std::string ensemblePresetNotice;
+		std::string ensemblePresetPath;
+
+		bool (*fnReadFormationOrigin)(const std::string&, Vector3&){nullptr};
+		void RememberCurrentPlacement()
+		{
+			if (const auto* actor = sceneActorRegistry.Find(player.controller.targetActor))
+				ensemble.RememberPlacement(actor->token, player.controller.initialPositionOffset,
+				                           player.controller.initialYawDegrees);
+		}
+		bool RestoreEnsemble()
+		{
+			if (ensembleRestoreUnconfirmed) return false;
+			if (ensemble.RestoreLive(sceneActorRegistry) && !ensemble.RestoreUnconfirmed()) return !ensembleRestoreUnconfirmed;
+			ensembleRestoreUnconfirmed = true;
+			ensembleNotice = "多角色恢复未确认，已停止动作注入";
+			player.Pause();
+			NotifyMotionPlaying(false);
+			return false;
+		}
 		CameraController camera;
 		LookAtManager lookAt;
 		GuiOverlay gui;
@@ -120,11 +148,29 @@ namespace GakuMotion
 		bool customWasActivated{false};
 		bool stageStoppedByTransport{false};
 		std::string injectionStatus;
+		live_takeover::Observation liveObservation;
+		bool liveViewingConfirmed{false};
+		bool liveTakeoverActive{false}, liveTakeoverAvailable{false};
+		bool liveTakeoverFault{false};
+		uint64_t liveAlignmentLoggedSession{~uint64_t{0}}, liveAlignmentLoggedMotion{~uint64_t{0}};
+		void* liveAlignmentLoggedActor{nullptr}; // identity only
+		uintptr_t liveOwnerToken{0}, livePauseRequestOwner{0}, liveFaultOwner{0};
+		int liveOwnerScene{0}, livePauseRequestScene{0}, liveTakeoverRequestScene{0};
+		int livePauseRequest{0}; // 0 none, 1 pause, 2 resume; stateMutex guarded.
+		int liveTakeoverRequest{0};
+		uintptr_t liveTakeoverRequestOwner{0};
+		std::string liveControlNotice;
 		bool (*fnBeforeInjection)(){nullptr};
 		bool InjectionAllowed() const { return !enforceInjectionPolicy || injectionPolicy.CanInject(); }
+		Vector3 LiveCameraTrackAnchor(void* actor) const
+		{
+			const auto& binding = player.controller.currentBinding;
+			if (!liveTakeoverActive || !actor || binding.actor != actor || !binding.bindPoseCaptured) return {};
+			return {binding.restRootPos.x, 0.0f, binding.restRootPos.z};
+		}
 		bool PrepareInjection()
 		{
-			return InjectionAllowed() && (!fnBeforeInjection || fnBeforeInjection());
+			return InjectionAllowed() && !ensembleRestoreUnconfirmed && (!fnBeforeInjection || fnBeforeInjection());
 		}
 
 		bool captureSuspended{false};
@@ -140,6 +186,14 @@ namespace GakuMotion
 		{
 			if (captureSuspended) return captureRestoreReport.AllConfirmed();
 			InvalidateControlSession();
+			if (ensembleRestoreUnconfirmed)
+			{
+				captureSuspended = true;
+				captureRestoreReport = {};
+				captureRestoreReport.body = capture::RestoreState::Unconfirmed;
+				captureSession = injectionSession;
+				return false;
+			}
 			captureSuspended = true;
 			captureRestoreReport = {};
 			capturePlaybackState = player.state;
@@ -162,12 +216,15 @@ namespace GakuMotion
 			player.scrubbing = false;
 			player.audioStarted = false;
 			player.state = PlaybackState::Stopped;
+			const bool ensembleWasActive = ensemble.HasActiveFollowers();
 			const auto actorRestore = player.controller.RestoreForCapture();
+			const bool ensembleRestored = RestoreEnsemble();
 			auto status = [](bool modified, bool confirmed) {
 				return !confirmed ? capture::RestoreState::Unconfirmed :
 					modified ? capture::RestoreState::Confirmed : capture::RestoreState::NotModified;
 			};
-			captureRestoreReport.body = status(actorRestore.bodyModified, actorRestore.bodyConfirmed);
+			captureRestoreReport.body = status(actorRestore.bodyModified || ensembleWasActive,
+			                                   actorRestore.bodyConfirmed && ensembleRestored);
 			captureRestoreReport.face = status(actorRestore.faceModified, actorRestore.faceConfirmed);
 			captureRestoreReport.gaze = status(actorRestore.gazeModified, actorRestore.gazeConfirmed);
 			const auto cameraRestore = camera.ReleaseForCapture();
@@ -209,6 +266,13 @@ namespace GakuMotion
 			captureResumeReason = "gm_revoked";
 			++injectionSession;
 			captureSuspended = false;
+			if (ensembleRestoreUnconfirmed)
+			{
+				if (player.fnStopAudio) player.fnStopAudio();
+				player.audioStarted = false; player.state = PlaybackState::Stopped;
+				camera.Release(false); NotifyMotionPlaying(false); return;
+			}
+			RestoreEnsemble();
 			if (player.state != PlaybackState::Stopped) player.Stop();
 			camera.Release();
 			stageManager.SetInjectionEnabled(false);
@@ -220,6 +284,13 @@ namespace GakuMotion
 			captureSuspended = false;
 			captureResumeReason = "gm_stopped";
 			stageStoppedByTransport = true;
+			if (ensembleRestoreUnconfirmed)
+			{
+				if (player.fnStopAudio) player.fnStopAudio();
+				player.audioStarted = false; player.state = PlaybackState::Stopped;
+				camera.Release(false); NotifyMotionPlaying(false); return;
+			}
+			RestoreEnsemble();
 			player.Stop();
 			camera.Release();
 			stageManager.SetInjectionEnabled(false);
@@ -243,6 +314,8 @@ namespace GakuMotion
 		std::string initialPositionPath;
 		std::string initialPositionNotice;
 		std::string facialWeightsNotice;
+		bool forearmAxisLocked{false};
+		std::string forearmAxisNotice;
 		std::string musicVolumeNotice;
 		SoleMeasurementSettings soleSettings;
 		SoleMeasurementSnapshot soleSnapshot;
@@ -345,13 +418,14 @@ namespace GakuMotion
 			Select, Cycle, Play, Pause, Resume, Stop, Seek,
 			ScrubBegin, ScrubUpdate, ScrubEnd, Refresh, Move,
 			SaveList, LoadList, Mode, Mute, Speed, Import, ClearTarget, NextTarget, PickTarget,
-			InitialPosition, SaveInitialPosition, SaveFacialWeights, MusicVolume, SaveMusicVolume, PhysicsBackend,
+			InitialPosition, InitialYaw, SaveInitialPosition, SaveFacialWeights, MusicVolume, SaveMusicVolume, PhysicsBackend,
 			CameraSettings, SaveCameraSettings, CameraImport, ReloadCamera,
 			SoleSettings, SaveSoleSettings, LoadSoleSettings, ExperimentalSolePitch, ExperimentalWaistSupport,
-			BeforeQuartzExperiment,
+			BeforeQuartzExperiment, AuxDriveMode, WristDiagnostic, WristTwistShare, ForearmAxisAdjustment, ForearmAxisLock,
 			StageSettings, StagePreset, ToggleStageCandidate, ScanStageCandidates,
 			MountCustomStage, UnloadCustomStage, RestoreCameraSkybox,
 			SeekFrame, StepFrame, ReloadMotion, DeleteFiles, StageLoadReplacement, SelectTarget,
+			SetEnsembleFollower, ClearEnsembleFollower, EnsemblePosition, EnsembleYaw, FollowerArm, SceneArm, AlignEnsemble, SaveEnsemblePreset, ApplyEnsemblePreset,
 			Control
 		};
 
@@ -378,6 +452,7 @@ namespace GakuMotion
 			int64_t frame{0};
 			uint64_t loadedGeneration{0}, sceneSession{0}, libraryRevision{0};
 			uint64_t actorToken{0}, actorEpoch{0};
+			std::array<uint64_t, 2> formationTokens{}, formationGenerations{};
 			control_v0::Command controlCommand{};
 			uint64_t controlTicket{0};
 		};
@@ -394,13 +469,35 @@ namespace GakuMotion
 			std::lock_guard<std::mutex> lock(guiCommandMutex);
 			// Only adjacent scrub/placement updates may coalesce. Begin/end/save/
 			// transport events retain their order across physical frames.
-			if ((cmd.action == GuiAction::ScrubUpdate || cmd.action == GuiAction::InitialPosition) && !guiCommands.
-				empty() &&
-				guiCommands.back().action == cmd.action)
+			const bool sameFollowerPosition = (cmd.action == GuiAction::EnsemblePosition || cmd.action == GuiAction::EnsembleYaw) && !guiCommands.empty() &&
+				guiCommands.back().action == cmd.action && guiCommands.back().candidateIndex == cmd.candidateIndex &&
+				guiCommands.back().actorToken == cmd.actorToken && guiCommands.back().actorEpoch == cmd.actorEpoch &&
+				guiCommands.back().loadedGeneration == cmd.loadedGeneration;
+			const bool sameMainPlacement = (cmd.action == GuiAction::InitialPosition || cmd.action == GuiAction::InitialYaw) &&
+				!guiCommands.empty() && guiCommands.back().action == cmd.action &&
+				guiCommands.back().actorToken == cmd.actorToken && guiCommands.back().actorEpoch == cmd.actorEpoch;
+			const bool sameScrub = cmd.action == GuiAction::ScrubUpdate && !guiCommands.empty() && guiCommands.back().action == cmd.action;
+			if (sameFollowerPosition || sameMainPlacement || sameScrub)
 				guiCommands.back() = std::move(cmd);
 			else guiCommands.push_back(std::move(cmd));
 		}
 
+		void QueueEnsemblePresetCommand(GuiAction action, const char* name = nullptr)
+		{
+			GuiCommand cmd{action};
+			cmd.key = name ? name : "";
+			cmd.actorEpoch = sceneActorRegistry.Epoch();
+			if (const auto* actor = sceneActorRegistry.Find(player.controller.targetActor)) cmd.actorToken = actor->token;
+			cmd.sceneSession = injectionSession;
+			for (size_t i = 0; i < ensemble.Followers().size(); ++i)
+			{
+				cmd.formationTokens[i] = ensemble.Followers()[i].actorToken;
+				cmd.formationGenerations[i] = ensemble.Followers()[i].bindingGeneration;
+			}
+			QueueGui(std::move(cmd));
+		}
+
+		void QueueAlignEnsemble() { QueueEnsemblePresetCommand(GuiAction::AlignEnsemble); }
 #include "GkControlCore.inl"
 
 		void QueueSelectMotion(int index, bool autoplay)
@@ -447,7 +544,22 @@ namespace GakuMotion
 		{
 			GuiCommand cmd{GuiAction::InitialPosition};
 			cmd.position = offset;
+			cmd.actorEpoch = sceneActorRegistry.Epoch();
+			if (const auto* actor = sceneActorRegistry.Find(player.controller.targetActor)) cmd.actorToken = actor->token;
 			QueueGui(std::move(cmd));
+		}
+		void QueueInitialYaw(float yaw)
+		{
+			GuiCommand cmd{GuiAction::InitialYaw, yaw};
+			cmd.actorEpoch = sceneActorRegistry.Epoch();
+			if (const auto* actor = sceneActorRegistry.Find(player.controller.targetActor)) cmd.actorToken = actor->token;
+			QueueGui(std::move(cmd));
+		}
+		bool IsCurrentPlacementTarget(const GuiCommand& cmd) const
+		{
+			if (cmd.actorEpoch != sceneActorRegistry.Epoch()) return false;
+			if (!cmd.actorToken) return player.controller.targetActor == nullptr;
+			return sceneActorRegistry.Resolve(cmd.actorToken, cmd.actorEpoch) == player.controller.targetActor;
 		}
 
 		void QueueCameraSettings(const GakuMotion::CameraSettings& settings)
@@ -502,6 +614,11 @@ namespace GakuMotion
 		void QueuePhysicsBackend(int backend)
 		{
 			if (backend >= 0 && backend <= 2) QueueGui({GuiAction::PhysicsBackend, static_cast<float>(backend)});
+		}
+
+		void QueueAuxDriveMode(int mode)
+		{
+			if (mode >= 0 && mode < kAuxModeCount) QueueGui({GuiAction::AuxDriveMode, static_cast<float>(mode)});
 		}
 
 		void QueueExperimentalWaistSupport(bool enabled)
@@ -583,8 +700,13 @@ namespace GakuMotion
 		bool HasPendingTargetSelection()
 		{
 			std::lock_guard<std::mutex> lock(guiCommandMutex);
-			return std::any_of(guiCommands.begin(), guiCommands.end(), [](const auto& command)
-				{ return command.action == GuiAction::SelectTarget; });
+			const bool activeFollowers = ensemble.HasActiveFollowers();
+			return std::any_of(guiCommands.begin(), guiCommands.end(), [activeFollowers](const auto& command)
+				{ return command.action == GuiAction::SelectTarget || command.action == GuiAction::SetEnsembleFollower ||
+				         command.action == GuiAction::ClearEnsembleFollower ||
+				         (activeFollowers && (command.action == GuiAction::Stop || command.action == GuiAction::Select ||
+				                              command.action == GuiAction::Cycle || command.action == GuiAction::ReloadMotion ||
+				                              command.action == GuiAction::DeleteFiles)); });
 		}
 
 		// File work must keep progressing on host frames even when Photography
@@ -745,6 +867,28 @@ namespace GakuMotion
 					config.experimentalWaistSupport = cmd.flag ? 1 : 0;
 					ApplyDeclarativeConfig();
 					break;
+				case GuiAction::AuxDriveMode:
+					if (cmd.value >= 0 && cmd.value < static_cast<float>(kAuxModeCount))
+						player.controller.SetAuxDriveMode(static_cast<int>(cmd.value));
+					break;
+				case GuiAction::WristDiagnostic:
+					if (player.state != PlaybackState::Stopped)
+					{
+						player.controller.wristDiagnosticPending = true;
+						player.controller.wristDiagnosticStatus = 1;
+					}
+					break;
+				case GuiAction::WristTwistShare:
+					if (std::isfinite(cmd.value) && cmd.value >= -1.0f && cmd.value <= 1.0f)
+						player.controller.wristTwistShare = cmd.value;
+					break;
+				case GuiAction::ForearmAxisAdjustment:
+					if (!forearmAxisLocked && std::isfinite(cmd.value) && cmd.value >= -90.0f && cmd.value <= 90.0f)
+						player.controller.forearmAxisAdjustmentDeg = cmd.value;
+					break;
+				case GuiAction::ForearmAxisLock:
+					SaveForearmAxisLock(cmd.flag);
+					break;
 				case GuiAction::BeforeQuartzExperiment:
 					config.beforeQuartzExperiment = cmd.flag && config.secondaryPhysicsBackend == 2;
 					ApplyDeclarativeConfig();
@@ -752,13 +896,88 @@ namespace GakuMotion
 				case GuiAction::SelectTarget:
 					if (void* actor = sceneActorRegistry.Resolve(cmd.actorToken, cmd.actorEpoch)) SetTargetActor(actor);
 					break;
+				case GuiAction::SetEnsembleFollower:
+				{
+					if (ensemble.HasActiveFollowers() && !PrepareInjection())
+					{ ensembleNotice = "当前场景无法安全调整多角色绑定"; break; }
+					const int motionIndex = FindPlaylistIndex(motions, cmd.key);
+					if (cmd.libraryRevision != libraryRevision || motionIndex < 0 ||
+					    cmd.candidateIndex < 0 || cmd.candidateIndex >= 2 || ensembleRestoreUnconfirmed ||
+					    player.state == PlaybackState::Playing || player.state == PlaybackState::Paused)
+					{ ensembleNotice = "绑定失败：请停止播放并确认角色和曲库未变化"; break; }
+					const bool ok = ensemble.Set(static_cast<size_t>(cmd.candidateIndex), cmd.actorToken,
+					                             cmd.actorEpoch, motions[motionIndex], cmd.value, sceneActorRegistry,
+					                             player, globalOverrides, masterOverridesEnabled);
+					if (ok) { ++injectionSession; ensembleNotice = "已绑定角色动作"; }
+					else if (ensemble.RestoreUnconfirmed())
+					{ ensembleRestoreUnconfirmed = true; ensembleNotice = "角色恢复未确认，已停止动作注入"; }
+					else ensembleNotice = "绑定失败：角色重复、名单已变化或动作无法读取";
+					break;
+				}
+				case GuiAction::ClearEnsembleFollower:
+					if (ensemble.HasActiveFollowers() && !PrepareInjection())
+					{ ensembleNotice = "当前场景无法安全解除多角色绑定"; break; }
+					if (cmd.actorEpoch != sceneActorRegistry.Epoch() || cmd.candidateIndex < 0 || cmd.candidateIndex >= 2 ||
+					    player.state == PlaybackState::Playing || player.state == PlaybackState::Paused)
+					{ ensembleNotice = "请停止播放后解除绑定"; break; }
+					if (ensemble.Clear(static_cast<size_t>(cmd.candidateIndex), sceneActorRegistry))
+					{ ++injectionSession; ensembleNotice = "已解除角色动作"; }
+					else { ensembleRestoreUnconfirmed = true; ensembleNotice = "角色恢复未确认，已停止动作注入"; }
+					break;
+				case GuiAction::SceneArm:
+				{
+					void* actor = sceneActorRegistry.Resolve(cmd.actorToken, cmd.actorEpoch);
+					if (!actor || ensembleRestoreUnconfirmed) break;
+					if (actor == player.controller.targetActor)
+					{
+						if (cmd.stagePresetIndex == 0 && std::isfinite(cmd.value) && cmd.value >= -1.0f && cmd.value <= 1.0f)
+							player.controller.wristTwistShare = cmd.value;
+						else if (cmd.stagePresetIndex == 1 && !forearmAxisLocked && std::isfinite(cmd.value) && cmd.value >= -90.0f && cmd.value <= 90.0f)
+							player.controller.forearmAxisAdjustmentDeg = cmd.value;
+						else if (cmd.stagePresetIndex == 2 && !forearmAxisLocked)
+						{ player.controller.wristTwistShare = 0.0f; player.controller.forearmAxisAdjustmentDeg = 45.0f; }
+						else if (cmd.stagePresetIndex == 3) SaveForearmAxisLock(cmd.value != 0.0f);
+						else break;
+						ensemble.RememberArmCalibration(cmd.actorToken, {player.controller.wristTwistShare, player.controller.forearmAxisAdjustmentDeg, forearmAxisLocked});
+					}
+					else ensemble.SetSceneArmCalibration(cmd.actorToken, cmd.actorEpoch, cmd.stagePresetIndex, cmd.value, sceneActorRegistry);
+					break;
+				}
+				case GuiAction::AlignEnsemble:
+					AlignEnsembleFormation(cmd);
+					break;
+				case GuiAction::SaveEnsemblePreset:
+					SaveEnsemblePreset(cmd);
+					break;
+				case GuiAction::ApplyEnsemblePreset:
+					ApplyEnsemblePreset(cmd);
+					break;
+				case GuiAction::FollowerArm:
+					if (!ensembleRestoreUnconfirmed && cmd.candidateIndex >= 0 && cmd.candidateIndex < 2)
+						ensemble.SetArmCalibration(static_cast<size_t>(cmd.candidateIndex), cmd.actorToken, cmd.actorEpoch,
+						                           cmd.loadedGeneration, cmd.stagePresetIndex, cmd.value, sceneActorRegistry);
+					break;
+				case GuiAction::EnsemblePosition:
+					if (!ensembleRestoreUnconfirmed && cmd.candidateIndex >= 0 && cmd.candidateIndex < 2)
+						ensemble.SetPosition(static_cast<size_t>(cmd.candidateIndex), cmd.actorToken, cmd.actorEpoch,
+						                     cmd.loadedGeneration, cmd.position, sceneActorRegistry);
+					break;
+				case GuiAction::EnsembleYaw:
+					if (!ensembleRestoreUnconfirmed && cmd.candidateIndex >= 0 && cmd.candidateIndex < 2)
+						ensemble.SetYaw(static_cast<size_t>(cmd.candidateIndex), cmd.actorToken, cmd.actorEpoch,
+						                cmd.loadedGeneration, cmd.value, sceneActorRegistry);
+					break;
 				case GuiAction::ClearTarget: PickBoundActorAsTarget();
 					break;
 				case GuiAction::NextTarget: CycleTargetActor();
 					break;
 				case GuiAction::PickTarget: PickBoundActorAsTarget();
 					break;
-				case GuiAction::InitialPosition: player.controller.SetInitialPositionOffset(cmd.position);
+				case GuiAction::InitialPosition:
+					if (IsCurrentPlacementTarget(cmd) && player.controller.SetInitialPositionOffset(cmd.position)) RememberCurrentPlacement();
+					break;
+				case GuiAction::InitialYaw:
+					if (IsCurrentPlacementTarget(cmd) && player.controller.SetInitialYawDegrees(cmd.value)) RememberCurrentPlacement();
 					break;
 				case GuiAction::SaveInitialPosition: SaveInitialPosition();
 					break;
@@ -878,9 +1097,12 @@ namespace GakuMotion
 			LoadStageLoadSettings();
 			playlistPath = dataLayout.Playlist();
 			initialPositionPath = configRoot + "/initial_position.json";
+			ensemblePresetPath = configRoot + "/ensemble_position_presets.json";
+			LoadEnsemblePresetFile();
 			LoadInitialPosition();
 			LoadFacialWeights();
 			LoadMusicVolume();
+			LoadForearmAxisLock();
 			globalOverridePath = configRoot + "/bone_overrides.json";
 
 			gui.motionsRoot = motionsRoot;
@@ -964,6 +1186,8 @@ namespace GakuMotion
 			// The old scene may already be unloading. Drop references without
 			// calling RestoreMute/Rebind on its destroyed Unity objects.
 			camera.Release(false);
+			ensemble.Abandon();
+			ensembleRestoreUnconfirmed = false;
 			player.AbandonScene();
 			stageManager.AbandonScene();
 			ResetSoleObservation();
@@ -979,12 +1203,14 @@ namespace GakuMotion
 			// Stop restores animation but keeps rest snapshots for switching songs.
 			// When the actor set changes, those snapshots are no longer safe, even
 			// if playback was already stopped before the actor was destroyed.
-			if (player.controller.bindings.empty()) return false;
+			if (player.controller.bindings.empty() && !ensemble.HasFollowers()) return false;
 			++injectionSession;
 			// Actor replacement in the SAME scene must retain stage ownership.
 			// The stage manager restores/rescans independently before this call.
 			captureSuspended = false;
 			camera.Release(false);
+			ensemble.Abandon();
+			ensembleRestoreUnconfirmed = false;
 			player.AbandonScene();
 			ResetSoleObservation();
 			sceneActors.clear();
@@ -1046,6 +1272,16 @@ namespace GakuMotion
 			player.controller.eyePoseWriteStamp.mask = 0;
 			player.controller.eyePoseWriteStamp.transforms = {};
 			player.Tick(deltaTime, actor, animator, playableDirector, advanceClock);
+			if (player.state == PlaybackState::Stopped) RestoreEnsemble();
+			else ensemble.Tick(actor, animator, playableDirector, player, sceneActorRegistry);
+			if (ensemble.RestoreUnconfirmed())
+			{
+				ensembleRestoreUnconfirmed = true;
+				ensembleNotice = "角色状态不可安全恢复，已停止动作注入";
+				player.Pause();
+				NotifyMotionPlaying(false);
+				return;
+			}
 			ObserveSoles(actor); // Read-only Unity queries, on the same main-thread frame.
 			ApplyExperimentalSolePitch(actor); // Opt-in demo, separate from #078 evidence.
 			WriteRequestedSolePitchSnapshot(actor);
@@ -1078,9 +1314,36 @@ namespace GakuMotion
 				camera.LoadTrack(player.currentMotionDir, player.clip);
 				player.cameraSourceDuration = camera.track.frames.empty() ? 0.0f :
 					static_cast<float>(camera.track.frames.size()) / camera.track.fps;
+				const Vector3 liveTrackAnchor = LiveCameraTrackAnchor(actor);
 				camera.Tick(player.state == PlaybackState::Playing || player.state == PlaybackState::Paused || player.state == PlaybackState::Preview,
 				            player.CameraSourceTime(), cameraDeltaTime >= 0.0f ? cameraDeltaTime : deltaTime,
-				            actor, physicalFrame);
+				            actor, physicalFrame, player.controller.initialYawDegrees, liveTrackAnchor);
+				// One local diagnostic per session/clip/actor. These values let us
+				// distinguish a bad baseline from a mismatched imported camera.
+				if (liveTakeoverActive && player.controller.currentBinding.actor == actor &&
+				    player.controller.currentBinding.bindPoseCaptured && camera.owned && camera.settings.mode == CameraMode::Track &&
+				    !camera.track.frames.empty() && camera.fnActorPose &&
+				    (liveAlignmentLoggedSession != injectionSession || liveAlignmentLoggedMotion != loadedMotionGeneration ||
+				     liveAlignmentLoggedActor != actor))
+				{
+					Vector3 origin, hips;
+					Quaternion rotation;
+					if (camera.fnActorPose(actor, origin, rotation, hips))
+					{
+						CameraFrame sample;
+						if (camera.track.Sample(player.CameraSourceTime(), sample))
+						{
+							LogInfo(detail::FormatMsg("[GakuMotion][LiveAlignment] t=%.3f origin=(%.3f,%.3f,%.3f) hips=(%.3f,%.3f,%.3f) baseline=(%.3f,%.3f,%.3f) camera_local=(%.3f,%.3f,%.3f) camera_world=(%.3f,%.3f,%.3f)",
+							    player.CameraSourceTime(), origin.x, origin.y, origin.z, hips.x, hips.y, hips.z,
+							    liveTrackAnchor.x, liveTrackAnchor.y, liveTrackAnchor.z,
+							    sample.position.x, sample.position.y, sample.position.z,
+							    camera.desired.position.x, camera.desired.position.y, camera.desired.position.z));
+							liveAlignmentLoggedSession = injectionSession;
+							liveAlignmentLoggedMotion = loadedMotionGeneration;
+							liveAlignmentLoggedActor = actor;
+						}
+					}
+				}
 			}
 
 			// 4. 角色状态快照（供面板/日志）
@@ -1215,6 +1478,7 @@ namespace GakuMotion
 				return false;
 			}
 			if (version != ReadMotionFileVersion(directory)) { libraryNotice = "文件仍在更新，请稍后重新加载"; return false; }
+			if (!RestoreEnsemble()) { libraryNotice = "多角色恢复未确认，无法重新加载"; return false; }
 			const float time = player.currentTime;
 			const bool preview = player.state == PlaybackState::Stopped || player.state == PlaybackState::Preview;
 			player.AdoptLoadedMotion(directory, file, std::move(next));
@@ -1236,6 +1500,7 @@ namespace GakuMotion
 
 		void ClearCurrentMotion()
 		{
+			if (!RestoreEnsemble()) return;
 			player.Stop();
 			camera.Release();
 			player.clip = MotionClip{};
@@ -1262,6 +1527,9 @@ namespace GakuMotion
 		bool DeleteMotionFiles(const std::string& key, bool confirmed = false)
 		{
 			if (!confirmed) return false;
+			for (const auto& follower : ensemble.Followers())
+				if (follower.player && follower.motionKey == key)
+				{ playlistNotice = "曲目正被多角色使用，请先解除绑定"; return false; }
 			if (importBusy || cameraImportBusy) { playlistNotice = "正在导入，完成后可删除曲目"; return false; }
 			const int index = FindPlaylistIndex(motions, key);
 			if (index < 0) return false;
@@ -1280,7 +1548,11 @@ namespace GakuMotion
 			const auto current = CurrentMotion() ? CurrentMotion()->name : "";
 			const bool deletingLoaded = loadedMotionKey == key ||
 				(!player.currentMotionDir.empty() && DataLayout::SamePath(player.currentMotionDir, motions[index].dir));
-			if (deletingLoaded) { player.Stop(); camera.Release(); NotifyMotionPlaying(false); }
+			if (deletingLoaded)
+			{
+				if (!RestoreEnsemble()) { playlistNotice = "多角色恢复未确认，无法删除曲目"; return false; }
+				player.Stop(); camera.Release(); NotifyMotionPlaying(false);
+			}
 			bool changed = false;
 			if (!LibraryDelete::PermanentlyDelete(root, source, changed, error))
 			{
@@ -1493,6 +1765,76 @@ namespace GakuMotion
 			return true;
 		}
 
+		void LoadForearmAxisLock()
+		{
+			const auto path = configRoot + "/forearm_axis_lock.json";
+			std::error_code ec;
+			if (!std::filesystem::exists(MotionPathFromUtf8(path), ec) && !ec)
+			{
+				player.controller.forearmAxisAdjustmentDeg = 45.0f;
+				forearmAxisLocked = true;
+				forearmAxisNotice = "默认锁定 45°；仅用于当前绑定主角色的 gkclip";
+				return;
+			}
+			jsonlite::Value root; std::string error;
+			if (ec || !jsonlite::ParseFile(path, root, error) || root.IntPath("version", 0) != 1)
+			{
+				player.controller.forearmAxisAdjustmentDeg = 0.0f;
+				forearmAxisLocked = false;
+				forearmAxisNotice = "前臂校正载入失败，已恢复 0°";
+				return;
+			}
+			const auto* value = root.Find("degrees");
+			const auto* locked = root.Find("locked");
+			if (!value || !value->IsNumber() || !std::isfinite(value->AsFloat(0)) ||
+			    value->AsFloat(0) < -90.0f || value->AsFloat(0) > 90.0f || !locked || !locked->IsBool())
+			{
+				player.controller.forearmAxisAdjustmentDeg = 0.0f;
+				forearmAxisLocked = false;
+				forearmAxisNotice = "前臂校正载入失败，已恢复 0°";
+				return;
+			}
+			player.controller.forearmAxisAdjustmentDeg = value->AsFloat(0);
+			forearmAxisLocked = locked->AsBool(false);
+			forearmAxisNotice = "已载入前臂校正设置";
+		}
+
+		bool SaveForearmAxisLock(bool locked)
+		{
+			const float degrees = player.controller.forearmAxisAdjustmentDeg;
+			if (!std::isfinite(degrees) || degrees < -90.0f || degrees > 90.0f || configRoot.empty())
+			{ forearmAxisNotice = "保存失败：前臂校正数值或路径无效"; return false; }
+			std::error_code ec;
+			std::filesystem::create_directories(MotionPathFromUtf8(configRoot), ec);
+			if (ec) { forearmAxisNotice = "保存失败：无法创建配置目录"; return false; }
+			const auto path = configRoot + "/forearm_axis_lock.json";
+			if (std::filesystem::exists(MotionPathFromUtf8(path), ec))
+			{
+				jsonlite::Value existing; std::string error;
+				if (!jsonlite::ParseFile(path, existing, error) || existing.IntPath("version", 0) != 1)
+				{ forearmAxisNotice = "保存失败：已有校正文件无效，未覆盖"; return false; }
+			}
+			if (ec) { forearmAxisNotice = "保存失败：无法检查配置文件"; return false; }
+			const auto temp = MotionPathFromUtf8(path + ".tmp"), final = MotionPathFromUtf8(path);
+			HANDLE file = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+			if (file == INVALID_HANDLE_VALUE) { forearmAxisNotice = "保存失败：无法创建临时文件"; return false; }
+			const std::string content = "{\n  \"version\": 1,\n  \"degrees\": " +
+				jsonlite::FormatNumber(degrees, 6) + ",\n  \"locked\": " + (locked ? "true" : "false") + "\n}\n";
+			DWORD written = 0;
+			const bool wrote = WriteFile(file, content.data(), static_cast<DWORD>(content.size()), &written, nullptr) &&
+				written == content.size() && FlushFileBuffers(file);
+			CloseHandle(file);
+			if (!wrote || !MoveFileExW(temp.c_str(), final.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+			{
+				DeleteFileW(temp.c_str());
+				forearmAxisNotice = "保存失败：无法写入校正文件";
+				return false;
+			}
+			forearmAxisLocked = locked;
+			forearmAxisNotice = locked ? "已锁定并保存前臂校正" : "已解锁；调整后可重新锁定保存";
+			return true;
+		}
+
 		bool LoadCameraSettings()
 		{
 			const auto path = configRoot + "/camera.json";
@@ -1547,6 +1889,7 @@ namespace GakuMotion
 				<< ",\n    \"follow_behavior\": " << static_cast<int>(s.followBehavior)
 				<< ",\n    \"follow_target\": \"" << CameraFollowTargetName(s.followTarget) << '"'
 				<< ",\n    \"follow_actor\": " << (s.followActor ? "true" : "false")
+				<< ",\n    \"follow_placement_yaw\": " << (s.followPlacementYaw ? "true" : "false")
 				<< ",\n    \"limit_to_scene\": " << (s.limitToScene ? "true" : "false") << ",\n    \"bounds_min\": ";
 			vector(s.boundsMin);
 			out << ",\n    \"bounds_max\": ";
@@ -2014,15 +2357,25 @@ namespace GakuMotion
 				return false;
 			}
 			const auto* values = root.Find("offset_m");
+			const auto* yawValue = root.Find("yaw_degrees");
 			if (root.IntPath("version", 0) != 1 || root.StringPath("space", "") != "world" ||
 				!values || !values->IsArray() || values->Size() != 3 ||
 				!values->At(0)->IsNumber() || !values->At(1)->IsNumber() || !values->At(2)->IsNumber() ||
-				!player.controller.SetInitialPositionOffset(
-					Vector3(values->At(0)->AsFloat(0), values->At(1)->AsFloat(0), values->At(2)->AsFloat(0))))
+				(yawValue && !yawValue->IsNumber()))
 			{
-				initialPositionNotice = "初始位置文件无效：需要 world 坐标下的三个有限数值";
+				initialPositionNotice = "初始站位文件无效：需要三个坐标和可选朝向数值";
 				return false;
 			}
+			const Vector3 offset(values->At(0)->AsFloat(0), values->At(1)->AsFloat(0), values->At(2)->AsFloat(0));
+			const float yaw = yawValue ? yawValue->AsFloat(0) : 0.0f;
+			if (!std::isfinite(offset.x) || !std::isfinite(offset.y) || !std::isfinite(offset.z) || !std::isfinite(yaw))
+			{
+				initialPositionNotice = "初始站位文件无效：坐标和朝向必须为有限数值";
+				return false;
+			}
+			player.controller.SetInitialPositionOffset(offset);
+			player.controller.SetInitialYawDegrees(yaw);
+			RememberCurrentPlacement();
 			initialPositionNotice = "已载入保存的初始位置";
 			return true;
 		}
@@ -2030,7 +2383,8 @@ namespace GakuMotion
 		bool SaveInitialPosition()
 		{
 			const auto offset = player.controller.initialPositionOffset;
-			if (!std::isfinite(offset.x) || !std::isfinite(offset.y) || !std::isfinite(offset.z))
+			if (!std::isfinite(offset.x) || !std::isfinite(offset.y) || !std::isfinite(offset.z) ||
+			    !std::isfinite(player.controller.initialYawDegrees))
 			{
 				initialPositionNotice = "初始位置保存失败：坐标必须为有限数值";
 				return false;
@@ -2046,7 +2400,8 @@ namespace GakuMotion
 			std::ofstream out(MotionPathFromUtf8(temporary), std::ios::binary | std::ios::trunc);
 			out << "{\n  \"version\": 1,\n  \"space\": \"world\",\n  \"offset_m\": ["
 				<< jsonlite::FormatNumber(offset.x, 6) << ", " << jsonlite::FormatNumber(offset.y, 6) << ", "
-				<< jsonlite::FormatNumber(offset.z, 6) << "]\n}\n";
+				<< jsonlite::FormatNumber(offset.z, 6) << "],\n  \"yaw_degrees\": "
+				<< jsonlite::FormatNumber(player.controller.initialYawDegrees, 6) << "\n}\n";
 			out.close();
 			if (!out)
 			{
@@ -2092,6 +2447,7 @@ namespace GakuMotion
 			// 因此「选中但未播放」不再退回官方待机造型。
 			if (player.state != PlaybackState::Stopped)
 			{
+				if (!RestoreEnsemble()) return false;
 				player.Stop();
 				NotifyMotionPlaying(false);
 			}
@@ -2540,6 +2896,7 @@ namespace GakuMotion
 		{
 			BoneOverrideSet::BuildEffective(globalOverrides, motionOverrides,
 			                                masterOverridesEnabled, effectiveOverrides);
+			ensemble.RebuildOverrides(globalOverrides, masterOverridesEnabled);
 			player.controller.SetBoneOverrides(&effectiveOverrides);
 		}
 
@@ -2558,11 +2915,261 @@ namespace GakuMotion
 		// 不向 GUI 暴露托管指针；发布实际名单和带生命周期的选择 token。
 		// Called only from a fresh, pinned Unity-thread actor search in the owner scene.
 		// Missing actors are abandoned without touching possibly destroyed objects.
+		struct ActorStart { Vector3 world; Quaternion rotation; float heading; };
+		static bool ReadActorStart(MotionPlayer& p, ActorStart& out)
+		{
+				auto& c = p.controller;
+				const auto it = c.bindings.find(c.targetActor);
+				if (!c.targetActor || it == c.bindings.end() || !it->second.bindPoseCaptured ||
+				    !it->second.actorTransform || !c.fnGetWorldPosition || !c.fnGetWorldRotation || p.clip.root_positions.empty()) return false;
+				const auto& b = it->second;
+				float pos[3]{NAN,NAN,NAN}, q[4]{NAN,NAN,NAN,NAN};
+				c.fnGetWorldPosition(b.actorTransform, pos); c.fnGetWorldRotation(b.actorTransform, q);
+				const float n = q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3];
+				if (!std::isfinite(pos[0]) || !std::isfinite(pos[1]) || !std::isfinite(pos[2]) || !std::isfinite(n) || n < 1e-8f) return false;
+				const float inv = 1.0f / std::sqrt(n);
+				out.rotation = Quaternion(q[0]*inv, q[1]*inv, q[2]*inv, q[3]*inv);
+				const Vector3 forward = out.rotation.Rotate({0,0,1});
+				if (!std::isfinite(forward.x) || !std::isfinite(forward.z) || forward.x*forward.x + forward.z*forward.z < 1e-8f) return false;
+				out.heading = std::atan2(forward.x, forward.z) * (180.0f / 3.14159265358979323846f);
+				const Vector3 r = p.clip.root_positions.front();
+				const Vector3 local{b.restRootPos.x + r.x,
+					(b.clipGroundAnchored ? 0.0f : b.restRootPos.y) + r.y + b.groundLift +
+					(c.rootHeightCalibrationEnabled ? b.calibratedRootHeight : 0.0f), b.restRootPos.z + r.z};
+				out.world = Vector3{pos[0],pos[1],pos[2]} + out.rotation.Rotate(local) + c.initialPositionOffset;
+				return std::isfinite(out.world.x) && std::isfinite(out.world.y) && std::isfinite(out.world.z);
+		}
+
+		bool LoadEnsemblePresetFile()
+		{
+			std::error_code ec;
+			if (ensemblePresetPath.empty()) ensemblePresetPath = configRoot + "/ensemble_position_presets.json";
+			const auto file = MotionPathFromUtf8(ensemblePresetPath);
+			if (!std::filesystem::exists(file, ec))
+			{
+				if (ec) { ensemblePresetNotice = "站位预设读取失败"; return false; }
+				ensemblePresets.clear(); return true;
+			}
+			if (std::filesystem::file_size(file, ec) > 1024 * 1024 || ec)
+			{ ensemblePresetNotice = "站位预设文件无效，未覆盖"; return false; }
+			jsonlite::Value root; std::string error;
+			if (!jsonlite::ParseFile(ensemblePresetPath, root, error) || root.IntPath("version", 0) != 1)
+			{ ensemblePresetNotice = "站位预设文件无效，未覆盖"; return false; }
+			const auto* entries = root.Find("presets");
+			if (!entries || !entries->IsArray() || entries->Size() > 32)
+			{ ensemblePresetNotice = "站位预设文件无效，未覆盖"; return false; }
+			std::vector<EnsemblePreset> parsed;
+			for (size_t i = 0; i < entries->Size(); ++i)
+			{
+				const auto* entry = entries->At(i);
+				const auto* name = entry ? entry->Find("name") : nullptr;
+				const auto* roles = entry ? entry->Find("roles") : nullptr;
+				if (!name || !name->IsString() || name->stringValue.empty() || name->stringValue.size() > 100 ||
+				    !roles || !roles->IsArray() || roles->Size() != 3 ||
+				    std::any_of(parsed.begin(), parsed.end(), [&](const auto& item) { return item.name == name->stringValue; }))
+				{ ensemblePresetNotice = "站位预设文件无效，未覆盖"; return false; }
+				EnsemblePreset preset; preset.name = name->stringValue;
+				for (size_t j = 0; j < preset.roles.size(); ++j)
+				{
+					const auto* role = roles->At(j);
+					if (role && role->IsNull()) continue;
+					if (!role || !role->IsArray() || role->Size() != 4)
+					{ ensemblePresetNotice = "站位预设文件无效，未覆盖"; return false; }
+					for (size_t k = 0; k < 4; ++k)
+						if (!role->At(k)->IsNumber() || !std::isfinite(role->At(k)->AsFloat(NAN)))
+						{ ensemblePresetNotice = "站位预设文件无效，未覆盖"; return false; }
+					preset.roles[j] = {true, {role->At(0)->AsFloat(0), role->At(1)->AsFloat(0), role->At(2)->AsFloat(0)}, role->At(3)->AsFloat(0)};
+				}
+				if (!preset.roles[0].enabled || (!preset.roles[1].enabled && !preset.roles[2].enabled))
+				{ ensemblePresetNotice = "站位预设文件无效，未覆盖"; return false; }
+				parsed.push_back(std::move(preset));
+			}
+			ensemblePresets = std::move(parsed); return true;
+		}
+
+		bool WriteEnsemblePresetFile(const std::vector<EnsemblePreset>& presets)
+		{
+			std::error_code ec;
+			std::filesystem::create_directories(MotionPathFromUtf8(configRoot), ec);
+			if (ec) { ensemblePresetNotice = "站位预设保存失败：无法创建配置目录"; return false; }
+			std::ostringstream out; out << "{\n  \"version\": 1,\n  \"presets\": [";
+			for (size_t i = 0; i < presets.size(); ++i)
+			{
+				if (i) out << ',';
+				out << "\n    {\"name\": \"" << jsonlite::EscapeString(presets[i].name) << "\", \"roles\": [";
+				for (size_t j = 0; j < 3; ++j)
+				{
+					if (j) out << ", ";
+					const auto& role = presets[i].roles[j];
+					if (!role.enabled) out << "null";
+					else out << '[' << jsonlite::FormatNumber(role.world.x, 6) << ',' << jsonlite::FormatNumber(role.world.y, 6)
+					         << ',' << jsonlite::FormatNumber(role.world.z, 6) << ',' << jsonlite::FormatNumber(role.heading, 6) << ']';
+				}
+				out << "]}";
+			}
+			out << "\n  ]\n}\n";
+			const std::string content = out.str();
+			const auto final = MotionPathFromUtf8(ensemblePresetPath).wstring();
+			const auto temp = final + L".tmp." + std::to_wstring(GetCurrentProcessId()) + L"." + std::to_wstring(GetTickCount64());
+			HANDLE file = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+			if (file == INVALID_HANDLE_VALUE) { ensemblePresetNotice = "站位预设保存失败：无法创建临时文件"; return false; }
+			DWORD written = 0;
+			const bool wrote = WriteFile(file, content.data(), static_cast<DWORD>(content.size()), &written, nullptr) &&
+			                   written == content.size() && FlushFileBuffers(file);
+			CloseHandle(file);
+			if (!wrote || !MoveFileExW(temp.c_str(), final.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+			{ DeleteFileW(temp.c_str()); ensemblePresetNotice = "站位预设保存失败：无法写入文件"; return false; }
+			return true;
+		}
+
+		bool ValidEnsemblePresetContext(const GuiCommand& cmd)
+		{
+			if (ensembleRestoreUnconfirmed || cmd.sceneSession != injectionSession || !cmd.actorToken ||
+			    sceneActorRegistry.Resolve(cmd.actorToken, cmd.actorEpoch) != player.controller.targetActor)
+			{ ensemblePresetNotice = "站位预设失败：主角色或场景已变化"; return false; }
+			for (size_t i = 0; i < ensemble.Followers().size(); ++i)
+				if (ensemble.Followers()[i].actorToken != cmd.formationTokens[i] ||
+				    ensemble.Followers()[i].bindingGeneration != cmd.formationGenerations[i])
+				{ ensemblePresetNotice = "站位预设失败：角色绑定已变化，请重试"; return false; }
+			return true;
+		}
+
+		void SaveEnsemblePreset(const GuiCommand& cmd)
+		{
+			if (!ValidEnsemblePresetContext(cmd)) return;
+			if (cmd.key.empty() || cmd.key.size() > 100) { ensemblePresetNotice = "请输入不超过 100 字节的预设名称"; return; }
+			EnsemblePreset preset; preset.name = cmd.key;
+			ActorStart start;
+			if (!ReadActorStart(player, start)) { ensemblePresetNotice = "请先播放或预览，等待主角色骨架就绪"; return; }
+			preset.roles[0] = {true, start.world, std::remainder(start.heading + player.controller.initialYawDegrees, 360.0f)};
+			for (size_t i = 0; i < 2; ++i)
+			{
+				const auto& follower = ensemble.Followers()[i];
+				if (!follower.player) continue;
+				if (sceneActorRegistry.Resolve(follower.actorToken, cmd.actorEpoch) != follower.player->controller.targetActor ||
+				    !ReadActorStart(*follower.player, start)) { ensemblePresetNotice = "请先播放或预览，等待所有副角色骨架就绪"; return; }
+				preset.roles[i+1] = {true, start.world, std::remainder(start.heading + follower.player->controller.initialYawDegrees, 360.0f)};
+			}
+			if (!preset.roles[1].enabled && !preset.roles[2].enabled) { ensemblePresetNotice = "请先绑定至少一个副角色"; return; }
+			if (!LoadEnsemblePresetFile()) return;
+			auto next = ensemblePresets;
+			auto found = std::find_if(next.begin(), next.end(), [&](const auto& p) { return p.name == preset.name; });
+			if (found != next.end()) *found = std::move(preset);
+			else if (next.size() < 32) next.push_back(std::move(preset));
+			else { ensemblePresetNotice = "站位预设已达 32 个上限"; return; }
+			if (!WriteEnsemblePresetFile(next)) return;
+			ensemblePresets = std::move(next);
+			ensemblePresetNotice = "已保存站位预设：" + cmd.key;
+		}
+
+		void ApplyEnsemblePreset(const GuiCommand& cmd)
+		{
+			if (!ValidEnsemblePresetContext(cmd) || !LoadEnsemblePresetFile()) return;
+			const auto found = std::find_if(ensemblePresets.begin(), ensemblePresets.end(), [&](const auto& p) { return p.name == cmd.key; });
+			if (found == ensemblePresets.end()) { ensemblePresetNotice = "未找到站位预设：" + cmd.key; return; }
+			struct Update { Vector3 offset; float yaw; };
+			std::array<Update, 3> updates{};
+			for (size_t i = 0; i < 3; ++i)
+			{
+				MotionPlayer* target = i == 0 ? &player : ensemble.Followers()[i-1].player.get();
+				if (found->roles[i].enabled != (target != nullptr))
+				{ ensemblePresetNotice = "站位预设需要相同的主角及副角色槽位，请先完成绑定"; return; }
+				if (!target) continue;
+				if (i && sceneActorRegistry.Resolve(ensemble.Followers()[i-1].actorToken, cmd.actorEpoch) != target->controller.targetActor)
+				{ ensemblePresetNotice = "站位预设失败：角色名单已变化"; return; }
+				ActorStart start;
+				if (!ReadActorStart(*target, start)) { ensemblePresetNotice = "请先播放或预览，等待所有角色骨架就绪"; return; }
+				const auto& role = found->roles[i];
+				updates[i] = {target->controller.initialPositionOffset + (role.world - start.world),
+				              std::remainder(role.heading - start.heading, 360.0f)};
+				if (!std::isfinite(updates[i].offset.x) || !std::isfinite(updates[i].offset.y) || !std::isfinite(updates[i].offset.z) ||
+				    !std::isfinite(updates[i].yaw)) { ensemblePresetNotice = "站位预设失败：结果无效"; return; }
+			}
+			player.controller.SetInitialPositionOffset(updates[0].offset);
+			player.controller.SetInitialYawDegrees(updates[0].yaw);
+			gui.initialPositionEditing = false;
+			gui.initialYawEditing = false;
+			RememberCurrentPlacement();
+			for (size_t i = 0; i < 2; ++i) if (found->roles[i+1].enabled)
+			{
+				const auto& follower = ensemble.Followers()[i];
+				ensemble.SetPosition(i, follower.actorToken, cmd.actorEpoch, follower.bindingGeneration, updates[i+1].offset, sceneActorRegistry);
+				ensemble.SetYaw(i, follower.actorToken, cmd.actorEpoch, follower.bindingGeneration, updates[i+1].yaw, sceneActorRegistry);
+			}
+			ensemblePresetNotice = "已应用站位预设：" + cmd.key;
+		}
+
+		// One-shot alignment, committed only after all source and live actor data validate.
+		void AlignEnsembleFormation(const GuiCommand& cmd)
+		{
+			if (ensembleRestoreUnconfirmed || cmd.sceneSession != injectionSession ||
+			    !cmd.actorToken || sceneActorRegistry.Resolve(cmd.actorToken, cmd.actorEpoch) != player.controller.targetActor)
+			{ ensembleNotice = "对齐失败：主角色或场景已变化"; return; }
+			if (!fnReadFormationOrigin || !player.clip.IsLocalDeltaStream())
+			{ ensembleNotice = "对齐失败：需要新版导入器和 gkclip 动作"; return; }
+			for (size_t i = 0; i < ensemble.Followers().size(); ++i)
+			{
+				const auto& follower = ensemble.Followers()[i];
+				if (cmd.formationTokens[i] != follower.actorToken || cmd.formationGenerations[i] != follower.bindingGeneration)
+				{ ensembleNotice = "对齐失败：角色绑定已变化，请重试"; return; }
+			}
+			ActorStart main;
+			Vector3 mainOrigin;
+			if (!ReadActorStart(player, main)) { ensembleNotice = "对齐失败：请先播放或预览，等待主角色骨架就绪"; return; }
+			if (!fnReadFormationOrigin(player.currentMotionDir, mainOrigin))
+			{ ensembleNotice = "对齐失败：主角色曲目缺少可验证的原始 VMD 或导入器不兼容"; return; }
+			const Quaternion basis = Quaternion::FromEulerDegreesXYZ(0, player.controller.initialYawDegrees, 0) * main.rotation;
+			struct Update { bool active{false}; Vector3 position; float yaw{0}; };
+			std::array<Update, 2> updates{};
+			int count = 0;
+			for (size_t i = 0; i < ensemble.Followers().size(); ++i)
+			{
+				const auto& follower = ensemble.Followers()[i];
+				if (!follower.player) continue;
+				if (sceneActorRegistry.Resolve(follower.actorToken, cmd.actorEpoch) != follower.player->controller.targetActor ||
+				    !follower.player->clip.IsLocalDeltaStream())
+				{ ensembleNotice = "对齐失败：副角色无效或动作格式不支持"; return; }
+				ActorStart start;
+				Vector3 origin;
+				if (!ReadActorStart(*follower.player, start)) { ensembleNotice = "对齐失败：请先播放或预览，等待所有角色骨架就绪"; return; }
+				if (!fnReadFormationOrigin(follower.player->currentMotionDir, origin))
+				{ ensembleNotice = "对齐失败：副角色曲目缺少可验证的原始 VMD"; return; }
+				const Vector3 relative = basis.Rotate({origin.x - mainOrigin.x, 0, origin.z - mainOrigin.z});
+				const Vector3 target = main.world + relative;
+				const auto& old = follower.player->controller.initialPositionOffset;
+				updates[i] = {true, {old.x + target.x - start.world.x, old.y, old.z + target.z - start.world.z},
+				              std::remainder(main.heading + player.controller.initialYawDegrees - start.heading, 360.0f)};
+				if (!std::isfinite(updates[i].position.x) || !std::isfinite(updates[i].position.z) || !std::isfinite(updates[i].yaw))
+				{ ensembleNotice = "对齐失败：站位计算结果无效"; return; }
+				++count;
+			}
+			if (!count) { ensembleNotice = "请先绑定至少一个副角色动作"; return; }
+			for (size_t i = 0; i < updates.size(); ++i) if (updates[i].active)
+			{
+				const auto& follower = ensemble.Followers()[i];
+				ensemble.SetPosition(i, follower.actorToken, cmd.actorEpoch, follower.bindingGeneration, updates[i].position, sceneActorRegistry);
+				ensemble.SetYaw(i, follower.actorToken, cmd.actorEpoch, follower.bindingGeneration, updates[i].yaw, sceneActorRegistry);
+			}
+			ensembleNotice = "已按主角色恢复分轨初始站位并统一朝向与走位；可继续微调站位";
+		}
+
 		bool PublishSceneActors(const std::vector<SceneActorObservation>& observations)
 		{
+			const uint64_t previousEpoch = sceneActorRegistry.Epoch();
 			const auto* old = sceneActorRegistry.Find(player.controller.targetActor);
 			const uint64_t oldToken = old ? old->token : 0;
 			sceneActorRegistry.Publish(observations);
+			if (previousEpoch != sceneActorRegistry.Epoch() && ensemble.HasFollowers() && !ensembleRestoreUnconfirmed)
+			{
+				if (!ensemble.ClearAll(sceneActorRegistry))
+				{
+					ensembleRestoreUnconfirmed = true;
+					ensembleNotice = "角色名单变化，恢复未确认；已停止多角色注入";
+					player.Pause();
+					NotifyMotionPlaying(false);
+				}
+				else ensembleNotice = "角色名单变化，请重新绑定多角色动作";
+			}
 			sceneActors.clear();
 			for (const auto& item : sceneActorRegistry.Entries()) sceneActors.push_back(item.actor);
 			const auto* selected = sceneActorRegistry.Find(player.controller.targetActor);
@@ -2599,10 +3206,20 @@ namespace GakuMotion
 
 		void SetTargetActor(void* a)
 		{
+			if (ensembleRestoreUnconfirmed) return;
 			if (!a || !sceneActorRegistry.Find(a) || player.controller.targetActor == a) return;
+			const bool hadTarget = player.controller.targetActor != nullptr;
 			if (fnBeforeTargetChange && !fnBeforeTargetChange())
 			{
 				LogWarn("[GakuMotion][Target] selection rejected: secondary physics restore unconfirmed");
+				return;
+			}
+			if (!ensemble.ClearAll(sceneActorRegistry))
+			{
+				ensembleRestoreUnconfirmed = true;
+				ensembleNotice = "切换主角色失败：多角色恢复未确认";
+				player.Pause();
+				NotifyMotionPlaying(false);
 				return;
 			}
 			// Restore only a still-live old target, then release its cached body/face state.
@@ -2614,6 +3231,30 @@ namespace GakuMotion
 					LogWarn("[GakuMotion][Target] selection rejected: old actor restore unconfirmed");
 					return;
 				}
+			}
+			RememberCurrentPlacement();
+			if (const auto* previous = sceneActorRegistry.Find(player.controller.targetActor))
+				ensemble.RememberArmCalibration(previous->token, {player.controller.wristTwistShare, player.controller.forearmAxisAdjustmentDeg, forearmAxisLocked});
+			if (const auto* nextActor = sceneActorRegistry.Find(a))
+			{
+				EnsembleRuntime::ArmCalibration savedArm;
+				if (ensemble.GetArmCalibration(nextActor->token, savedArm) || hadTarget)
+				{
+					player.controller.wristTwistShare = savedArm.share;
+					player.controller.forearmAxisAdjustmentDeg = savedArm.degrees;
+					forearmAxisLocked = savedArm.locked;
+				}
+			}
+			EnsembleRuntime::Placement savedPlacement;
+			if (const auto* next = sceneActorRegistry.Find(a); next && ensemble.GetPlacement(next->token, savedPlacement))
+			{
+				player.controller.SetInitialPositionOffset(savedPlacement.position);
+				player.controller.SetInitialYawDegrees(savedPlacement.yawDegrees);
+			}
+			else if (hadTarget)
+			{
+				player.controller.SetInitialPositionOffset({});
+				player.controller.SetInitialYawDegrees(0);
 			}
 			player.controller.DiscardBindings();
 			camera.Release();
@@ -2855,9 +3496,57 @@ namespace GakuMotion
 		{
 			GuiContext ctx;
 			ctx.injectionAllowed = InjectionAllowed();
+			ctx.liveObserved = liveObservation.confirmed;
+			ctx.livePaused = liveObservation.paused;
+			ctx.liveTime = liveObservation.time;
+			ctx.liveDuration = liveObservation.duration;
+			ctx.liveViewingConfirmed = liveViewingConfirmed && !liveTakeoverFault;
+			ctx.liveTakeoverActive = liveTakeoverActive;
+			ctx.liveTakeoverAvailable = liveTakeoverAvailable;
+			ctx.liveControlNotice = liveControlNotice;
+			ctx.fnSetLivePaused = [](void* self, bool paused)
+			{
+				auto* core = static_cast<Core*>(self);
+				if (core->liveTakeoverActive || core->liveTakeoverFault || !core->liveViewingConfirmed ||
+					!core->liveObservation.confirmed || !core->liveOwnerToken) return;
+				core->livePauseRequest = paused ? 1 : 2;
+				core->livePauseRequestOwner = core->liveOwnerToken;
+				core->livePauseRequestScene = core->liveOwnerScene;
+			};
+			ctx.fnSetLiveTakeover = [](void* self, bool enabled)
+			{
+				auto* core = static_cast<Core*>(self);
+				if (!core->liveOwnerToken || (!enabled && !core->liveTakeoverActive) ||
+					(enabled && (!core->liveTakeoverAvailable || core->liveTakeoverActive))) return;
+				core->liveTakeoverRequest = enabled ? 1 : 2;
+				core->liveTakeoverRequestOwner = core->liveOwnerToken;
+				core->liveTakeoverRequestScene = core->liveOwnerScene;
+			};
 			ctx.injectionNotice = injectionStatus.empty()
 				? "仅偶像摄影与更衣室可以使用；其他页面保留设置但不生效。" : injectionStatus;
 			ctx.player = &player;
+			ctx.fnSetAuxDriveMode = [](void* self, int mode)
+			{
+				static_cast<Core*>(self)->QueueAuxDriveMode(mode);
+			};
+			ctx.fnCaptureWristDiagnostic = [](void* self)
+			{
+				static_cast<Core*>(self)->QueueGui({GuiAction::WristDiagnostic});
+			};
+			ctx.fnSetWristTwistShare = [](void* self, float value)
+			{
+				static_cast<Core*>(self)->QueueGui({GuiAction::WristTwistShare, value});
+			};
+			ctx.fnSetForearmAxisAdjustment = [](void* self, float degrees)
+			{
+				static_cast<Core*>(self)->QueueGui({GuiAction::ForearmAxisAdjustment, degrees});
+			};
+			ctx.forearmAxisLocked = forearmAxisLocked;
+			ctx.forearmAxisNotice = forearmAxisNotice;
+			ctx.fnSetForearmAxisLock = [](void* self, bool locked)
+			{
+				static_cast<Core*>(self)->QueueGui({GuiAction::ForearmAxisLock, 0, locked});
+			};
 			ctx.cameraSnapshot = camera.ReadSnapshot();
 			ctx.cameraImportBusy = cameraImportBusy;
 			ctx.cameraNotice = cameraNotice;
@@ -2894,8 +3583,77 @@ namespace GakuMotion
 			ctx.loadedSourceMissing = loadedSourceMissing;
 			ctx.loadedSourceChanged = loadedSourceChanged;
 			ctx.actorRosterEpoch = sceneActorRegistry.Epoch();
+			for (size_t i = 0; i < ensemble.Followers().size(); ++i)
+			{
+				const auto& follower = ensemble.Followers()[i];
+				ctx.ensembleFollowers[i] = {follower.actorToken, follower.motionKey, follower.offsetSeconds, follower.active,
+				                            follower.bindingGeneration,
+				                            follower.player ? follower.player->controller.initialPositionOffset : Vector3{},
+				                            follower.player ? follower.player->controller.initialYawDegrees : 0.0f,
+				                            follower.player ? follower.player->controller.wristTwistShare : 0.0f,
+				                            follower.player ? follower.player->controller.forearmAxisAdjustmentDeg : 45.0f,
+				                            follower.armLocked};
+			}
+			ctx.fnSetFollowerArm = [](void* self, int slot, uint64_t token, uint64_t epoch,
+			                              uint64_t generation, int operation, float value)
+			{
+				GuiCommand cmd{GuiAction::FollowerArm, value};
+				cmd.candidateIndex = slot; cmd.actorToken = token; cmd.actorEpoch = epoch;
+				cmd.loadedGeneration = generation; cmd.stagePresetIndex = operation;
+				static_cast<Core*>(self)->QueueGui(std::move(cmd));
+			};
+			ctx.ensembleNotice = ensembleNotice;
+			ctx.fnAlignEnsemble = [](void* self) { static_cast<Core*>(self)->QueueAlignEnsemble(); };
+			for (const auto& preset : ensemblePresets) ctx.ensemblePresetNames.push_back(preset.name);
+			ctx.ensemblePresetNotice = ensemblePresetNotice;
+			ctx.fnSaveEnsemblePreset = [](void* self, const char* name) { static_cast<Core*>(self)->QueueEnsemblePresetCommand(GuiAction::SaveEnsemblePreset, name); };
+			ctx.fnApplyEnsemblePreset = [](void* self, const char* name) { static_cast<Core*>(self)->QueueEnsemblePresetCommand(GuiAction::ApplyEnsemblePreset, name); };
+			ctx.fnSetEnsembleFollower = [](void* self, int slot, uint64_t token, uint64_t epoch,
+			                                const char* key, float offset, uint64_t revision)
+			{
+				GuiCommand cmd{GuiAction::SetEnsembleFollower};
+				cmd.candidateIndex = slot; cmd.actorToken = token; cmd.actorEpoch = epoch;
+				cmd.key = key ? key : ""; cmd.value = offset; cmd.libraryRevision = revision;
+				static_cast<Core*>(self)->QueueGui(std::move(cmd));
+			};
+			ctx.fnClearEnsembleFollower = [](void* self, int slot, uint64_t epoch)
+			{
+				GuiCommand cmd{GuiAction::ClearEnsembleFollower};
+				cmd.candidateIndex = slot; cmd.actorEpoch = epoch;
+				static_cast<Core*>(self)->QueueGui(std::move(cmd));
+			};
+			ctx.fnSetEnsemblePosition = [](void* self, int slot, uint64_t token, uint64_t epoch,
+			                               uint64_t generation, const Vector3& offset)
+			{
+				GuiCommand cmd{GuiAction::EnsemblePosition};
+				cmd.candidateIndex = slot; cmd.actorToken = token; cmd.actorEpoch = epoch;
+				cmd.loadedGeneration = generation; cmd.position = offset;
+				static_cast<Core*>(self)->QueueGui(std::move(cmd));
+			};
+			ctx.fnSetEnsembleYaw = [](void* self, int slot, uint64_t token, uint64_t epoch,
+			                          uint64_t generation, float yaw)
+			{
+				GuiCommand cmd{GuiAction::EnsembleYaw};
+				cmd.candidateIndex = slot; cmd.actorToken = token; cmd.actorEpoch = epoch;
+				cmd.loadedGeneration = generation; cmd.value = yaw;
+				static_cast<Core*>(self)->QueueGui(std::move(cmd));
+			};
+			ctx.fnSetSceneArm = [](void* self, uint64_t token, uint64_t epoch, int operation, float value)
+			{
+				GuiCommand cmd{GuiAction::SceneArm, value};
+				cmd.actorToken = token; cmd.actorEpoch = epoch; cmd.stagePresetIndex = operation;
+				static_cast<Core*>(self)->QueueGui(std::move(cmd));
+			};
 			for (const auto& item : sceneActorRegistry.Entries())
 			{
+				EnsembleRuntime::ArmCalibration arm;
+				ensemble.GetArmCalibration(item.token, arm);
+				const bool primary = item.actor == player.controller.targetActor;
+				if (primary) arm = {player.controller.wristTwistShare, player.controller.forearmAxisAdjustmentDeg, forearmAxisLocked};
+				bool bound = primary;
+				for (const auto& follower : ensemble.Followers())
+					if (follower.player && follower.actorToken == item.token) bound = true;
+				ctx.sceneArmCalibrations.push_back({item.token, arm.share, arm.degrees, arm.locked, bound, primary});
 				const std::string name = item.character.empty() ? "未识别角色" : FormatIdolDisplayName(item.character.c_str());
 				ctx.sceneActors.push_back({item.token, name + " · " + std::to_string(ctx.sceneActors.size() + 1),
 					item.actor == player.controller.targetActor});
@@ -2959,6 +3717,10 @@ namespace GakuMotion
 			ctx.fnSetInitialPosition = [](void* self, const Vector3& offset)
 			{
 				static_cast<Core*>(self)->QueueInitialPosition(offset);
+			};
+			ctx.fnSetInitialYaw = [](void* self, float yaw)
+			{
+				static_cast<Core*>(self)->QueueInitialYaw(yaw);
 			};
 			ctx.fnSaveInitialPosition = [](void* self)
 			{

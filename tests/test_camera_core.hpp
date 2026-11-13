@@ -18,6 +18,7 @@ static void TestCameraCoreWorkflow(const std::string& repoRoot)
 	settings.followTarget = CameraFollowTarget::Head;
 	settings.followFov = 51;
 	settings.vmdRangeScale = 0.75f;
+	settings.followPlacementYaw = true;
 	core.QueueCameraSettings(settings);
 	core.QueueGui({Core::GuiAction::SaveCameraSettings});
 	Check(core.camera.settings.mode == CameraMode::Track,
@@ -35,6 +36,7 @@ static void TestCameraCoreWorkflow(const std::string& repoRoot)
 	      "selected camera follow body part survives camera.json round-trip");
 	Check(reopened.camera.settings.vmdRangeScale == 0.75f,
 	      "VMD range scale survives camera.json round-trip");
+	Check(reopened.camera.settings.followPlacementYaw, "camera placement-facing option survives camera.json round-trip");
 	settings.boundsMin.x = 4;
 	core.QueueCameraSettings(settings);
 	core.ProcessPendingGuiCommands();

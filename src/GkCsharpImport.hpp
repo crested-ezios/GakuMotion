@@ -269,6 +269,19 @@ namespace GakuMotion::csharp_import
 		}
 	}
 
+	// Read-only, optional formation ABI. Old companion DLLs fail explicitly.
+	inline bool ReadFormationOrigin(const std::string& directory, Vector3& result)
+	{
+		std::lock_guard<std::mutex> lock(detail::Mutex());
+		if (!detail::LoadLocked(detail::PluginsRoot())) return false;
+		using OriginFn = int32_t (*)(const char*, float*);
+		const auto fn = reinterpret_cast<OriginFn>(GetProcAddress(detail::Module(), "GkVmdFormation_ReadOrigin"));
+		float xyz[3]{};
+		if (!fn || fn(directory.c_str(), xyz) != 0 || !std::isfinite(xyz[0]) || !std::isfinite(xyz[1]) || !std::isfinite(xyz[2])) return false;
+		result = Vector3{xyz[0], xyz[1], xyz[2]};
+		return true;
+	}
+
 	/// <summary>Resolves and loads the companion DLL from the plugin directory.</summary>
 	inline bool Initialize(const std::string& pluginsRootUtf8)
 	{

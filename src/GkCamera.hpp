@@ -204,6 +204,7 @@ namespace GakuMotion
 		FollowBehavior followBehavior{FollowBehavior::FollowMove};
 		CameraFollowTarget followTarget{CameraFollowTarget::Hips};
 		bool followActor{false}; // also translate the VMD path with the selected actor
+		bool followPlacementYaw{false}; // rotate the camera with the primary actor placement yaw
 		bool limitToScene{false};
 		Vector3 boundsMin{-5, 0.05f, -5}, boundsMax{5, 5, 5}; // world-space AABB, opt-in
 		Vector3 followOffset{0, 0.6f, 3}, targetOffset{0, 0.4f, 0}; // captured hips camera offset / selected part aim offset
@@ -271,7 +272,7 @@ namespace GakuMotion
 		{
 			auto same = [](Vector3 a, Vector3 b) { return a.x == b.x && a.y == b.y && a.z == b.z; };
 			return enabled == b.enabled && mode == b.mode && followBehavior == b.followBehavior && followTarget == b.followTarget &&
-				followActor == b.followActor &&
+				followActor == b.followActor && followPlacementYaw == b.followPlacementYaw &&
 				limitToScene == b.limitToScene && same(boundsMin, b.boundsMin) && same(boundsMax, b.boundsMax) &&
 				same(followOffset, b.followOffset) && same(targetOffset, b.targetOffset) &&
 				same(vmdOffset, b.vmdOffset) && vmdRangeScale == b.vmdRangeScale &&
@@ -461,7 +462,8 @@ namespace GakuMotion
 			Publish();
 		}
 
-		void Tick(bool active, float time, float dt, void* targetActor, uint64_t physicalFrame = 0)
+		void Tick(bool active, float time, float dt, void* targetActor, uint64_t physicalFrame = 0,
+		          float placementYawDegrees = 0.0f, Vector3 trackAnchorLocal = {})
 		{
 			if (!active || !settings.enabled || !settings.IsValid() || !targetActor)
 			{
@@ -509,6 +511,11 @@ namespace GakuMotion
 				followCaptured = true;
 				owned = true;
 			}
+			// Placement yaw turns the pose without changing the actor transform.
+			// Apply the same world-up rotation to the camera basis, around its actor anchor.
+			const Quaternion placementYaw = settings.followPlacementYaw && std::isfinite(placementYawDegrees)
+				? Quaternion::FromEulerDegreesXYZ(0.0f, placementYawDegrees, 0.0f) : Quaternion::Identity();
+			const Quaternion viewBasis = placementYaw * originRotation;
 			CameraFrame frame = saved;
 			bool hasTrack = settings.mode == CameraMode::Track && track.Sample(time, frame);
 			if (hasTrack)
@@ -529,15 +536,18 @@ namespace GakuMotion
 						delta.y * settings.vmdRangeScale, delta.z * settings.vmdRangeScale};
 					frame.orthographicSize *= settings.vmdRangeScale;
 				}
-				frame.position = (settings.followActor ? origin : actorOrigin) + originRotation.Rotate(frame.position + tf.position);
-				frame.rotation = (originRotation * frame.rotation * qRot).Normalized();
+				// The Live baseline follows the actor transform, while the authored
+				// track follows the optional placement yaw around that baseline.
+				const Vector3 anchor = CameraFinite(trackAnchorLocal) ? actorRotation.Rotate(trackAnchorLocal) : Vector3{};
+				frame.position = (settings.followActor ? origin : actorOrigin) + anchor + viewBasis.Rotate(frame.position + tf.position);
+				frame.rotation = (viewBasis * frame.rotation * qRot).Normalized();
 			}
 			else if (settings.mode == CameraMode::Track)
 			{
 				const CameraModeTransform tf = settings.EffectiveTrackTransform();
 				const Quaternion qRot = Quaternion::FromEulerDegreesXYZ(tf.rotation.x, tf.rotation.y, tf.rotation.z);
-				frame.position = saved.position + originRotation.Rotate(tf.position);
-				frame.rotation = (saved.rotation * qRot).Normalized();
+				frame.position = actorOrigin + placementYaw.Rotate(saved.position - actorOrigin) + viewBasis.Rotate(tf.position);
+				frame.rotation = (placementYaw * saved.rotation * qRot).Normalized();
 			}
 			const bool followMode = settings.mode == CameraMode::Follow;
 			Vector3 followDelta{};
@@ -566,11 +576,11 @@ namespace GakuMotion
 				{
 					const CameraModeTransform tf = settings.EffectiveFollowMoveTransform();
 					const Quaternion qRot = Quaternion::FromEulerDegreesXYZ(tf.rotation.x, tf.rotation.y, tf.rotation.z);
-					const Vector3 basePos = followOrigin + originRotation.Rotate(tf.position);
+					const Vector3 basePos = followOrigin + viewBasis.Rotate(tf.position);
 					frame.position = basePos + followDelta;
-					Vector3 baseForward = originRotation.Rotate(settings.targetOffset - Vector3{0.0f, 0.6f, 3.0f});
+					Vector3 baseForward = viewBasis.Rotate(settings.targetOffset - Vector3{0.0f, 0.6f, 3.0f});
 					if (baseForward.x == 0.0f && baseForward.y == 0.0f && baseForward.z == 0.0f)
-						baseForward = originRotation.Rotate(Vector3{0.0f, 0.0f, -1.0f});
+						baseForward = viewBasis.Rotate(Vector3{0.0f, 0.0f, -1.0f});
 					frame.rotation = (CameraLookRotation(baseForward) * qRot).Normalized();
 					frame.fov = settings.followFov;
 					frame.flags = 0;
@@ -579,8 +589,8 @@ namespace GakuMotion
 				{
 					const CameraModeTransform tf = settings.EffectiveLookAtTransform();
 					const Quaternion qRot = Quaternion::FromEulerDegreesXYZ(tf.rotation.x, tf.rotation.y, tf.rotation.z);
-					const Vector3 basePos = followOrigin + originRotation.Rotate(tf.position);
-					const Vector3 baseLook = followOrigin + originRotation.Rotate(settings.targetOffset);
+					const Vector3 basePos = followOrigin + viewBasis.Rotate(tf.position);
+					const Vector3 baseLook = followOrigin + viewBasis.Rotate(settings.targetOffset);
 					followLookTarget = baseLook + followDelta;
 					frame.position = basePos;
 					frame.rotation = (CameraLookRotation(followLookTarget - frame.position) * qRot).Normalized();
@@ -607,6 +617,12 @@ namespace GakuMotion
 			desired = frame;
 			fnWrite(camera, transform, desired);
 			Publish();
+		}
+
+		// Compatibility for callers that pass a Live track anchor without yaw.
+		void Tick(bool active, float time, float dt, void* targetActor, uint64_t physicalFrame, Vector3 trackAnchorLocal)
+		{
+			Tick(active, time, dt, targetActor, physicalFrame, 0.0f, trackAnchorLocal);
 		}
 
 		// Called at the render boundary after all actor/Cinemachine updates.

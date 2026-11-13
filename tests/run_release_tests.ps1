@@ -130,6 +130,17 @@ if ($testExit -ne 0) {
 }
 Write-Host "  all unit tests passed" -ForegroundColor Green
 
+# Exercise assignment edge cases independently of the Core integration suite.
+$ensembleExe = Join-Path $buildDir 'test_ensemble.exe'
+$ensembleArgs = @('-nologo', '/std:c++20', '/utf-8', '/EHsc', '/MT', '/W4',
+    (Join-Path $PSScriptRoot 'test_ensemble.cpp'),
+    "/Fe:$ensembleExe", "/Fo:$(Join-Path $objDir 'test_ensemble.obj')")
+& $compiler @ensembleArgs
+if ($LASTEXITCODE -ne 0) { throw "Ensemble assignment test build failed (exit=$LASTEXITCODE)" }
+& $ensembleExe
+if ($LASTEXITCODE -ne 0) { throw "Ensemble assignment tests failed (exit=$LASTEXITCODE)" }
+Write-Host "  ensemble assignment and timing checks passed" -ForegroundColor Green
+
 $mikuRunnerExe = Join-Path $buildDir 'miku_fit_runner.exe'
 $mikuRunnerArgs = @('-nologo', '/std:c++20', '/utf-8', '/O2', '/EHsc', '/MT', '/W4',
     "/I$srcDir", "/I$incDir", (Join-Path $PSScriptRoot 'miku_fit_runner.cpp'),

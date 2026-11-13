@@ -77,6 +77,14 @@ namespace GakuMotion
 		const ImVec4 readyColor = ctx.injectionAllowed ? GuiTheme::SuccessColor() : GuiTheme::ErrorColor();
 		ImGui::SameLine(0.0f, 12.0f);
 		ImGui::TextColored(readyColor, "%s", readyText);
+		if (ctx.liveTakeoverActive)
+		{
+			ImGui::BeginDisabled(!ctx.liveTakeoverAvailable || !ctx.fnSetLiveTakeover);
+			if (ImGui::Button("退出 Live 动作接管") && ctx.fnSetLiveTakeover)
+				ctx.fnSetLiveTakeover(ctx.self, false);
+			ImGui::EndDisabled();
+			if (!ctx.liveControlNotice.empty()) ImGui::TextWrapped("%s", ctx.liveControlNotice.c_str());
+		}
 
 		ImGui::Spacing();
 		ImGui::Separator();

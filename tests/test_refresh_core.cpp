@@ -370,6 +370,8 @@ namespace fake
 	std::unordered_map<void*, Quaternion> worldRot;
 	std::unordered_map<void*, Vector3> worldPos;
 	std::vector<std::pair<void*, Quaternion>> rotationCalls;
+	int wristDiagnosticLines = 0;
+	void WristDiagnosticLog(const char*, ...) { ++wristDiagnosticLines; }
 
 	void SetWorldRot(void* t, float x, float y, float z, float w)
 	{
@@ -498,6 +500,126 @@ static void TestOverrideInjection()
 	const Quaternion armQ = Quaternion::FromEulerDegreesXYZ(0.0f, 0.0f, 10.0f);
 	Check(QuatNear(fake::rotationCalls[0].second, R * armQ), "臂部 roll 偏移叠加保持既有行为");
 	ctrl.armOffsetRoll = 0.0f;
+}
+
+static void TestGkClipWristOverrideSpaces()
+{
+	BeginTest("gkclip_wrist_override_spaces");
+	MotionClip clip = MakeSmallClip();
+	clip.format = MotionClip::Format::kGkClip;
+	clip.version = 5;
+	clip.bones = {{15, "LeftLowerArm", true}, {17, "LeftHand", true}};
+	clip.bone_parent_hids = {-1, 15};
+	const Quaternion parent = Quaternion::FromEulerDegreesXYZ(0, 55, 25);
+	const Quaternion hand = Quaternion::FromEulerDegreesXYZ(15, 5, -20);
+	clip.bone_rotations = {parent, hand, parent, hand};
+	IdolController controller;
+	WireControllerCallbacks(controller);
+	controller.fnSetLocalRotation = fake::SetWorldRot;
+	IdolBoneBinding binding;
+	binding.actor = reinterpret_cast<void*>(0x901);
+	binding.bindPoseCaptured = true;
+	binding.boneTransforms = {reinterpret_cast<void*>(0x915), reinterpret_cast<void*>(0x917)};
+	binding.restRotations.resize(2);
+	BoneOverrideSet overrides;
+	BoneRotationOffset offset;
+	offset.humanoidId = 17;
+	offset.eulerDeg = {30, 0, 0};
+	overrides.SetDynamic({offset});
+	controller.SetBoneOverrides(&overrides);
+	const Quaternion q = offset.Resolve();
+	fake::rotationCalls.clear();
+	controller.ApplyMotionToBinding(binding, clip, 0);
+	Check(fake::rotationCalls.size() == 2 && QuatNear(fake::rotationCalls[1].second, hand * q),
+	      "gkclip wrist local override remains in the hand's local frame under a rotated parent");
+	offset.spaceWorld = true;
+	overrides.SetDynamic({offset});
+	fake::rotationCalls.clear();
+	controller.ApplyMotionToBinding(binding, clip, 0);
+	Check(fake::rotationCalls.size() == 2 && QuatNear(parent * fake::rotationCalls[1].second, q * parent * hand),
+	      "gkclip wrist world override rotates the final world orientation");
+}
+
+static void TestWristDiagnosticIsOneShot()
+{
+	BeginTest("wrist_diagnostic_is_one_shot");
+	IdolController controller;
+	controller.fnLogInfo = fake::WristDiagnosticLog;
+	controller.fnGetLocalRotation = fake::GetWorldRot;
+	controller.fnGetWorldRotation = fake::GetWorldRot;
+	controller.fnGetLocalPosition = fake::GetWorldPos;
+	controller.fnGetWorldPosition = fake::GetWorldPos;
+	controller.fnSetLocalRotation = fake::SetWorldRot;
+	IdolBoneBinding binding;
+	binding.actor = reinterpret_cast<void*>(0x901);
+	binding.leftArmAux.hand = reinterpret_cast<void*>(0x917);
+	fake::rotationCalls.clear(); fake::wristDiagnosticLines = 0;
+	controller.CaptureWristDiagnostic(binding, 20.23f, 0);
+	Check(fake::wristDiagnosticLines == 0, "wrist diagnostics are silent until requested");
+	controller.wristDiagnosticPending = true;
+	controller.CaptureWristDiagnostic(binding, 20.23f, 0);
+	Check(!controller.wristDiagnosticPending && controller.wristDiagnosticStatus == 2 && controller.wristDiagnosticCount == 1 &&
+	      std::fabs(controller.wristDiagnosticTime - 20.23f) < 0.001f &&
+	      fake::wristDiagnosticLines == 13 && fake::rotationCalls.empty(),
+	      "wrist diagnostics capture a bounded read-only snapshot including missing bones");
+	controller.CaptureWristDiagnostic(binding, 20.23f, 0);
+	Check(fake::wristDiagnosticLines == 13, "wrist diagnostics do not repeat without another request");
+	controller.wristDiagnosticPending = true;
+	controller.CaptureWristDiagnostic(binding, 20.23f, 0);
+	Check(controller.wristDiagnosticCount == 2 && fake::wristDiagnosticLines == 26,
+	      "repeated capture at the same time increments the visible completion count");
+	controller.fnLogInfo = nullptr; controller.wristDiagnosticPending = true; controller.wristDiagnosticStatus = 1;
+	controller.CaptureWristDiagnostic(binding, 20.23f, 0);
+	Check(!controller.wristDiagnosticPending && controller.wristDiagnosticStatus == 3,
+	      "missing logger reports failure instead of a false completion");
+}
+
+static void TestWristTwistRedistribution()
+{
+	BeginTest("wrist_twist_redistribution");
+	MotionClip clip = MakeSmallClip();
+	clip.format = MotionClip::Format::kGkClip;
+	clip.version = 5;
+	clip.bones = {{15, "LeftLowerArm", true}, {17, "LeftHand", true}};
+	clip.bone_parent_hids = {-1, 15};
+	const Quaternion forearm = Quaternion::FromEulerDegreesXYZ(10, 50, 25);
+	const Quaternion hand = Quaternion::FromEulerDegreesXYZ(-60, 20, 10);
+	clip.bone_rotations = {forearm, hand, forearm, hand};
+	IdolController controller;
+	WireControllerCallbacks(controller);
+	controller.fnSetLocalRotation = fake::SetWorldRot;
+	IdolBoneBinding binding;
+	binding.actor = reinterpret_cast<void*>(0x901);
+	binding.bindPoseCaptured = true;
+	binding.boneTransforms = {reinterpret_cast<void*>(0x915), reinterpret_cast<void*>(0x917)};
+	binding.restRotations.resize(2);
+	fake::rotationCalls.clear(); controller.ApplyMotionToBinding(binding, clip, 0);
+	Check(fake::rotationCalls.size() == 2 && QuatNear(fake::rotationCalls[0].second, forearm) &&
+	      QuatNear(fake::rotationCalls[1].second, hand), "zero share leaves the authored pose unchanged");
+	controller.wristTwistShare = 0.5f;
+	fake::rotationCalls.clear(); controller.ApplyMotionToBinding(binding, clip, 0);
+	Check(fake::rotationCalls.size() == 2 && !QuatNear(fake::rotationCalls[0].second, forearm) &&
+	      QuatNear(fake::rotationCalls[0].second * fake::rotationCalls[1].second, forearm * hand),
+	      "twist share rotates the forearm while preserving the hand world orientation");
+	controller.wristTwistShare = -0.5f;
+	fake::rotationCalls.clear(); controller.ApplyMotionToBinding(binding, clip, 0);
+	Check(fake::rotationCalls.size() == 2 && !QuatNear(fake::rotationCalls[0].second, forearm) &&
+	      QuatNear(fake::rotationCalls[0].second * fake::rotationCalls[1].second, forearm * hand),
+	      "negative twist share also preserves hand orientation");
+	controller.wristTwistShare = 0.0f;
+	controller.forearmAxisAdjustmentDeg = 30.0f;
+	fake::rotationCalls.clear(); controller.ApplyMotionToBinding(binding, clip, 0);
+	const auto axisCorrection = Quaternion::FromEulerDegreesXYZ(30, 0, 0);
+	Check(fake::rotationCalls.size() == 2 && QuatNear(fake::rotationCalls[0].second, forearm * axisCorrection) &&
+	      QuatNear(fake::rotationCalls[0].second * fake::rotationCalls[1].second, forearm * hand),
+	      "fixed forearm axis adjustment preserves the hand world orientation");
+	const Quaternion share = IdolController::WristTwistShareRotation(hand, 0.5f);
+	const Quaternion neg(-hand.x, -hand.y, -hand.z, -hand.w);
+	Check(QuatNear(share, IdolController::WristTwistShareRotation(neg, 0.5f)), "twist share is quaternion-sign invariant");
+	clip.bone_parent_hids[1] = -1;
+	fake::rotationCalls.clear(); controller.ApplyMotionToBinding(binding, clip, 0);
+	Check(fake::rotationCalls.size() == 2 && QuatNear(fake::rotationCalls[0].second, forearm) &&
+	      QuatNear(fake::rotationCalls[1].second, hand), "missing forearm parent disables twist sharing");
 }
 
 static void TestAuxQuaternionSignInvariance()
@@ -1057,6 +1179,15 @@ static void TestCoreIntegration(const std::string& repoRoot)
 static void TestHotkeyEdgeGate()
 {
 	BeginTest("hotkey_edge_gate");
+	{
+		IdolController ctrl;
+		const int modes[] = {kAuxSilence, kAuxIdentity, kAuxReplay, kAuxLegacy, kAuxNormal};
+		for (int mode : modes)
+		{
+			ctrl.CycleAuxDriveMode();
+			Check(ctrl.auxDriveMode == mode, "auxiliary diagnostic hotkey cycles each mode and returns to normal");
+		}
+	}
 
 	constexpr int kComma = 0xBC; // VK_OEM_COMMA
 	constexpr int kPeriod = 0xBE; // VK_OEM_PERIOD
@@ -2291,6 +2422,7 @@ static void TestSecondaryPhysicsConfig()
 
 
 #include "test_library_safety.hpp"
+#include "test_ensemble_integration.hpp"
 
 static void TestPlaylistLifecycle(const std::string& repoRoot)
 {
@@ -2369,6 +2501,116 @@ static void TestPlaylistLifecycle(const std::string& repoRoot)
 	core.player.Stop();
 	restarted.player.Stop();
 	fs::remove_all(root);
+}
+
+static void TestInitialYaw()
+{
+	BeginTest("initial_yaw_turns_pose_in_place");
+	MotionClip clip = MakeSmallClip();
+	clip.format = MotionClip::Format::kGkClip;
+	clip.version = 4;
+	clip.bones = {BoneMeta{0, "Hips", false}, BoneMeta{13, "LeftUpperArm", false}};
+	clip.bone_parent_hids = {-1, 0};
+	clip.root_positions = {{.4f, .2f, .8f}, {.4f, .2f, .8f}};
+	const Quaternion original = Quaternion::FromEulerDegreesXYZ(12, 5, -8);
+	const Quaternion child = Quaternion::FromEulerDegreesXYZ(15, 0, 30);
+	clip.bone_rotations = {original, child, original, child};
+	IdolController controller;
+	WireControllerCallbacks(controller);
+	controller.fnSetLocalRotation = fake::SetWorldRot;
+	controller.fnGetTransformParent = [](void*) -> void* { return reinterpret_cast<void*>(0x909); };
+	IdolBoneBinding binding;
+	binding.actor = reinterpret_cast<void*>(0x901);
+	binding.actorTransform = reinterpret_cast<void*>(0x902);
+	binding.rootTransform = reinterpret_cast<void*>(0x903);
+	binding.bindPoseCaptured = true;
+	binding.restActorPos = {3, 0, 4};
+	binding.restRootPos = {.1f, .8f, -.2f};
+	binding.boneTransforms = {binding.rootTransform, reinterpret_cast<void*>(0x904)};
+	binding.restRotations = {Quaternion::Identity(), Quaternion::Identity()};
+	const Quaternion parent = Quaternion::FromEulerDegreesXYZ(20, 35, 10);
+	fake::worldPos[binding.actorTransform] = binding.restActorPos;
+	fake::worldRot[binding.actorTransform] = Quaternion::FromEulerDegreesXYZ(0, 20, 0);
+	fake::worldRot[reinterpret_cast<void*>(0x909)] = parent;
+	controller.currentBinding = binding;
+	fake::rotationCalls.clear();
+	controller.ApplyMotion(clip, 0);
+	const auto originalPosition = fake::worldPos[binding.rootTransform];
+	const auto originalRoot = fake::rotationCalls[0].second;
+	const auto originalChild = fake::rotationCalls[1].second;
+	Check(controller.SetInitialYawDegrees(90), "finite yaw accepted");
+	fake::rotationCalls.clear();
+	controller.ApplyMotion(clip, 0);
+	const auto turn = Quaternion::FromEulerDegreesXYZ(0, 90, 0);
+	Check(QuatNear(parent * fake::rotationCalls[0].second, turn * parent * originalRoot),
+	      "world-up turn is transformed to the actual root parent frame");
+	Check(QuatNear(fake::rotationCalls[1].second, originalChild),
+	      "child local motion stays authored under the rotated root");
+	const auto turnedPosition = fake::worldPos[binding.rootTransform];
+	Check(std::fabs(turnedPosition.x-originalPosition.x) < 1e-5f &&
+	      std::fabs(turnedPosition.y-originalPosition.y) < 1e-5f &&
+	      std::fabs(turnedPosition.z-originalPosition.z) < 1e-5f,
+	      "turning never moves the character's current root position");
+	fake::rotationCalls.clear(); controller.ApplyMotion(clip, 0);
+	Check(QuatNear(parent * fake::rotationCalls[0].second, turn * parent * originalRoot),
+	      "repeated samples do not accumulate yaw");
+	fake::worldRot[reinterpret_cast<void*>(0x909)] = {0, 0, 0, 0};
+	fake::rotationCalls.clear(); controller.ApplyMotion(clip, 0);
+	Check(QuatNear(fake::rotationCalls[0].second, originalRoot),
+	      "invalid parent rotation leaves the authored root pose intact");
+	fake::worldRot[reinterpret_cast<void*>(0x909)] = parent;
+	Check(!controller.SetInitialYawDegrees(std::numeric_limits<float>::quiet_NaN()) &&
+	      controller.initialYawDegrees == 90.0f, "invalid yaw cannot overwrite valid state");
+	controller.SetInitialYawDegrees(0);
+	fake::rotationCalls.clear(); controller.ApplyMotion(clip, 0);
+	Check(QuatNear(fake::rotationCalls[0].second, originalRoot), "reset restores the original root orientation");
+
+	// Motion translation follows the yaw around the clip's first root sample,
+	// including a rotated actor basis and a world-space placement offset.
+	clip.root_positions[1] = {1.4f, .5f, 2.8f};
+	controller.SetInitialPositionOffset({2, .1f, -3});
+	controller.SetInitialYawDegrees(0);
+	controller.ApplyMotion(clip, 0);
+	const Vector3 start = fake::worldPos[binding.rootTransform];
+	controller.ApplyMotion(clip, 1.0f / clip.fps);
+	const Vector3 unturnedEnd = fake::worldPos[binding.rootTransform];
+	controller.SetInitialYawDegrees(90);
+	controller.ApplyMotion(clip, 0);
+	const Vector3 turnedStart = fake::worldPos[binding.rootTransform];
+	controller.ApplyMotion(clip, 1.0f / clip.fps);
+	const Vector3 turnedEnd = fake::worldPos[binding.rootTransform];
+	const Vector3 expectedEnd = start + turn.Rotate(unturnedEnd - start);
+	auto nearPosition = [](const Vector3& a, const Vector3& b) {
+		return std::fabs(a.x-b.x) < 1e-5f && std::fabs(a.y-b.y) < 1e-5f && std::fabs(a.z-b.z) < 1e-5f;
+	};
+	Check(nearPosition(turnedStart, start), "yaw preserves the first-frame position including world placement offset");
+	Check(nearPosition(turnedEnd, expectedEnd), "yaw rotates animated travel around the first frame in world coordinates");
+	controller.ApplyMotion(clip, 1.0f / clip.fps);
+	Check(nearPosition(fake::worldPos[binding.rootTransform], expectedEnd), "yawed travel does not accumulate on repeated samples");
+	controller.fnSetWorldPosition = nullptr;
+	controller.fnSetLocalPosition = fake::SetWorldPos;
+	controller.ApplyMotion(clip, 1.0f / clip.fps);
+	const Vector3 fallbackWorld = binding.restActorPos + fake::worldRot[binding.actorTransform].Rotate(fake::worldPos[binding.rootTransform]);
+	Check(nearPosition(fallbackWorld, expectedEnd), "local-position fallback produces the same yawed world travel");
+	controller.fnSetLocalPosition = nullptr;
+	controller.fnSetWorldPosition = fake::SetWorldPos;
+	controller.SetInitialYawDegrees(0);
+	controller.fnSetLocalRotation = nullptr;
+	fake::rotationCalls.clear(); controller.ApplyMotion(clip, 0);
+	const auto gkWorldBefore = fake::rotationCalls[0].second;
+	controller.SetInitialYawDegrees(90);
+	fake::rotationCalls.clear(); controller.ApplyMotion(clip, 0);
+	Check(QuatNear(fake::rotationCalls[0].second, turn * gkWorldBefore),
+	      "degraded gkclip world-write path applies yaw in world coordinates");
+
+	clip.format = MotionClip::Format::kGkWorldDump;
+	controller.SetInitialYawDegrees(0);
+	fake::rotationCalls.clear(); controller.ApplyMotion(clip, 0);
+	const auto worldBefore = fake::rotationCalls[0].second;
+	controller.SetInitialYawDegrees(-90);
+	fake::rotationCalls.clear(); controller.ApplyMotion(clip, 0);
+	Check(QuatNear(fake::rotationCalls[0].second, Quaternion::FromEulerDegreesXYZ(0, -90, 0) * worldBefore),
+	      "world-rotation streams turn in world coordinates too");
 }
 
 static void TestInitialPosition()
@@ -2459,24 +2701,30 @@ static void TestInitialPosition()
 	core.initialPositionPath = (root / "GakuMotion" / "initial_position.json").string();
 	core.QueueInitialPosition({1, 2, 3});
 	core.QueueInitialPosition(offset);
+	core.QueueInitialYaw(45.0f);
 	Check(near(core.player.controller.initialPositionOffset, {0, 0, 0}),
 	      "GUI placement command does not mutate main-thread state early");
 	core.QueueGui({Core::GuiAction::SaveInitialPosition});
 	core.ProcessPendingGuiCommands();
-	Check(near(core.player.controller.initialPositionOffset, offset),
-	      "queued placement and save use final XYZ values in order");
+	Check(near(core.player.controller.initialPositionOffset, offset) && core.player.controller.initialYawDegrees == 45,
+	      "queued placement and save use final XYZ and yaw values in order");
 	Core restarted;
 	restarted.Initialize(root.string());
-	Check(near(restarted.player.controller.initialPositionOffset, offset),
-	      "saved initial position loads on next startup");
+	Check(near(restarted.player.controller.initialPositionOffset, offset) && restarted.player.controller.initialYawDegrees == 45,
+	      "saved initial position and yaw load on next startup");
 	WriteTextFile(core.initialPositionPath, R"({"version":1,"space":"world","offset_m":[1,"bad",2]})");
 	Check(!core.LoadInitialPosition() && near(core.player.controller.initialPositionOffset, offset),
 	      "invalid saved XYZ leaves valid runtime placement intact");
 	core.QueueInitialPosition({0, 0, 0});
+	core.QueueInitialYaw(0);
 	core.QueueGui({Core::GuiAction::SaveInitialPosition});
 	core.ProcessPendingGuiCommands();
-	Check(restarted.LoadInitialPosition() && near(restarted.player.controller.initialPositionOffset, {0, 0, 0}),
-	      "saved three-axis reset persists across restart");
+	Check(restarted.LoadInitialPosition() && near(restarted.player.controller.initialPositionOffset, {0, 0, 0}) &&
+	      restarted.player.controller.initialYawDegrees == 0,
+	      "saved position and yaw reset persists across restart");
+	WriteTextFile(core.initialPositionPath, R"({"version":1,"space":"world","offset_m":[1,2,3]})");
+	Check(restarted.LoadInitialPosition() && near(restarted.player.controller.initialPositionOffset, {1, 2, 3}) &&
+	      restarted.player.controller.initialYawDegrees == 0, "legacy position files load with zero yaw");
 	core.player.controller.facialWeights = {0.8f, 0.9f, 0.7f, 0.5f};
 	core.QueueGui({Core::GuiAction::SaveFacialWeights});
 	core.ProcessPendingGuiCommands();
@@ -2640,6 +2888,7 @@ int main(int argc, char** argv)
  TestMikuMouthFit();
  TestRinhaFacialFit();
  TestSceneActorSelection();
+ TestEnsembleIntegration(repoRoot);
  TestFaceAnimatorCaptureLifecycle();
  TestFaceRuntimeMetadata();
  TestNativeTalkOwnership();
@@ -2648,7 +2897,11 @@ int main(int argc, char** argv)
  TestSecondaryPhysicsConfig();
  TestOrderedPlaybackCommands();
  TestInitialPosition();
+ TestInitialYaw();
  TestOverrideInjection();
+ TestGkClipWristOverrideSpaces();
+ TestWristDiagnosticIsOneShot();
+ TestWristTwistRedistribution();
  TestAuxQuaternionSignInvariance();
  TestPlayerSeekSync();
  TestPlaybackSpeedAndClock();
