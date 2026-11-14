@@ -145,6 +145,9 @@ internal static class ImportPipeline
             bool overrideEyes = !request.DisableMorph && morphSource != null &&
                                 !string.Equals(morphPath, vmdPath, StringComparison.OrdinalIgnoreCase);
             VmdMotion effective = overrideEyes ? WithEyeTracks(motion, morphSource!) : motion;
+            effective = DeformLegTracks.Prepare(effective, out string[] deformLegSides);
+            if (deformLegSides.Length != 0)
+                log.Line("Detected baked leg tracks; adapted sides: " + string.Join(", ", deformLegSides));
 
             sw.Restart();
             var evaluator = new SourceEvaluator();
@@ -160,7 +163,7 @@ internal static class ImportPipeline
             int version = hasEyeTracks ? 5 : GkClipFormat.DefaultVersion;
 
             GkClipData clip = GkClipEncoder.FromEvaluationResult(result, profile, evaluator.Rig, version);
-            DisabledLegIkFk.Apply(motion, result, evaluator.Rig, clip);
+            DisabledLegIkFk.Apply(effective, result, evaluator.Rig, clip);
             timing.RetargetEncodeMs = sw.Elapsed.TotalMilliseconds;
 
             // --- Facial ---------------------------------------------------------

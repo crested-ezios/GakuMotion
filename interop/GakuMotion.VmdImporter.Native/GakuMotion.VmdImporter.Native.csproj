@@ -31,6 +31,7 @@
     <InternalsVisibleTo Include="GakuMotion.CameraImportTests" />
     <InternalsVisibleTo Include="GakuMotion.EditTrackTests" />
     <InternalsVisibleTo Include="GakuMotion.MikuRawSourceTests" />
+    <InternalsVisibleTo Include="GakuMotion.DeformLegTests" />
   </ItemGroup>
 
   <ItemGroup>
