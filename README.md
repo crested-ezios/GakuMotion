@@ -86,6 +86,8 @@ GakuMotion 目前处于 Developer Preview 阶段。
 
 详细的功能说明与进阶设置请查阅 [使用指南](docs/USAGE.md)。
 
+可选的 `chara-adapter` v1 服务可为实际载入的脸部提供角色身份、显示名与表情拟合表。GakuMotion 也兼容现有的 `rinha.facial-fit` v1。眼眉拟合依据整段曲线判断实际使用的键，零权重的未验收曲线不会阻止已验收曲线。其他插件可通过 `gakumotion.actor/v1` 读取当前选中角色的身份与脸部快照；接口声明在 [GakuMotionActor.h](include/GakuMotionActor.h)。
+
 ## 常见问题与排查
 
 GakuMotion 当前仍在积极开发中。已知问题目录请参考 [已知问题](docs/KNOWN_ISSUES.md)。

@@ -7,6 +7,13 @@ static void TestSceneActorSelection()
 	Check(DetectIdolCharacterCode("xkrnhx").empty() && DetectIdolCharacterCode("chr_krnh_ttmr").empty(),
 		"unknown substrings and ambiguous character codes are not assigned a character name");
 	Core core;
+	GakuMotionActorSnapshot snapshot{};
+	snapshot.actorToken = 0xffff;
+	Check(core.ReadSelectedActor(sizeof(snapshot), &snapshot) == GAKU_E_UNAVAILABLE && snapshot.actorToken == 0xffff,
+		"an inactive actor service does not change the caller's output");
+	core.SetControlActive(true);
+	Check(core.ReadSelectedActor(sizeof(snapshot), &snapshot) == GAKU_OK && snapshot.actorToken == 0 &&
+		snapshot.abiVersion == GAKU_MOTION_ACTOR_VERSION, "the selected actor service represents an empty scene");
 	void* a = reinterpret_cast<void*>(0x7100);
 	void* b = reinterpret_cast<void*>(0x7200);
 	core.PublishSceneActors({{a, 101, "hski"}, {b, 102, "ttmr"}, {a, 101, "hski"}});
@@ -51,7 +58,12 @@ static void TestSceneActorSelection()
 	core.PublishSceneActors({{a, 301, ""}, {b, 302, ""}});
 	const auto priorScene = core.BuildGuiContext();
 	core.AbandonScene();
-	core.PublishSceneActors({{a, 301, "hski"}});
+	core.PublishSceneActors({{a, 301, "npc0", "NPC", "mdl_chr_npc0-base-0000_face"}});
 	Check(!core.sceneActorRegistry.Resolve(priorScene.sceneActors[0].token, priorScene.actorRosterEpoch),
 		"scene boundaries invalidate old commands even if addresses and instance IDs are reused");
+	Check(core.ReadSelectedActor(sizeof(snapshot), &snapshot) == GAKU_OK &&
+		snapshot.actorToken == core.sceneActorRegistry.Find(a)->token && snapshot.rosterEpoch != priorScene.actorRosterEpoch &&
+		std::string_view(snapshot.character) == "npc0" && std::string_view(snapshot.displayName) == "NPC" &&
+		std::string_view(snapshot.faceName) == "mdl_chr_npc0-base-0000_face",
+		"the selected actor API exposes the current adapter identity and roster revision");
 }

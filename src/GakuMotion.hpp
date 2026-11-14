@@ -18,6 +18,7 @@
 #include "GkDataLayout.hpp"
 #include "GkControlRequests.hpp"
 #include "GkEnsembleSettings.hpp"
+#include "GakuMotionActor.h"
 
 #include <cstdarg>
 #include <cstdio>
@@ -71,6 +72,32 @@ namespace GakuMotion
 		{
 			static Core s_instance;
 			return s_instance;
+		}
+
+		GakuStatus ReadSelectedActor(uint32_t size, GakuMotionActorSnapshot* output)
+		{
+			if (!output) return GAKU_E_INVALID_ARGUMENT;
+			if (size != sizeof(*output)) return GAKU_E_SIZE;
+			std::lock_guard lock(stateMutex);
+			if (!controlActive) return GAKU_E_UNAVAILABLE;
+			GakuMotionActorSnapshot snapshot{};
+			snapshot.abiVersion = GAKU_MOTION_ACTOR_VERSION;
+			snapshot.structSize = sizeof(snapshot);
+			snapshot.rosterEpoch = sceneActorRegistry.Epoch();
+			if (const auto* actor = sceneActorRegistry.Find(player.controller.targetActor))
+			{
+				if (actor->character.size() >= sizeof(snapshot.character) ||
+					actor->displayName.size() >= sizeof(snapshot.displayName) ||
+					actor->faceName.size() >= sizeof(snapshot.faceName)) return GAKU_E_SIZE;
+				snapshot.actorToken = actor->token;
+				std::snprintf(snapshot.character, sizeof(snapshot.character), "%s", actor->character.c_str());
+				const char* displayName = actor->displayName.empty() ? LookupIdolChineseName(actor->character.c_str()) :
+					actor->displayName.c_str();
+				if (displayName) std::snprintf(snapshot.displayName, sizeof(snapshot.displayName), "%s", displayName);
+				std::snprintf(snapshot.faceName, sizeof(snapshot.faceName), "%s", actor->faceName.c_str());
+			}
+			*output = snapshot;
+			return GAKU_OK;
 		}
 
 		MotionPlayer player;
@@ -3048,7 +3075,8 @@ namespace GakuMotion
 			ctx.actorRosterEpoch = sceneActorRegistry.Epoch();
 			for (const auto& item : sceneActorRegistry.Entries())
 			{
-				const std::string name = item.character.empty() ? "未识别角色" : FormatIdolDisplayName(item.character.c_str());
+				const std::string name = !item.displayName.empty() ? item.displayName + " (" + item.character + ")" :
+					item.character.empty() ? "未识别角色" : FormatIdolDisplayName(item.character.c_str());
 				ctx.sceneActors.push_back({item.token, name + " · " + std::to_string(ctx.sceneActors.size() + 1),
 					item.actor == player.controller.targetActor});
 			}

@@ -817,8 +817,13 @@ namespace GakuMotion
 
 		void InvalidateClipBindings()
 		{
-			for (auto& entry : bindings) entry.second.clipBindingDirty = true;
+			for (auto& entry : bindings)
+			{
+				entry.second.clipBindingDirty = true;
+				entry.second.face.boundClip = nullptr;
+			}
 			currentBinding.clipBindingDirty = true;
+			currentBinding.face.boundClip = nullptr;
 		}
 
 		RootHeightCalibration rootHeightCalibration;

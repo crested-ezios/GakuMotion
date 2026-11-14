@@ -11,6 +11,8 @@ namespace GakuMotion
 		void* actor{nullptr}; // Main-thread identity only; GUI never receives it.
 		int instanceId{0};
 		std::string character;
+		std::string displayName{};
+		std::string faceName{};
 	};
 	struct SceneActorEntry : SceneActorObservation { uint64_t token{0}; };
 	struct GuiSceneActor

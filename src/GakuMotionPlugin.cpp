@@ -2573,9 +2573,13 @@ static bool RefreshSceneActors(GakuMotion::Core& core, bool force = false)
 			if (!id) continue;
 			// Prefer the loaded face identity, including a replacement's actual face.
 			void* face = HelperGetFaceModel(actor);
-			std::string character = GakuMotion::DetectIdolCharacterCode(face ? HelperGetFaceModelName(face) : "");
+			std::string faceName = face ? HelperGetFaceModelName(face) : "";
+			const auto identity = GakuMotion::facial_fit::ResolveIdentity(faceName);
+			std::string character = identity.character;
+			if (character.empty()) character = GakuMotion::DetectIdolCharacterCode(faceName);
 			if (character.empty()) character = GakuMotion::DetectIdolCharacterCode(HelperGetActorName(actor));
-			observations.push_back({actor, id, std::move(character)});
+			observations.push_back({actor, id, std::move(character), identity.displayName,
+				GakuMotion::facial_fit::StripCloneSuffix(std::move(faceName))});
 		}
 	}
 	const bool hadActors = !core.sceneActorRegistry.Entries().empty();
@@ -3380,6 +3384,17 @@ GakuStatus PublishControlApi()
 	return GakuMotion::host::api.registerService(GakuMotion::host::api.hostContext, ServiceName, sizeof(service), &service);
 }
 
+GakuStatus PublishActorApi()
+{
+	const GakuMotionActorService service{GAKU_MOTION_ACTOR_VERSION, sizeof(service),
+		[](uint32_t size, GakuMotionActorSnapshot* output) -> GakuStatus {
+			try { return GakuMotion::Core::Instance().ReadSelectedActor(size, output); }
+			catch (...) { return GAKU_E_INTERNAL; }
+		}};
+	return GakuMotion::host::api.registerService(GakuMotion::host::api.hostContext,
+		GAKU_MOTION_ACTOR_SERVICE, sizeof(service), &service);
+}
+
 template<class Function>
 GakuMotion::scene_nodes::v1::Status SceneNodesCall(bool mutation, Function&& function) noexcept
 {
@@ -3425,6 +3440,9 @@ GakuStatus MotionActivate(const GakuHostApi* host, void** pluginState)
 	if (controlPublished != GAKU_OK) return controlPublished;
 	const auto sceneNodesPublished = PublishSceneNodesApi();
 	if (sceneNodesPublished != GAKU_OK) return sceneNodesPublished;
+	const auto actorPublished = PublishActorApi();
+	if (actorPublished != GAKU_OK)
+		MotionLogWarn("[GakuMotion] Selected actor service unavailable (%d).", actorPublished);
 
 	g_hostContext = MotionHostContext{};
 	g_hostContext.apiVersion = GAKU_ABI_VERSION;

@@ -95,6 +95,20 @@ static void TestRinhaFacialFit()
         return GAKU_OK;
     };
     static const RinhaFacialFitService published = facial_fit::service;
+    static bool adapterUp = false;
+    static const RinhaFacialFitFace adapterFace = [] {
+        auto face = fake.face;
+        face.faceName = "mdl_chr_npc0-base-0000_face";
+        face.character = "npc0";
+        return face;
+    }();
+    static const RinhaFacialFitService publishedAdapterFit = [] {
+        auto fit = published;
+        fit.findFace = [](void*, const char* name) -> const RinhaFacialFitFace* {
+            return name && std::string_view(name) == adapterFace.faceName ? &adapterFace : nullptr;
+        };
+        return fit;
+    }();
     facial_fit::available = true;
     facial_fit::generation = 1;
 
@@ -114,19 +128,21 @@ static void TestRinhaFacialFit()
         "miku.raweye.v1.present", "miku.raweye.v1.unsupported", "miku.raweye.v1.native_authored"};
     const std::vector<std::string> modelNames{
         "b_eye.eye_001", "b_brow.brow_003", "b_eye.eye_999", "b_mouth.mouth_019"};
+    const std::vector<float> clipWeights{0.9f, 0.1f, 0.5f, 0.25f, 1.0f, 0.0f, 0.0f};
+    const std::vector<float> acceptedWeights{0.9f, 0.1f, 0.5f, 1.0f, 0.0f, 0.0f};
 
-    auto strict = BindExternalFacialFit(faceName, clipNames, modelNames, false);
+    auto strict = BindExternalFacialFit(faceName, clipNames, modelNames, clipWeights, false);
     Check(strict.face == &fake.face && strict.eyesPresent && strict.eyePresentSlot == 4,
         "binding resolves the published profile and its raw-eye markers");
-    Check(strict.eyeHasUnverifiedKey && !strict.eyeClaim,
+    Check(strict.eyeClipDecision == MikuFitDecision::ExternalUnverified && !strict.eyeClaim,
         "an unverified key driven by the clip keeps the eye family unclaimed by default");
     Check(!strict.mouthClaim, "an unaccepted mouth map is not claimed by default");
 
-    auto accepted = BindExternalFacialFit(faceName, acceptedOnly, modelNames, false);
+    auto accepted = BindExternalFacialFit(faceName, acceptedOnly, modelNames, acceptedWeights, false);
     Check(accepted.eyeClaim, "a clip that only drives measured keys claims the eye family");
-    auto allowed = BindExternalFacialFit(faceName, clipNames, modelNames, true);
+    auto allowed = BindExternalFacialFit(faceName, clipNames, modelNames, clipWeights, true);
     Check(allowed.eyeClaim, "allowing unverified components claims the eye family with any key");
-    auto bare = BindExternalFacialFit(faceName, {"b_eye.eye_001"}, modelNames, true);
+    auto bare = BindExternalFacialFit(faceName, {"b_eye.eye_001"}, modelNames, {}, true);
     Check(bare.face == &fake.face && !bare.eyeClaim && !bare.mouthClaim,
         "a legacy clip without raw eye source never claims a family");
 
@@ -135,9 +151,8 @@ static void TestRinhaFacialFit()
     Check(allowed.eyeChannelSlots == std::vector<int>({0, 1}),
         "fitted channels resolve onto the owned list");
 
-    std::vector<float> clipWeights{0.9f, 0.1f, 0.5f, 0.25f, 1.0f, 0.0f, 0.0f};
     std::vector<float> adapted(ownedNames.size(), 0.4f);
-    Check(TryApplyExternalEyeFit(allowed, clipNames, clipWeights, "auto", true, ownedNames, adapted) ==
+    Check(TryApplyExternalEyeFit(allowed, clipNames, clipWeights, "auto", ownedNames, adapted) ==
         MikuFitDecision::ExternalApplied, "a fully verified eye evaluation applies");
     Check(Near(adapted[0], 0.5f) && Near(adapted[1], 0.25f),
         "fitted eye weights land on their native channels");
@@ -145,42 +160,42 @@ static void TestRinhaFacialFit()
         "an owned eye-family channel outside the profile is cleared, not left on the old pose");
     Check(adapted[3] == 0.4f, "the mouth family is untouched by the eye fit");
 
-    auto refusal = [&](std::vector<float> weights, const std::string& override, bool allowUnverified,
+    auto refusal = [&](std::vector<float> weights, const std::string& override,
                        const ExternalFacialFit& fit, const std::vector<std::string>& clip,
                        MikuFitDecision expected, const char* reason)
     {
         std::vector<float> buffer(ownedNames.size(), 0.4f);
         const std::vector<float> before = buffer;
         const auto decision = TryApplyExternalEyeFit(const_cast<ExternalFacialFit&>(fit), clip, weights,
-            override, allowUnverified, ownedNames, buffer);
+            override, ownedNames, buffer);
         Check(decision == expected && buffer == before, reason);
     };
     auto authored = clipWeights; authored[6] = 1.0f;
-    refusal(authored, "auto", true, allowed, clipNames, MikuFitDecision::NativeAuthored,
+    refusal(authored, "auto", allowed, clipNames, MikuFitDecision::NativeAuthored,
         "a VMD that authors native eye channels keeps precedence over the fit");
     auto unsupported = clipWeights; unsupported[5] = 0.5f;
-    refusal(unsupported, "auto", true, allowed, clipNames, MikuFitDecision::UnsupportedEyeSource,
+    refusal(unsupported, "auto", allowed, clipNames, MikuFitDecision::UnsupportedEyeSource,
         "an unsupported eye source refuses the whole clip instead of a partial face");
     auto absent = clipWeights; absent[4] = 0.0f;
-    refusal(absent, "auto", true, allowed, clipNames, MikuFitDecision::MissingRawEyeSource,
+    refusal(absent, "auto", allowed, clipNames, MikuFitDecision::MissingRawEyeSource,
         "a present flag of zero is treated as a legacy clip, not as a zero face");
-    refusal(clipWeights, "auto", false, strict, clipNames, MikuFitDecision::ExternalUnverified,
+    refusal(clipWeights, "auto", strict, clipNames, MikuFitDecision::ExternalUnverified,
         "an unverified key refuses the clip unless unverified components are allowed");
-    refusal(clipWeights, "ttmr", true, allowed, clipNames, MikuFitDecision::CharacterMismatch,
+    refusal(clipWeights, "ttmr", allowed, clipNames, MikuFitDecision::CharacterMismatch,
         "a character override that disagrees with the profile refuses the fit");
     auto providerRefusal = clipWeights; providerRefusal[2] = 0.75f;
-    refusal(providerRefusal, "auto", true, allowed, clipNames, MikuFitDecision::InvalidModel,
+    refusal(providerRefusal, "auto", allowed, clipNames, MikuFitDecision::InvalidModel,
         "a provider refusal surfaces as an invalid model, never as a silent zero");
-    refusal(clipWeights, "auto", true, ExternalFacialFit{}, clipNames, MikuFitDecision::UnknownFace,
+    refusal(clipWeights, "auto", ExternalFacialFit{}, clipNames, MikuFitDecision::UnknownFace,
         "an unresolved profile reports an unmatched face");
 
     // ---- published mouth map ------------------------------------------------
     std::vector<std::string> mouthClip(std::begin(kMikuRawNames), std::end(kMikuRawNames));
     std::vector<std::string> mouthModel = mouthShapes;
     mouthModel.push_back("b_eye.eye_001");
-    auto mouthStrict = BindExternalFacialFit(faceName, mouthClip, mouthModel, false);
+    auto mouthStrict = BindExternalFacialFit(faceName, mouthClip, mouthModel, {}, false);
     Check(!mouthStrict.mouthClaim, "the unaccepted krnh mouth map is not claimed by default");
-    auto mouthAllowed = BindExternalFacialFit(faceName, mouthClip, mouthModel, true);
+    auto mouthAllowed = BindExternalFacialFit(faceName, mouthClip, mouthModel, {}, true);
     Check(mouthAllowed.mouthClaim, "allowing unverified components claims the mouth family");
     auto mouthOwned = mouthModel;
     ResolveExternalFitSlots(mouthAllowed, mouthOwned);
@@ -247,16 +262,18 @@ static void TestRinhaFacialFit()
     MotionClip clip;
     clip.fps = 1;
     clip.total_frames = 2;
-    clip.blendshape_names = acceptedOnly;
-    // Frame-major: two frames of the accepted clip above.
-    clip.blendshape_weights = {0.9f, 0.1f, 0.5f, 1.0f, 0.0f, 0.0f,
-                               0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
+    // The importer emits unverified key names even when their weights stay zero.
+    // There is no mapped brow track, so fitting must claim that family itself.
+    clip.blendshape_names = {"b_eye.eye_001", "miku.raweye.v1.真面目", "miku.raweye.v1.困る",
+        "miku.raweye.v1.present", "miku.raweye.v1.unsupported", "miku.raweye.v1.native_authored"};
+    clip.blendshape_weights = {0.9f, 0.5f, 0.0f, 1.0f, 0.0f, 0.0f,
+                               0.9f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
     BlendshapeBinding binding;
     binding.enableMikuEyeFit = true;
     void* actor = reinterpret_cast<void*>(0x52494e48);
     binding.Apply(actor, clip, 0, api);
     Check(binding.mikuEyeDecision == MikuFitDecision::ExternalApplied,
-        "the binding reports an applied published eye profile");
+        "a dense zero track for an unverified key does not block the eye fit");
     Check(binding.fitRole == static_cast<unsigned>(kMikuMouthFits.size()) + 1,
         "the published profile reports its own role, outside the compiled table");
     Check(Near(state.weights[0], 50.0f) && state.weights[1] == 0.0f && state.weights[2] == 0.0f,
@@ -273,8 +290,22 @@ static void TestRinhaFacialFit()
     binding.Apply(actor, clip, 0, api);
     Check(binding.mikuEyeDecision == MikuFitDecision::Disabled && !binding.boundMikuEyeFit,
         "switching the eye profile off rebuilds the binding instead of keeping fitted weights");
-    Check(Near(state.weights[0], 90.0f) && state.weights[2] == 0.0f && state.weights[3] == 17.0f,
+    Check(Near(state.weights[0], 90.0f) && state.weights[1] == 17.0f &&
+        state.weights[2] == 0.0f && state.weights[3] == 17.0f,
         "with the profile off, native eye mapping returns and unowned channels stay untouched");
+    MotionClip lateUnverified = clip;
+    lateUnverified.blendshape_weights[8] = 0.25f;
+    binding.enableMikuEyeFit = true;
+    binding.Apply(actor, clip, 0, api);
+    binding.Apply(actor, lateUnverified, 0, api);
+    Check(binding.mikuEyeDecision == MikuFitDecision::ExternalUnverified && Near(state.weights[0], 90.0f) &&
+        state.weights[1] == 17.0f,
+        "switching to the same channels with later unverified activity restores the brow and falls back for the entire clip");
+    MotionClip lateUnsupported = clip;
+    lateUnsupported.blendshape_weights[10] = 0.3f;
+    binding.Apply(actor, lateUnsupported, 0, api);
+    Check(binding.mikuEyeDecision == MikuFitDecision::UnsupportedEyeSource && Near(state.weights[0], 90.0f),
+        "later unsupported source activity blocks the fit from the first frame");
     binding.Restore(actor, api);
     Check(std::all_of(state.weights.begin(), state.weights.end(), [](float value) { return value == 17.0f; }),
         "restoring returns the authored face to its captured weights");
@@ -288,6 +319,23 @@ static void TestRinhaFacialFit()
     facial_fit::generation = 0;
     facial_fit::host = {};
     facial_fit::host.queryService = [](void*, const char* name, uint32_t version, uint32_t size, void* table) -> GakuStatus {
+        if (adapterUp && name && std::string_view(name) == GAKU_CHARA_ADAPTER_SERVICE)
+        {
+            if (version != GAKU_CHARA_ADAPTER_VERSION) return GAKU_E_VERSION;
+            if (size < sizeof(GakuCharaAdapterService)) return GAKU_E_SIZE;
+            *static_cast<GakuCharaAdapterService*>(table) = {GAKU_CHARA_ADAPTER_VERSION,
+                sizeof(GakuCharaAdapterService), nullptr,
+                [](void*, const char* face, GakuCharaIdentity* identity) -> GakuStatus {
+                    if (std::string_view(face) != adapterFace.faceName) return GAKU_E_UNAVAILABLE;
+                    *identity = {"npc0", "NPC"};
+                    return GAKU_OK;
+                },
+                [](void*, RinhaFacialFitService* fit) -> GakuStatus {
+                    *fit = publishedAdapterFit;
+                    return GAKU_OK;
+                }};
+            return GAKU_OK;
+        }
         if (!providerUp || !name || std::string(name) != RINHA_FACIAL_FIT_SERVICE) return GAKU_E_UNAVAILABLE;
         if (version != GAKU_SERVICE_VERSION) return GAKU_E_VERSION;
         if (size < sizeof(RinhaFacialFitService)) return GAKU_E_SIZE;
@@ -303,13 +351,25 @@ static void TestRinhaFacialFit()
     Check(facial_fit::Find(faceName) == &fake.face && facial_fit::available &&
         facial_fit::generation == 1,
         "the lookup is retried once the provider registers, and forces a rebind");
+    adapterUp = true;
+    facial_fit::nextAttempt = {};
+    const auto identity = facial_fit::ResolveIdentity(std::string(adapterFace.faceName) + " (Clone)");
+    Check(std::string_view(identity.character) == "npc0" && std::string_view(identity.displayName) == "NPC" &&
+        facial_fit::generation == 2, "late CharaAdapter registration adds an identity outside the built-in table");
+    const auto adapterMatch = facial_fit::FindFit(adapterFace.faceName);
+    Check(adapterMatch.face == &adapterFace && adapterMatch.provider == &facial_fit::adapterFit,
+        "a profile is paired with its CharaAdapter evaluator");
+    Check(facial_fit::FindFit(faceName).provider == &facial_fit::service &&
+        !facial_fit::ResolveIdentity(faceName).character[0], "legacy fit remains available for other faces");
     facial_fit::available = false;
     facial_fit::nextAttempt = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    Check(facial_fit::Find(faceName) == nullptr && facial_fit::generation == 1,
+    Check(facial_fit::Find(faceName) == nullptr && facial_fit::generation == 2,
         "the retry is throttled instead of running a registry lookup every frame");
 
     facial_fit::available = false;
     facial_fit::service = {};
+    facial_fit::adapter = {};
+    facial_fit::adapterFit = {};
     facial_fit::host = {};
     facial_fit::nextAttempt = {};
 }

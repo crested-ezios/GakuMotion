@@ -103,6 +103,7 @@ namespace GakuMotion
 		// The provider registers after this plugin activates on a real install,
 		// so a binding made before that must notice the later appearance.
 		unsigned boundFacialFitGeneration{0};
+		const MotionClip* boundClip{nullptr};
 		std::string boundFaceName;
 		MikuFitDecision mikuFitDecision{MikuFitDecision::Disabled};
 		MikuFitDecision mikuEyeDecision{MikuFitDecision::Disabled};
@@ -247,8 +248,9 @@ namespace GakuMotion
 		void Prepare(void* actor, const MotionClip& clip, const FaceApi& api)
 		{
 			if (!api.Ready()) return;
+			facial_fit::Ensure();
 			void* current = api.getModel(actor);
-			if (current != model || names != clip.blendshape_names || boundCharacterOverride != characterOverride ||
+			if (current != model || boundClip != &clip || names != clip.blendshape_names || boundCharacterOverride != characterOverride ||
 				boundMikuMouthFit != enableMikuMouthFit || boundMikuEyeFit != enableMikuEyeFit ||
 				boundFacialFitAllowUnverified != facialFitAllowUnverified ||
 				boundFacialFitGeneration != facial_fit::generation)
@@ -275,6 +277,7 @@ namespace GakuMotion
 				const int count = api.getCount(current);
 				if (count <= 0 || count > 1024) return;
 				model = current;
+				boundClip = &clip;
 				names = clip.blendshape_names;
 				boundCharacterOverride = characterOverride;
 				boundMikuMouthFit = enableMikuMouthFit;
@@ -291,11 +294,14 @@ namespace GakuMotion
 				{
 					// A replacement can retain the scene actor's original name. Adapt
 					// the loaded face first, as the scene-role menu does.
-					charId = DetectIdolCharacterCode(boundFaceName);
+					const auto identity = facial_fit::ResolveIdentity(boundFaceName);
+					charId = identity.character;
+					if (charId.empty()) charId = DetectIdolCharacterCode(boundFaceName);
 					if (charId.empty() && api.getActorName) charId = DetectIdolCharacterCode(api.getActorName(actor));
+					detectedCharacter = charId;
 				}
+				else detectedCharacter = DetectIdolCharacterCode(charId);
 				activeProfile = FindCharacterBaseline(charId);
-				detectedCharacter = DetectIdolCharacterCode(charId);
 
 				// Name matching is per actor, per face model. File order and game
 				// blendshape indices are intentionally unrelated.
@@ -333,14 +339,15 @@ namespace GakuMotion
 						complete = complete && std::count(modelNames.begin(), modelNames.end(), name) == 1;
 					if (complete) families |= 4;
 				}
-				// Published profile (rinha.facial-fit). Claiming a family means a
-				// later Apply may replace it wholesale, so the claim itself is
-				// gated on the profile being applicable to this clip.
-				externalFit = BindExternalFacialFit(boundFaceName, names, modelNames, facialFitAllowUnverified);
-				if (externalFit.face)
+				// Claim both parts of an applicable eye/brow fit, including keys
+				// that have no legacy mapped counterpart in the clip.
+				externalFit = BindExternalFacialFit(boundFaceName, names, modelNames,
+					clip.blendshape_weights, facialFitAllowUnverified);
+				if (externalFit.face && (characterOverride.empty() || characterOverride == "auto" ||
+					characterOverride == externalFit.character))
 				{
-					if (externalFit.mouthClaim) families |= 4;
-					if (externalFit.eyeClaim) { families |= 2; ownsEyes = true; }
+					if (enableMikuMouthFit && externalFit.mouthClaim) families |= 4;
+					if (enableMikuEyeFit && externalFit.eyeClaim) { families |= 3; ownsEyes = true; }
 				}
 				for (int j = 0; j < count; ++j)
 				{
@@ -366,9 +373,6 @@ namespace GakuMotion
 
 		void Apply(void* actor, const MotionClip& clip, float time, const FaceApi& api)
 		{
-			// No-op once the provider is known; otherwise a throttled re-query
-			// that rebinds through the generation check in Prepare().
-			facial_fit::Ensure();
 			mikuFitDecision = !enableMikuMouthFit ? MikuFitDecision::Disabled
 				: HasMikuRawSource(clip.blendshape_names) ? MikuFitDecision::UnknownFace : MikuFitDecision::MissingRawSource;
 			mikuEyeDecision = !enableMikuEyeFit ? MikuFitDecision::Disabled
@@ -420,7 +424,7 @@ namespace GakuMotion
 			mikuEyeDecision = enableMikuEyeFit
 				? (externalFit.eyesPresent
 					? TryApplyExternalEyeFit(externalFit, clip.blendshape_names, weights, characterOverride,
-						facialFitAllowUnverified, ownedNames, adapted)
+						ownedNames, adapted)
 					: MikuFitDecision::UnknownFace)
 				: MikuFitDecision::Disabled;
 			const uint32_t decisionBit = 1u << static_cast<unsigned>(mikuFitDecision);

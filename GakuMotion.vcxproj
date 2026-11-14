@@ -263,6 +263,8 @@
   <ItemGroup>
     <ClInclude Include="include\GakuMotionControl.h" />
     <ClInclude Include="include\GakuMotionSceneNodes.h" />
+    <ClInclude Include="include\GakuMotionActor.h" />
+    <ClInclude Include="include\GakuCharaAdapter.h" />
     <ClInclude Include="include\GakuBurstBridge.h" />
     <ClInclude Include="include\GakuFaceDiagnostics.h" />
     <ClInclude Include="include\GakuPlugin.h" />

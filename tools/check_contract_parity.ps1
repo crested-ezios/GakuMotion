@@ -6,11 +6,12 @@
 # tools/check_contract_parity.ps1 -- prove the two provider/consumer copies of
 # the facial-fit contract are byte-identical.
 #
-#   include/RinhaFacialFit.h                <- the C service contract
+#   include/GakuCharaAdapter.h             <- the character adapter contract
+#   include/RinhaFacialFit.h                <- the facial fit contract
 #   tools/vmd2gkmotion/miku_raw_eye_keys.json <- the importer's key projection
 #
 # GakuMotion cannot reference RinhaReplacement (separate plugins, separate
-# repos), so both artifacts exist twice. A silent edit on either side would
+# repos), so these artifacts exist twice. A silent edit on either side would
 # produce a DLL that reads the wrong offsets or emits key names the published
 # table does not have, so the copies are compared instead of trusted.
 #
@@ -49,6 +50,8 @@ if (-not (Test-Path -LiteralPath $RinhaRoot)) {
 }
 
 $pairs = @(
+    @{ Name = 'CharaAdapter service contract'; Mine = 'include\GakuCharaAdapter.h';
+       Theirs = 'include\GakuCharaAdapter.h' },
     @{ Name = 'service contract'; Mine = 'include\RinhaFacialFit.h';
        Theirs = 'include\RinhaFacialFit.h' },
     @{ Name = 'eye key projection'; Mine = 'tools\vmd2gkmotion\miku_raw_eye_keys.json';
