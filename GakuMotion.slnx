@@ -1,0 +1,41 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <BuildType Name="Release" />
+    <BuildType Name="Debug" />
+    <BuildType Name="Release ImGui" />
+    <BuildType Name="Debug ImGui" />
+  </Configurations>
+  <Project Path="GakuMotionGuiPreview.vcxproj" Id="c3d4e5f6-a7b8-9012-cdef-012345678902" DefaultStartup="true" />
+  <Project Path="GakuMotion.vcxproj" Id="a1b2c3d4-e5f6-7890-abcd-ef1234567890" />
+  <Project Path="GakuMotionTests.vcxproj" Id="b2c3d4e5-f6a7-8901-bcde-f12345678901" />
+  <Folder Name="/importer/">
+    <Project Path="candidate/csharp/src/GakuMotion.VmdImporter/GakuMotion.VmdImporter.csproj">
+      <BuildType Solution="Debug ImGui|*" Project="Debug" />
+      <BuildType Solution="Release ImGui|*" Project="Release" />
+      <Platform Solution="*|x64" Project="Any CPU" />
+    </Project>
+    <Project Path="interop/GakuMotion.VmdImporter.Native/GakuMotion.VmdImporter.Native.csproj">
+      <BuildType Solution="Debug ImGui|*" Project="Debug" />
+      <BuildType Solution="Release ImGui|*" Project="Release" />
+      <Platform Solution="*|x64" Project="Any CPU" />
+    </Project>
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="interop/CameraImportTests/GakuMotion.CameraImportTests.csproj">
+      <BuildType Solution="Debug ImGui|*" Project="Debug" />
+      <BuildType Solution="Release ImGui|*" Project="Release" />
+      <Platform Solution="*|x64" Project="Any CPU" />
+    </Project>
+    <Project Path="interop/EditTrackTests/GakuMotion.EditTrackTests.csproj">
+      <BuildType Solution="Debug ImGui|*" Project="Debug" />
+      <BuildType Solution="Release ImGui|*" Project="Release" />
+      <Platform Solution="*|x64" Project="Any CPU" />
+    </Project>
+    <Project Path="interop/MikuRawSourceTests/GakuMotion.MikuRawSourceTests.csproj">
+      <BuildType Solution="Debug ImGui|*" Project="Debug" />
+      <BuildType Solution="Release ImGui|*" Project="Release" />
+      <Platform Solution="*|x64" Project="Any CPU" />
+    </Project>
+  </Folder>
+</Solution>

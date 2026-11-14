@@ -1,0 +1,218 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- GakuMotionTests.vcxproj : Visual Studio 2026 offline unit-test runner -->
+<!-- Mirrors tests\run_release_tests.ps1 build logic.                       -->
+<!-- Output : build\tests\test_core.exe  (console EXE, x64)                -->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release ImGui|x64">
+      <Configuration>Release ImGui</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug ImGui|x64">
+      <Configuration>Debug ImGui</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{B2C3D4E5-F6A7-8901-BCDE-F12345678901}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>GakuMotionTests</RootNamespace>
+    <PlatformToolset>v145</PlatformToolset>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <!-- ImGui include dir: defaults to submodule deps\imgui -->
+    <ImGuiIncludeDir Condition="'$(ImGuiIncludeDir)' == ''">$(ProjectDir)deps\imgui</ImGuiIncludeDir>
+    <!-- KineTexture include dir: defaults to submodule deps\KineTexture\src -->
+    <KineTextureIncludeDir Condition="'$(KineTextureIncludeDir)' == ''">$(ProjectDir)deps\KineTexture\src</KineTextureIncludeDir>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release ImGui|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug ImGui|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(ProjectDir)build\tests\</OutDir>
+    <IntDir>$(ProjectDir)build\obj-msvc\tests\$(Configuration)\</IntDir>
+    <TargetName>test_core</TargetName>
+    <TargetExt>.exe</TargetExt>
+  </PropertyGroup>
+  <!-- ======================================================================
+       Release
+       ====================================================================== -->
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>Disabled</Optimization>
+      <AdditionalOptions>/utf-8 /std:c++20 %(AdditionalOptions)</AdditionalOptions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)src;$(ProjectDir)tests;$(KineTextureIncludeDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;GKMOTION_OFFLINE_TEST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ExceptionHandling>Sync</ExceptionHandling>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <AdditionalDependencies>winmm.lib;user32.lib;comdlg32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <!-- ======================================================================
+       Debug
+       ====================================================================== -->
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>Disabled</Optimization>
+      <AdditionalOptions>/utf-8 /std:c++20 %(AdditionalOptions)</AdditionalOptions>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)src;$(ProjectDir)tests;$(KineTextureIncludeDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;GKMOTION_OFFLINE_TEST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ExceptionHandling>Sync</ExceptionHandling>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <AdditionalDependencies>winmm.lib;user32.lib;comdlg32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <!-- ======================================================================
+       Release ImGui
+       ====================================================================== -->
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release ImGui|x64'">
+    <ClCompile>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>Disabled</Optimization>
+      <AdditionalOptions>/utf-8 /std:c++20 %(AdditionalOptions)</AdditionalOptions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)src;$(ProjectDir)tests;$(KineTextureIncludeDir);$(ImGuiIncludeDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;GKMOTION_OFFLINE_TEST;GKMOTION_ENABLE_IMGUI;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ExceptionHandling>Sync</ExceptionHandling>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <AdditionalDependencies>winmm.lib;user32.lib;comdlg32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <!-- ======================================================================
+       Debug ImGui
+       ====================================================================== -->
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug ImGui|x64'">
+    <ClCompile>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>Disabled</Optimization>
+      <AdditionalOptions>/utf-8 /std:c++20 %(AdditionalOptions)</AdditionalOptions>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)src;$(ProjectDir)tests;$(KineTextureIncludeDir);$(ImGuiIncludeDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;GKMOTION_OFFLINE_TEST;GKMOTION_ENABLE_IMGUI;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ExceptionHandling>Sync</ExceptionHandling>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <AdditionalDependencies>winmm.lib;user32.lib;comdlg32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <!-- Source files: test_refresh_core.cpp compiled into test_core.exe.     -->
+  <!-- All other test files have their own main() and are None items.      -->
+  <ItemGroup>
+    <!-- Primary offline test entry point -->
+    <ClCompile Include="tests\test_refresh_core.cpp" />
+    <!-- ImGui syntax-check TU: excluded in non-ImGui configurations -->
+    <ClCompile Include="tests\gui_syntax_check.cpp">
+      <ExcludedFromBuild Condition="'$(Configuration)'=='Release' Or '$(Configuration)'=='Debug'">true</ExcludedFromBuild>
+    </ClCompile>
+    <!-- ImGui translation units: compiled only for ImGui configurations -->
+    <ClCompile Include="$(ImGuiIncludeDir)\imgui.cpp">
+      <ExcludedFromBuild Condition="'$(Configuration)'=='Release' Or '$(Configuration)'=='Debug'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="$(ImGuiIncludeDir)\imgui_draw.cpp">
+      <ExcludedFromBuild Condition="'$(Configuration)'=='Release' Or '$(Configuration)'=='Debug'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="$(ImGuiIncludeDir)\imgui_widgets.cpp">
+      <ExcludedFromBuild Condition="'$(Configuration)'=='Release' Or '$(Configuration)'=='Debug'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="$(ImGuiIncludeDir)\imgui_tables.cpp">
+      <ExcludedFromBuild Condition="'$(Configuration)'=='Release' Or '$(Configuration)'=='Debug'">true</ExcludedFromBuild>
+    </ClCompile>
+  </ItemGroup>
+  <!-- Standalone test programs: each has its own main/wmain -->
+  <ItemGroup>
+    <None Include="tests\miku_fit_runner.cpp" />
+    <None Include="tests\performance_clock_harness.cpp" />
+    <None Include="tests\test_data_layout.cpp" />
+    <None Include="tests\test_gui_ux.cpp" />
+    <None Include="tests\test_native_import_bridge.cpp" />
+    <None Include="tests\test_stage_load_runtime.cpp" />
+    <None Include="tests\test_studio_lighting_runtime.cpp" />
+    <None Include="tests\test_studio_owned_runtime.cpp" />
+    <None Include="tests\test_studio_video_runtime.cpp" />
+    <None Include="tests\test_unicode_paths.cpp" />
+  </ItemGroup>
+  <!-- Header files visible in Solution Explorer -->
+  <ItemGroup>
+    <ClInclude Include="tests\test_actorless_library.hpp" />
+    <ClInclude Include="tests\test_burst_bridge_multi_client.hpp" />
+    <ClInclude Include="tests\test_camera.hpp" />
+    <ClInclude Include="tests\test_camera_core.hpp" />
+    <ClInclude Include="tests\test_control_api.hpp" />
+    <ClInclude Include="tests\test_ensemble_gui.hpp" />
+    <ClInclude Include="tests\test_ensemble_placement.hpp" />
+    <ClInclude Include="tests\test_ensemble_runtime.hpp" />
+    <ClInclude Include="tests\test_ensemble_settings.hpp" />
+    <ClInclude Include="tests\test_face_ownership.hpp" />
+    <ClInclude Include="tests\test_facial_continuity.hpp" />
+    <ClInclude Include="tests\test_library_safety.hpp" />
+    <ClInclude Include="tests\test_miku_facial_fit.hpp" />
+    <ClInclude Include="tests\test_photography_ensemble_probe.hpp" />
+    <ClInclude Include="tests\test_playback_timing.hpp" />
+    <ClInclude Include="tests\test_responsive_layout.hpp" />
+    <ClInclude Include="tests\test_rinha_facial_fit.hpp" />
+    <ClInclude Include="tests\test_scene_actor_selection.hpp" />
+    <ClInclude Include="tests\test_scene_nodes.hpp" />
+    <ClInclude Include="tests\test_stage_studio_settings.hpp" />
+    <ClInclude Include="tests\test_timing_gui.hpp" />
+    <ClInclude Include="tests\test_track_timing.hpp" />
+    <ClInclude Include="tests\test_waist_support.hpp" />
+    <ClInclude Include="tests\test_waist_support_core.hpp" />
+    <ClInclude Include="tests\test_waist_support_integration.hpp" />
+  </ItemGroup>
+  <!-- Scripts visible in Solution Explorer -->
+  <ItemGroup>
+    <None Include="tests\run_release_tests.ps1" />
+    <None Include="tests\run_gui_ux_tests.ps1" />
+    <None Include="tests\run_layout_tests.ps1" />
+    <None Include="tests\run_performance_clock_harness.ps1" />
+    <None Include="tests\run_studio_runtime_tests.ps1" />
+    <None Include="tests\run_unicode_path_tests.ps1" />
+    <None Include="tests\test_layout_migration.ps1" />
+    <None Include="tests\run_import_e2e.py" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

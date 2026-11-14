@@ -1,0 +1,191 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- GakuMotionGuiPreview.vcxproj : Visual Studio 2026 Win32 ImGui preview runner -->
+<!-- Output : build\preview\GakuMotionGuiPreview.exe (Windows GUI x64 EXE)        -->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release ImGui|x64">
+      <Configuration>Release ImGui</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug ImGui|x64">
+      <Configuration>Debug ImGui</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{C3D4E5F6-A7B8-9012-CDEF-012345678902}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>GakuMotionGuiPreview</RootNamespace>
+    <PlatformToolset>v145</PlatformToolset>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <!-- ImGui include dir: defaults to submodule deps\imgui -->
+    <ImGuiIncludeDir Condition="'$(ImGuiIncludeDir)' == ''">$(ProjectDir)deps\imgui</ImGuiIncludeDir>
+    <!-- KineTexture include dir: defaults to submodule deps\KineTexture\src -->
+    <KineTextureIncludeDir Condition="'$(KineTextureIncludeDir)' == ''">$(ProjectDir)deps\KineTexture\src</KineTextureIncludeDir>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <CharacterSet>Unicode</CharacterSet>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release ImGui|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <CharacterSet>Unicode</CharacterSet>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug ImGui|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(ProjectDir)build\preview\</OutDir>
+    <IntDir>$(ProjectDir)build\obj-msvc\preview\$(Configuration)\</IntDir>
+    <TargetName>GakuMotionGuiPreview</TargetName>
+    <TargetExt>.exe</TargetExt>
+  </PropertyGroup>
+  <!-- ======================================================================
+       Release
+       ====================================================================== -->
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <AdditionalOptions>/utf-8 /std:c++20 %(AdditionalOptions)</AdditionalOptions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)src;$(ImGuiIncludeDir);$(ImGuiIncludeDir)\backends;$(KineTextureIncludeDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;GKMOTION_ENABLE_IMGUI;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ExceptionHandling>Sync</ExceptionHandling>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <AdditionalDependencies>d3d11.lib;dxgi.lib;d3dcompiler.lib;winmm.lib;user32.lib;gdi32.lib;comdlg32.lib;dwmapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <!-- ======================================================================
+       Debug
+       ====================================================================== -->
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>Disabled</Optimization>
+      <AdditionalOptions>/utf-8 /std:c++20 %(AdditionalOptions)</AdditionalOptions>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)src;$(ImGuiIncludeDir);$(ImGuiIncludeDir)\backends;$(KineTextureIncludeDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;GKMOTION_ENABLE_IMGUI;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ExceptionHandling>Sync</ExceptionHandling>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <AdditionalDependencies>d3d11.lib;dxgi.lib;d3dcompiler.lib;winmm.lib;user32.lib;gdi32.lib;comdlg32.lib;dwmapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <!-- ======================================================================
+       Release ImGui
+       ====================================================================== -->
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release ImGui|x64'">
+    <ClCompile>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <AdditionalOptions>/utf-8 /std:c++20 %(AdditionalOptions)</AdditionalOptions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)src;$(ImGuiIncludeDir);$(ImGuiIncludeDir)\backends;$(KineTextureIncludeDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;GKMOTION_ENABLE_IMGUI;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ExceptionHandling>Sync</ExceptionHandling>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <AdditionalDependencies>d3d11.lib;dxgi.lib;d3dcompiler.lib;winmm.lib;user32.lib;gdi32.lib;comdlg32.lib;dwmapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <!-- ======================================================================
+       Debug ImGui
+       ====================================================================== -->
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug ImGui|x64'">
+    <ClCompile>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>Disabled</Optimization>
+      <AdditionalOptions>/utf-8 /std:c++20 %(AdditionalOptions)</AdditionalOptions>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)src;$(ImGuiIncludeDir);$(ImGuiIncludeDir)\backends;$(KineTextureIncludeDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;GKMOTION_ENABLE_IMGUI;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ExceptionHandling>Sync</ExceptionHandling>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <AdditionalDependencies>d3d11.lib;dxgi.lib;d3dcompiler.lib;winmm.lib;user32.lib;gdi32.lib;comdlg32.lib;dwmapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <!-- ======================================================================
+       Sources
+       ====================================================================== -->
+  <ItemGroup>
+    <ClCompile Include="preview\main.cpp" />
+    <ClCompile Include="$(ImGuiIncludeDir)\imgui.cpp" />
+    <ClCompile Include="$(ImGuiIncludeDir)\imgui_draw.cpp" />
+    <ClCompile Include="$(ImGuiIncludeDir)\imgui_tables.cpp" />
+    <ClCompile Include="$(ImGuiIncludeDir)\imgui_widgets.cpp" />
+    <ClCompile Include="$(ImGuiIncludeDir)\backends\imgui_impl_win32.cpp" />
+    <ClCompile Include="$(ImGuiIncludeDir)\backends\imgui_impl_dx11.cpp" />
+  </ItemGroup>
+  <!-- ======================================================================
+       Headers
+       ====================================================================== -->
+  <ItemGroup>
+    <ClInclude Include="preview\GkMockState.hpp" />
+    <ClInclude Include="src\GkGuiOverlay.hpp" />
+    <ClInclude Include="src\gui\GkGuiStatusBar.hpp" />
+    <ClInclude Include="src\gui\GkGuiTabMotion.hpp" />
+    <ClInclude Include="src\gui\GkGuiTabGaze.hpp" />
+    <ClInclude Include="src\gui\GkGuiTabCamera.hpp" />
+    <ClInclude Include="src\gui\GkGuiTabStage.hpp" />
+    <ClInclude Include="src\gui\GkGuiTabBone.hpp" />
+    <ClInclude Include="src\gui\GkGuiTabSole.hpp" />
+    <ClInclude Include="src\gui\GkGuiTabExperimentalSolePitch.hpp" />
+    <ClInclude Include="src\gui\GkGuiTabConfig.hpp" />
+    <ClInclude Include="src\gui\GuiOverlayCommon.hpp" />
+    <ClInclude Include="src\gui\GkGuiBranding.hpp" />
+    <ClInclude Include="src\gui\generated\GkGuiBrandingMesh.hpp" />
+    <ClInclude Include="src\gui\GuiTransportBar.hpp" />
+    <ClInclude Include="src\gui\GuiLibraryPage.hpp" />
+    <ClInclude Include="src\gui\GuiMotionPage.hpp" />
+    <ClInclude Include="src\gui\GuiCameraPage.hpp" />
+    <ClInclude Include="src\gui\GuiStagePage.hpp" />
+    <ClInclude Include="src\gui\GuiSettingsPage.hpp" />
+    <ClInclude Include="src\gui\GuiDeveloperPage.hpp" />
+    <ClInclude Include="src\gui\GuiOverlayShell.hpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>
