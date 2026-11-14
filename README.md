@@ -35,7 +35,7 @@ GakuMotion 目前处于 Developer Preview 阶段。
 
 ### 前置要求
 - 操作系统：Windows 10 / 11 64 位（x64）
-- 宿主程序：[GakuLoader](https://github.com/crested-ezios/GakuLoader)（游戏根目录下的 `version.dll`）
+- 宿主程序：[GakuLoader](https://github.com/Gaku-Mod-Tools/GakuLoader)（游戏根目录下的 `version.dll`）
 - 核心文件：配套版本的 `GakuMotion.dll` 与 `GakuMotion.VmdImporter.Native.dll`
 
 ### 文件放置路径
