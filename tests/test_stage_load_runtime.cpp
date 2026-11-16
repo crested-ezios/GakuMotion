@@ -3,6 +3,7 @@
 #include "GakuPlugin.h"
 #include "GkExactMethod.hpp"
 #include "GkStageLoadPolicy.hpp"
+#include "GkBgmSuppression.hpp"
 #include <array>
 #include <atomic>
 #include <cstdio>
@@ -355,6 +356,39 @@ namespace StageRuntimeHarness
                 "failed acquisition stays disabled and cleans up any published trampoline lease");
         }
     }
+    struct TestAudioCategory { bool muted{}; uint64_t generation{1}; };
+    bool AudioThread(void*) { return true; }
+    GakuMotion::bgm::ReadStatus ResolveAudio(void* ctx, GakuMotion::bgm::Target& target)
+    {
+        target = {1, static_cast<TestAudioCategory*>(ctx)->generation, 2, GakuMotion::bgm::Scope::SoundEffectsOnly};
+        return GakuMotion::bgm::ReadStatus::Ok;
+    }
+    GakuMotion::bgm::ReadStatus ReadAudio(void* ctx, const GakuMotion::bgm::Target&, GakuMotion::bgm::MuteState& state)
+    { state = {static_cast<TestAudioCategory*>(ctx)->muted, 0}; return GakuMotion::bgm::ReadStatus::Ok; }
+    GakuMotion::bgm::WriteResult WriteAudio(void* ctx, const GakuMotion::bgm::Target&, const GakuMotion::bgm::MuteState& expected, bool muted)
+    {
+        using namespace GakuMotion::bgm;
+        auto& value = *static_cast<TestAudioCategory*>(ctx);
+        if (value.muted != expected.muted) return {WriteStatus::Conflict};
+        value.muted = muted;
+        return {WriteStatus::Applied, {muted, 0}, true};
+    }
+    void TestSoundEffectSwitch()
+    {
+        using namespace GakuMotion::bgm;
+        for (bool originallyMuted : {false, true})
+        {
+            TestAudioCategory category{originallyMuted};
+            Backend backend{&category, AudioThread, ResolveAudio, ReadAudio, WriteAudio};
+            Lease lease;
+            lease.Sync(backend, true, 1);
+            Check(category.muted, "sound-effect switch mutes its identified category");
+            lease.Sync(backend, false, 1);
+            Check(category.muted == originallyMuted, "switch off restores the original mute setting");
+            lease.Sync(backend, true, 1);
+            Check(ReleaseForCapture(lease) && category.muted == originallyMuted, "native capture releases sound-effect mute before capture");
+        }
+    }
     void TestShutdown()
     {
         void* background = Text("studio-01-00");
@@ -375,7 +409,7 @@ namespace StageRuntimeHarness
 int main()
 {
     using namespace StageRuntimeHarness;
-    TestDetour(); TestInstall(); TestShutdown();
+    TestDetour(); TestInstall(); TestShutdown(); TestSoundEffectSwitch();
     std::printf("Stage-load runtime detour: %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

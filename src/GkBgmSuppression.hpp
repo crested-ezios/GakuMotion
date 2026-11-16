@@ -7,7 +7,7 @@ namespace GakuMotion::bgm
 	// This module is game independent. An empty Backend is unavailable, never a
 	// global-volume fallback. Only an explicitly identified audio category may resolve.
 	// In particular, finding a method named Mute or guessing "BGM" is insufficient.
-	enum class Scope : uint8_t { Unverified, BgmOnly, CharacterVoiceOnly };
+	enum class Scope : uint8_t { Unverified, BgmOnly, CharacterVoiceOnly, SoundEffectsOnly };
 	struct Target
 	{
 		uint64_t owner{0}; // Registered audio graph / ACF identity, not an Actor pointer.
@@ -15,7 +15,7 @@ namespace GakuMotion::bgm
 		uint64_t id{0}; // Category zero is valid; owner/generation establish identity.
 		Scope scope{Scope::Unverified};
 		bool Valid() const noexcept { return owner != 0 && generation != 0 &&
-			(scope == Scope::BgmOnly || scope == Scope::CharacterVoiceOnly); }
+			(scope == Scope::BgmOnly || scope == Scope::CharacterVoiceOnly || scope == Scope::SoundEffectsOnly); }
 		bool operator==(const Target&) const = default;
 	};
 

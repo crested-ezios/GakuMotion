@@ -980,6 +980,7 @@ namespace
 	decltype(&mciSendStringA) g_sendMciAudio = &GakuMotion::windows_path::SendMciUtf8;
 	GakuMotion::bgm::Lease g_bgmLease;
 	GakuMotion::bgm::Lease g_voiceLease;
+	GakuMotion::bgm::Lease g_seLease;
 
 	bool HelperAudioMissingAlias(MCIERROR error)
 	{
@@ -1315,7 +1316,8 @@ namespace
 		// old blind Clear path and erase the evidence before the capture gate.
 		if (fallbackClean && bridgeClean) ClearSecondaryPhysics();
 		const bool bgmModified = g_bgmLease.GetSnapshot().ownsMutation || g_bgmLease.GetSnapshot().recoveryPending ||
-			g_voiceLease.GetSnapshot().ownsMutation || g_voiceLease.GetSnapshot().recoveryPending;
+			g_voiceLease.GetSnapshot().ownsMutation || g_voiceLease.GetSnapshot().recoveryPending ||
+			g_seLease.GetSnapshot().ownsMutation || g_seLease.GetSnapshot().recoveryPending;
 		core.SuspendForCapture();
 		auto& report = core.captureRestoreReport;
 		using GakuMotion::capture::RestoreState;
@@ -3022,6 +3024,9 @@ void MotionShutdown(void*)
 	if (g_voiceLease.GetSnapshot().held && g_hostContext.logWarn)
 		g_hostContext.logWarn("[GakuMotion][NativeAudio] Voice shutdown restoration pending: %s (no off-thread game call)",
 			GakuMotion::bgm::StatusName(g_voiceLease.GetSnapshot().status));
+	if (g_seLease.GetSnapshot().held && g_hostContext.logWarn)
+		g_hostContext.logWarn("[GakuMotion][NativeAudio] Se shutdown restoration pending: %s",
+			GakuMotion::bgm::StatusName(g_seLease.GetSnapshot().status));
 	// Join native jobs before plugin code disappears. NativeAOT stays loaded
 	// for the process lifetime; unloading its runtime is unsupported.
 	GakuMotion::csharp_import::Shutdown();

@@ -2,8 +2,8 @@
 #include "GkLog.hpp"
 
 // Included in the plugin's private namespace, after ActorGroundShadow.
-// Custom.acf's CategoryName table contains Bgm / Se / Voice. Only Bgm and
-// Voice are leased; MCI audio and native Se are independent of these mutes.
+// Custom.acf's CategoryName table contains Bgm / Se / Voice. Bgm and
+// Voice follow playback; Se is an explicit scene switch. MCI songs are independent.
 namespace NativeAudio
 {
 	using namespace GakuMotion::bgm;
@@ -39,7 +39,8 @@ namespace NativeAudio
 		uint32_t acfSize{0}, acfVersion{0}, id{0}, group{0};
 		bool present{false};
 	};
-	inline Category bgm{"Bgm", Scope::BgmOnly}, voice{"Voice", Scope::CharacterVoiceOnly};
+	inline Category bgm{"Bgm", Scope::BgmOnly}, voice{"Voice", Scope::CharacterVoiceOnly},
+		se{"Se", Scope::SoundEffectsOnly};
 
 	inline bool MainThread(void*)
 	{
@@ -106,6 +107,7 @@ namespace NativeAudio
 	{
 		g_bgmLease.Release(reason);
 		g_voiceLease.Release(reason);
+		g_seLease.Release(reason);
 	}
 	inline bool ReleaseForCapture()
 	{
@@ -113,7 +115,8 @@ namespace NativeAudio
 		// prevents an independent owned category from being restored.
 		const bool bgmClean = GakuMotion::bgm::ReleaseForCapture(g_bgmLease);
 		const bool voiceClean = GakuMotion::bgm::ReleaseForCapture(g_voiceLease);
-		return bgmClean && voiceClean;
+		const bool seClean = GakuMotion::bgm::ReleaseForCapture(g_seLease);
+		return bgmClean && voiceClean && seClean;
 	}
 	inline void Sync()
 	{
@@ -124,6 +127,12 @@ namespace NativeAudio
 		// muted songs and clips without song.wav. Stop/scene loss releases it.
 		const Status bgmStatus = g_bgmLease.Sync(BackendFor(bgm), active, 1);
 		const Status voiceStatus = g_voiceLease.Sync(BackendFor(voice), active, 1);
+		const bool muteSe = g_motionSceneAllowed && GakuMotion::Core::Instance().InjectionAllowed() &&
+			GakuMotion::Core::Instance().stageManager.settings.muteNativeSoundEffects;
+		const Status seStatus = g_seLease.Sync(BackendFor(se), muteSe, 1);
+		static Status previousSe = Status::Idle;
+		if (previousSe != seStatus) GM_DEBUG("[GakuMotion][NativeAudio] Se=%s switch=%d", StatusName(seStatus), muteSe);
+		previousSe = seStatus;
 		static Status previousBgm = Status::Idle, previousVoice = Status::Idle;
 		if (previousBgm != bgmStatus || previousVoice != voiceStatus)
 			GM_DEBUG("[GakuMotion][NativeAudio] Bgm=%s Voice=%s performance=%d",

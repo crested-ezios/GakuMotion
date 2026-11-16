@@ -101,6 +101,9 @@ namespace GakuMotion
 	{
 		StageSettings settings = ctx.stageSettings;
 		bool stageChanged = false;
+		if (ImGui::Checkbox("屏蔽游戏音效", &settings.muteNativeSoundEffects)) stageChanged = true;
+		if (ImGui::IsItemHovered()) ImGui::SetTooltip("屏蔽支持的预览场景中的游戏音效（含界面音效），不影响动作歌曲；关闭或离开支持场景后恢复。");
+		ImGui::Spacing();
 		if (!ctx.stageStatusNotice.empty())
 		{
 			const bool failed = ctx.stageStatusNotice.find("失败") != std::string::npos ||
