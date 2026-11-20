@@ -18,10 +18,11 @@ static void TestEnsembleSettings(const std::string& repoRoot)
     ensemble::Settings original;
     Check(ensemble::Validate(original, error) && !original.enabled,
         "ensemble defaults are disabled and valid without actors or motions");
+    original.slots.resize(3);
     original.enabled = true;
     original.masterSlot = 1;
     original.cameraSlot = 2;
-    for (size_t i = 0; i < ensemble::MaxActors; ++i)
+    for (size_t i = 0; i < size_t{3}; ++i)
     {
         auto& slot = original.slots[i];
         slot.enabled = true;
@@ -40,6 +41,17 @@ static void TestEnsembleSettings(const std::string& repoRoot)
     ensemble::Settings loaded;
     Check(ensemble::Load(MotionPathToUtf8(path), loaded, error) && loaded == expected,
         "motion keys, Unicode hints and placements round-trip while every actor stays unbound");
+    auto expanded = original;
+    expanded.slots.resize(5);
+    expanded.slots[3].enabled = true;
+    expanded.slots[3].actorToken = 104;
+    expanded.slots[3].motionKey = "motion-D";
+    expanded.slots[3].offset = {128.0f, -256.0f, 256.0f};
+    const auto expandedPath = root / "expanded.json";
+    Check(ensemble::Save(MotionPathToUtf8(expandedPath), expanded, error), "more than three slots can be saved");
+    expanded.slots[0].actorToken = expanded.slots[1].actorToken = expanded.slots[2].actorToken = expanded.slots[3].actorToken = 0;
+    Check(ensemble::Load(MotionPathToUtf8(expandedPath), loaded, error) && loaded == expanded,
+        "expanded presets preserve all positions and leave every actor unbound");
     auto invalid = original;
     invalid.slots[2].actorToken = invalid.slots[0].actorToken;
     Check(!ensemble::Validate(invalid, error), "the same actor cannot occupy two logical slots");

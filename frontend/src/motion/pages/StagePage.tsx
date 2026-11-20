@@ -15,7 +15,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
-import { ENSEMBLE_SLOT_NAMES } from '../protocol'
+import { ensembleSlotName } from '../protocol'
 import { motionStore, useMotionStore } from '../store'
 import { CollapsiblePropertySection, PropertyRow, PropertySection } from '../components/PropertyGroup'
 import { PendingBadge } from '../components/Unsupported'
@@ -130,7 +130,7 @@ export function StagePage() {
           }
         >
           {ensemble.active ? (
-            <div className="grid grid-cols-3 divide-x divide-border/60">
+            <div className="grid grid-cols-2 divide-x divide-y divide-border/60 sm:grid-cols-3">
               {ensemble.settings.slots.map((slot, index) => (
                 <div
                   key={index}
@@ -139,7 +139,7 @@ export function StagePage() {
                     slot.enabled ? 'bg-card' : 'bg-muted/25 opacity-60',
                   )}
                 >
-                  <div className="font-semibold text-foreground">{ENSEMBLE_SLOT_NAMES[index]}</div>
+                  <div className="font-semibold text-foreground">{ensembleSlotName(index)}</div>
                   <div className="truncate text-muted-foreground">{slot.actorHint || '未绑定'}</div>
                 </div>
               ))}

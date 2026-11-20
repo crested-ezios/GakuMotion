@@ -2,7 +2,7 @@
 #include "GkBurstBridgeMultiClient.hpp"
 namespace MultiBridgeFixture {
     struct Context { GbbContext token{}; GbbStatus status{}; unsigned publishes{},clears{},destroys{}; };
-    inline std::array<Context,3> contexts;
+    inline std::array<Context,8> contexts;
     inline uint64_t next=1;
     inline int fail=-1, stale=-1;
     inline bool refuseClear=false,refuseDestroy=false;
@@ -56,10 +56,13 @@ static void TestBurstBridgeMultiClient() {
     using namespace MultiBridgeFixture;
     BeginTest("ensemble bridge client context isolation and confirmed cancellation");
     BurstBridgeMultiClient client; BurstBridgeMultiClientTestAccess::Install(client);
+    const BurstBridgeMultiClient& constClient = client;
+    Check(!constClient.State(4).token && !constClient.State(4).outstanding,
+        "const State() returns an empty slot safely when out of range");
     IdolController ctrl;
     ctrl.fnGetLocalRotation=[](void*,float* q) { q[0]=q[1]=q[2]=0; q[3]=1; };
     ctrl.fnGetLocalPosition=[](void*,float* p) { p[0]=p[1]=p[2]=0; };
-    std::array<IdolBoneBinding,3> bindings;
+    std::array<IdolBoneBinding,5> bindings;
     for (size_t i=0;i<bindings.size();++i) {
         auto& b=bindings[i]; b.actor=reinterpret_cast<void*>(uintptr_t(i+1));
         b.cachedAnimator=reinterpret_cast<void*>(uintptr_t(i+11));
@@ -68,6 +71,9 @@ static void TestBurstBridgeMultiClient() {
     }
     const auto a=client.State(0).token,b=client.State(1).token,c=client.State(2).token;
     Check(a && b && c && a!=b && b!=c && a!=c,"three actors have distinct opaque context tokens");
+    Check(client.State(3).token && client.State(4).token &&
+        client.State(3).token != client.State(4).token && client.State(3).token != a && client.State(4).token != c,
+        "additional actors acquire separate native contexts beyond the legacy three slots");
     fail=1;
     Check(!client.Publish(1,bindings[1],ctrl,1.1f,61) && client.State(1).faulted,"native failure latches only the matching actor");
     Check(!client.State(0).faulted && !client.State(2).faulted && Find(a)->status.actor==bindings[0].actor && Find(c)->status.actor==bindings[2].actor,

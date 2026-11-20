@@ -214,8 +214,8 @@ export function MotionPage() {
               <Vector3Field
                 labelPrefix="初始位置"
                 value={position.offset}
-                min={-10}
-                max={10}
+                min={-256}
+                max={256}
                 step={0.01}
                 disabled={!supports('position.set')}
                 onChange={(next) => void motionStore.setPosition(next)}
@@ -303,10 +303,10 @@ export function MotionPage() {
         title={
           <span className="inline-flex items-center gap-1.5">
             <RiGroup2Fill className="size-3.5 text-primary" />
-            <span>多人舞台（最多3人）</span>
+            <span>多人舞台</span>
           </span>
         }
-        description="编排最多 3 名角色同台演出，独立指定动作、站位偏移与朝向"
+        description="按当前场景检测到的角色数量动态编排同台演出，独立指定动作、站位偏移与朝向"
         badge={
           !supports('ensemble.set') ? (
             <PendingBadge />
@@ -316,7 +316,7 @@ export function MotionPage() {
             </Badge>
           ) : undefined
         }
-        summary={ensemble.active ? '当前运行中' : '最多 3 槽位'}
+        summary={ensemble.active ? '当前运行中' : `${Math.max(1, actors.actors.length)} 角色槽位`}
         defaultOpen={ensemble.active}
       >
         <EnsembleSection />

@@ -885,8 +885,11 @@ export function vmdBadgeText(probe: VmdProbe): string {
   return VMD_BADGE_TEXT[probe.tendency] ?? '[无效VMD]'
 }
 
-export const ENSEMBLE_SLOT_NAMES = ['演员1', '演员2', '演员3'] as const
-export const ENSEMBLE_MAX_ACTORS = 3
+export const ENSEMBLE_INITIAL_SLOTS = 1
+
+export function ensembleSlotName(index: number): string {
+  return `演员${index + 1}`
+}
 
 // Developer-only photography stage replacement (GuiStageLoadReplacement.hpp).
 export const STAGE_REPLACEMENT_OPTIONS: Array<{ key: string; label: string }> = [

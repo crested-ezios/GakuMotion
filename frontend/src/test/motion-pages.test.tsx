@@ -105,7 +105,7 @@ describe('MotionPage', () => {
     await user.click(screen.getByRole('combobox', { name: '驱动角色' }))
     await user.click(await screen.findByRole('option', { name: '凛' }))
     await waitFor(() => expect(motionStore.getState().actors.targetLabel).toBe('凛'))
-    await user.click(screen.getByText('多人舞台（最多3人）'))
+    await user.click(screen.getByText('多人舞台'))
     expect(screen.getByTestId('ensemble-section')).toBeInTheDocument()
     await user.click(screen.getByText('高级动作设置'))
     expect(screen.getByTestId('bone-section')).toBeInTheDocument()
@@ -123,5 +123,49 @@ describe('MotionPage', () => {
     await waitFor(() => expect(spy.mock.calls.some((call) => call[0] === 'facial.setWeights')).toBe(true))
     await user.click(screen.getByRole('button', { name: '保存表情幅度' }))
     expect(spy.mock.calls.some((call) => call[0] === 'facial.save')).toBe(true)
+  })
+
+  it('auto-syncs ensemble slots to >3 detected actors and skips unbound slots on apply', async () => {
+    const user = userEvent.setup()
+    const spy = vi.spyOn(bridge, 'request')
+    const baseActors = motionStore.getState().actors
+    const firstKey = motionStore.getState().library.entries[0]?.id ?? 'demo-song'
+    bridge.push('actors.changed', {
+      ...baseActors,
+      actors: [
+        { token: 101, label: '咲季', selected: true },
+        { token: 102, label: '凛', selected: false },
+        { token: 103, label: '千奈', selected: false },
+        { token: 104, label: 'ことね', selected: false },
+        { token: 105, label: '手毬', selected: false },
+      ],
+    })
+    await waitFor(() => expect(motionStore.getState().ensembleDraft.slots).toHaveLength(5))
+
+    const { rerender } = render(<MotionPage />)
+    await user.click(screen.getByText('多人舞台'))
+    const section = screen.getByTestId('ensemble-section')
+    expect(within(section).getByText('使用 演员4')).toBeInTheDocument()
+    expect(within(section).getByText('使用 演员5')).toBeInTheDocument()
+
+    await user.click(within(section).getByRole('checkbox', { name: '启用多人舞台' }))
+    motionStore.patchEnsembleSlot(0, { enabled: true, actorToken: 101, actorHint: '咲季', motionKey: firstKey })
+    motionStore.patchEnsembleSlot(0, { offset: { x: 256, y: -256, z: 120 } })
+    await waitFor(() => expect(motionStore.ensembleDraftError()).toBeNull())
+
+    await user.click(within(section).getByRole('button', { name: '应用多人舞台配置' }))
+    await waitFor(() => expect(motionStore.getState().ensemble.active).toBe(true))
+
+    const applyCall = spy.mock.calls.find((call) => call[0] === 'ensemble.set')
+    expect(applyCall).toBeDefined()
+    const sentSettings = (applyCall?.[1] as { settings: { slots: Array<{ enabled: boolean; offset: { x: number; y: number; z: number } }> } }).settings
+    expect(sentSettings.slots).toHaveLength(5)
+    expect(sentSettings.slots[0].enabled).toBe(true)
+    expect(sentSettings.slots[0].offset).toEqual({ x: 256, y: -256, z: 120 })
+    expect(sentSettings.slots.slice(1).every((slot) => !slot.enabled)).toBe(true)
+
+    rerender(<StagePage />)
+    expect(screen.getByText('演员4')).toBeInTheDocument()
+    expect(screen.getByText('演员5')).toBeInTheDocument()
   })
 })

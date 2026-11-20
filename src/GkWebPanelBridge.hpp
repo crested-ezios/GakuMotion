@@ -1753,18 +1753,19 @@ namespace GakuMotion::webpanel
 				if (!field->IsBool()) { error = std::string(name) + " must be a boolean"; return false; }
 				target = field->boolValue; return true;
 			};
+			const jsonlite::Value* slots = value.Find("slots");
+			if (!slots || !slots->IsArray() || slots->Size() == 0 || slots->Size() > 32)
+			{ error = "Ensemble preset requires at least one logical slot"; return false; }
+			settings.slots.resize(slots->Size());
 			const auto indexField = [&](const char* name, uint32_t& target) {
 				int64_t number = 0;
-				if (!IntParam(value, name, number) || number < 0 || number >= static_cast<int64_t>(ensemble::MaxActors))
+				if (!IntParam(value, name, number) || number < 0 || number >= static_cast<int64_t>(settings.slots.size()))
 				{ error = std::string(name) + " is out of range"; return false; }
 				target = static_cast<uint32_t>(number); return true;
 			};
 			if (!boolField("enabled", settings.enabled) || !indexField("masterSlot", settings.masterSlot) ||
 				!indexField("cameraSlot", settings.cameraSlot)) return false;
-			const jsonlite::Value* slots = value.Find("slots");
-			if (!slots || !slots->IsArray() || slots->Size() != ensemble::MaxActors)
-			{ error = "Ensemble preset requires exactly three logical slots"; return false; }
-			for (size_t i = 0; i < ensemble::MaxActors; ++i)
+			for (size_t i = 0; i < settings.slots.size(); ++i)
 			{
 				const jsonlite::Value* object = slots->At(i);
 				if (!object || !object->IsObject()) { error = "ensemble slot must be an object"; return false; }

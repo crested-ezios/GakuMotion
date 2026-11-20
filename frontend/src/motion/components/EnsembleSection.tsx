@@ -5,7 +5,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { motionStore, useMotionStore } from '../store'
-import { ENSEMBLE_SLOT_NAMES } from '../protocol'
+import { ensembleSlotName } from '../protocol'
 import { Vector3Field } from './NumberField'
 import { DragFloat } from './DragFloat'
 import { PendingBadge } from './Unsupported'
@@ -55,9 +55,10 @@ export function EnsembleSection() {
             >
               <SelectTrigger className="h-8 w-[104px] text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
-                {ENSEMBLE_SLOT_NAMES.map((name, index) => (
-                  <SelectItem key={name} value={String(index)}>{name}</SelectItem>
-                ))}
+                {draft.slots.map((_, index) => {
+                  const name = ensembleSlotName(index)
+                  return <SelectItem key={name} value={String(index)}>{name}</SelectItem>
+                })}
               </SelectContent>
             </Select>
           </div>
@@ -69,14 +70,21 @@ export function EnsembleSection() {
             >
               <SelectTrigger className="h-8 w-[104px] text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
-                {ENSEMBLE_SLOT_NAMES.map((name, index) => (
-                  <SelectItem key={name} value={String(index)}>{name}</SelectItem>
-                ))}
+                {draft.slots.map((_, index) => {
+                  const name = ensembleSlotName(index)
+                  return <SelectItem key={name} value={String(index)}>{name}</SelectItem>
+                })}
               </SelectContent>
             </Select>
           </div>
         </div>
       </div>
+
+      {actors.length === 0 && (
+        <p className="rounded-md border border-border/60 bg-muted/35 px-3 py-1.5 text-xs text-muted-foreground">
+          当前场景尚未识别到偶像角色，暂显示 1 个占位槽；进入摄影场景后将自动按实际角色数量同步槽位。
+        </p>
+      )}
 
       {playing && draft.enabled && (
         <p className="rounded-md border border-warning/35 bg-warning/10 px-3 py-1.5 text-xs text-warning">
@@ -87,6 +95,7 @@ export function EnsembleSection() {
       {/* Slot Grid */}
       <div className="grid gap-3 xl:grid-cols-3">
         {draft.slots.map((slot, index) => {
+          const slotName = ensembleSlotName(index)
           const actorKnown = slot.actorToken > 0 && actors.some((actor) => actor.token === slot.actorToken)
           const selectedActorValue = actorKnown ? String(slot.actorToken) : '0'
           const selectedMotionValue = slot.motionKey !== '' ? slot.motionKey : '__none__'
@@ -107,7 +116,7 @@ export function EnsembleSection() {
                     checked={slot.enabled}
                     onCheckedChange={(checked) => motionStore.patchEnsembleSlot(index, { enabled: checked === true })}
                   />
-                  使用 {ENSEMBLE_SLOT_NAMES[index]}
+                  使用 {slotName}
                 </label>
                 <div className="flex items-center gap-1 text-micro">
                   {isMaster && (
@@ -121,7 +130,7 @@ export function EnsembleSection() {
 
               <div className="space-y-2">
                 <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">{ENSEMBLE_SLOT_NAMES[index]} 绑定角色</Label>
+                  <Label className="text-xs text-muted-foreground">{slotName} 绑定角色</Label>
                   <Select
                     value={selectedActorValue}
                     onValueChange={(value) => {
@@ -133,7 +142,7 @@ export function EnsembleSection() {
                       })
                     }}
                   >
-                    <SelectTrigger className="h-8 text-xs" aria-label={`${ENSEMBLE_SLOT_NAMES[index]} 角色`}>
+                    <SelectTrigger className="h-8 text-xs" aria-label={`${slotName} 角色`}>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -149,14 +158,14 @@ export function EnsembleSection() {
                 </div>
 
                 <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">{ENSEMBLE_SLOT_NAMES[index]} 演出动作</Label>
+                  <Label className="text-xs text-muted-foreground">{slotName} 演出动作</Label>
                   <Select
                     value={selectedMotionValue}
                     onValueChange={(value) =>
                       motionStore.patchEnsembleSlot(index, { motionKey: value === '__none__' ? '' : value })
                     }
                   >
-                    <SelectTrigger className="h-8 text-xs" aria-label={`${ENSEMBLE_SLOT_NAMES[index]} 动作`}>
+                    <SelectTrigger className="h-8 text-xs" aria-label={`${slotName} 动作`}>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -178,8 +187,8 @@ export function EnsembleSection() {
                   <Vector3Field
                     labelPrefix={`槽${index + 1}站位`}
                     value={slot.offset}
-                    min={-10}
-                    max={10}
+                    min={-256}
+                    max={256}
                     step={0.01}
                     onCommit={(next) => motionStore.patchEnsembleSlot(index, { offset: next })}
                   />
@@ -188,7 +197,7 @@ export function EnsembleSection() {
                 <div className="space-y-1">
                   <Label className="text-xs text-muted-foreground">朝向 (度)</Label>
                   <DragFloat
-                    ariaLabel={`${ENSEMBLE_SLOT_NAMES[index]} 朝向`}
+                    ariaLabel={`${slotName} 朝向`}
                     className="w-full"
                     inputClassName="h-8 w-full text-xs"
                     value={slot.yawDegrees}

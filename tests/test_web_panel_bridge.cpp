@@ -919,6 +919,17 @@ static void TestEnsembleContracts()
 	Check(loadedSettings && loadedSettings->Find("slots") &&
 		loadedSettings->Find("slots")->At(0)->Find("actorToken")->numberValue == 0,
 		"presetLoad returns settings with cleared actorToken");
+
+	const std::string fiveSlotSettings = "{\"enabled\":false,\"masterSlot\":0,\"cameraSlot\":4,\"slots\":["
+		"{\"enabled\":false,\"actorToken\":0,\"actorHint\":\"\",\"motionKey\":\"\",\"offset\":{\"x\":0,\"y\":0,\"z\":0},\"yawDegrees\":0},"
+		"{\"enabled\":false,\"actorToken\":0,\"actorHint\":\"\",\"motionKey\":\"\",\"offset\":{\"x\":0,\"y\":0,\"z\":0},\"yawDegrees\":0},"
+		"{\"enabled\":false,\"actorToken\":0,\"actorHint\":\"\",\"motionKey\":\"\",\"offset\":{\"x\":0,\"y\":0,\"z\":0},\"yawDegrees\":0},"
+		"{\"enabled\":false,\"actorToken\":0,\"actorHint\":\"\",\"motionKey\":\"\",\"offset\":{\"x\":0,\"y\":0,\"z\":0},\"yawDegrees\":0},"
+		"{\"enabled\":false,\"actorToken\":0,\"actorHint\":\"\",\"motionKey\":\"\",\"offset\":{\"x\":128,\"y\":0,\"z\":-256},\"yawDegrees\":45}]}";
+	Check(f.Ok(f.Req("ensemble.set", "{\"settings\":" + fiveSlotSettings + ",\"revision\":4,\"actorEpoch\":" +
+		std::to_string(epoch) + "}")), "ensemble.set accepts more than three slots");
+	Check(f.ErrorCode(f.Req("ensemble.set", "{\"settings\":{\"enabled\":false,\"masterSlot\":0,\"cameraSlot\":0,\"slots\":[]},\"revision\":4,\"actorEpoch\":" +
+		std::to_string(epoch) + "}")) == "invalid_params", "empty ensemble slots rejected");
 	Check(f.ErrorCode(f.Req("ensemble.presetSave", "{\"name\":\"../bad\",\"settings\":" + settings + "}")) ==
 		"invalid_params", "preset name validated");
 	f.ClearCommands();

@@ -28,7 +28,7 @@ void TestEnsembleGui(const std::filesystem::path& root)
         app.Settle();
         Check(app.ItemWithLabel("##drive_actor_combo") && app.ItemWithLabel("##pos_x"),
             "disabled ensemble leaves the established single actor and placement controls visible");
-        app.Click("多人舞台（最多3人）");
+        app.Click("多人舞台");
         app.Click("启用多人舞台");
         auto* apply = app.ItemWithLabel("应用多人舞台配置");
         auto* save = app.ItemWithLabel("保存舞台预设");

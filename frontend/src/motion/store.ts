@@ -12,7 +12,7 @@ import {
   DEFAULT_EXPERIMENT_SETTINGS,
   DEFAULT_GAZE_SETTINGS,
   DEFAULT_SOLE_PITCH_SETTINGS,
-  ENSEMBLE_MAX_ACTORS,
+  ENSEMBLE_INITIAL_SLOTS,
   IMPORT_SLOT,
   defaultImportRequest,
   defaultPerformanceTiming,
@@ -67,6 +67,8 @@ import { deepEqual } from './utils'
 import {
   classifyImportFiles,
   ensembleUiError,
+  resolveSubmittableEnsemble,
+  validateEnsemble,
   isSupportedAudioExtension,
   isSupportedImageExtension,
   isSupportedLibraryFile,
@@ -210,19 +212,58 @@ function emptyImportUi(): ImportUiState {
   }
 }
 
+function emptyEnsembleSlot(): EnsembleSettings['slots'][number] {
+  return {
+    enabled: false,
+    actorToken: 0,
+    actorHint: '',
+    motionKey: '',
+    offset: { x: 0, y: 0, z: 0 },
+    yawDegrees: 0,
+  }
+}
+
+function isUntouchedEnsembleSlot(slot: EnsembleSettings['slots'][number]): boolean {
+  return (
+    !slot.enabled &&
+    slot.actorToken === 0 &&
+    slot.actorHint === '' &&
+    slot.motionKey === '' &&
+    slot.offset.x === 0 &&
+    slot.offset.y === 0 &&
+    slot.offset.z === 0 &&
+    slot.yawDegrees === 0
+  )
+}
+
+function reconcileEnsembleDraftWithActors(
+  draft: EnsembleSettings,
+  actorCount: number,
+  active: boolean,
+): EnsembleSettings {
+  if (active) return draft
+  const targetCount = Math.max(ENSEMBLE_INITIAL_SLOTS, actorCount)
+  if (draft.slots.length === targetCount) return draft
+  let slots = draft.slots
+  if (slots.length < targetCount) {
+    slots = [...slots, ...Array.from({ length: targetCount - slots.length }, () => emptyEnsembleSlot())]
+  } else {
+    slots = [...slots]
+    while (slots.length > targetCount && isUntouchedEnsembleSlot(slots[slots.length - 1])) {
+      slots.pop()
+    }
+  }
+  const masterSlot = draft.masterSlot < slots.length ? draft.masterSlot : 0
+  const cameraSlot = draft.cameraSlot < slots.length ? draft.cameraSlot : 0
+  return { ...draft, masterSlot, cameraSlot, slots }
+}
+
 function emptyEnsembleSettings(): EnsembleSettings {
   return {
     enabled: false,
     masterSlot: 0,
     cameraSlot: 0,
-    slots: Array.from({ length: ENSEMBLE_MAX_ACTORS }, () => ({
-      enabled: false,
-      actorToken: 0,
-      actorHint: '',
-      motionKey: '',
-      offset: { x: 0, y: 0, z: 0 },
-      yawDegrees: 0,
-    })),
+    slots: Array.from({ length: ENSEMBLE_INITIAL_SLOTS }, () => emptyEnsembleSlot()),
   }
 }
 
@@ -915,12 +956,22 @@ export class MotionStore {
         })
       }),
       bridge.on('playlist.changed', (playlist) => this.set({ playlist })),
-      bridge.on('actors.changed', (actors) => this.set({ actors })),
+      bridge.on('actors.changed', (actors) => {
+        const draft = reconcileEnsembleDraftWithActors(
+          this.state.ensembleDraft,
+          actors.actors.length,
+          this.state.ensemble.active,
+        )
+        this.set({ actors, ensembleDraft: draft })
+      }),
       bridge.on('camera.changed', (camera) => this.onCameraChanged(camera)),
       bridge.on('stage.changed', (stage) => this.set({ stage })),
       bridge.on('facial.changed', (facial) => this.set({ facial })),
       bridge.on('position.changed', (position) => this.set({ position })),
-      bridge.on('ensemble.changed', (ensemble) => this.set({ ensemble })),
+      bridge.on('ensemble.changed', (ensemble) => {
+        this.set({ ensemble })
+        this.syncEnsembleDraft(ensemble)
+      }),
       bridge.on('settings.changed', (settings) => this.set({ physicsBackend: settings.physicsBackend })),
       bridge.on('import.progress', (importProgress) => this.onImportProgress(importProgress)),
       bridge.on('appearance.changed', (appearance) => this.set({ appearance })),
@@ -1503,19 +1554,26 @@ export class MotionStore {
   // ---- Ensemble (phase 2) ----
 
   private syncEnsembleDraft(snapshot: EnsembleSnapshot): void {
+    const actorCount = this.state.actors.actors.length
     if (this.state.ensembleDraftRevision !== snapshot.revision) {
+      const base = snapshot.settings.slots.length > 0 ? snapshot.settings : emptyEnsembleSettings()
+      const reconciled = reconcileEnsembleDraftWithActors(base, actorCount, snapshot.active)
       this.set({
-        ensembleDraft: snapshot.settings,
+        ensembleDraft: reconciled,
         ensembleDraftRevision: snapshot.revision,
         ensembleDraftEpoch: snapshot.actorEpoch,
         ensembleDraftDirty: false,
       })
     } else if (this.state.ensembleDraftEpoch !== snapshot.actorEpoch) {
-      const draft = {
+      const cleared = {
         ...this.state.ensembleDraft,
         slots: this.state.ensembleDraft.slots.map((slot) => ({ ...slot, actorToken: 0 })),
       }
-      this.set({ ensembleDraft: draft, ensembleDraftEpoch: snapshot.actorEpoch, ensembleDraftDirty: true })
+      const reconciled = reconcileEnsembleDraftWithActors(cleared, actorCount, snapshot.active)
+      this.set({ ensembleDraft: reconciled, ensembleDraftEpoch: snapshot.actorEpoch, ensembleDraftDirty: true })
+    } else {
+      const reconciled = reconcileEnsembleDraftWithActors(this.state.ensembleDraft, actorCount, snapshot.active)
+      if (reconciled !== this.state.ensembleDraft) this.set({ ensembleDraft: reconciled })
     }
   }
 
@@ -1553,16 +1611,17 @@ export class MotionStore {
 
   ensembleDraftError = (): string | null => {
     const tokens = new Set(this.state.actors.actors.map((actor) => actor.token))
-    return ensembleUiError(this.state.ensembleDraft, tokens)
+    return ensembleUiError(resolveSubmittableEnsemble(this.state.ensembleDraft), tokens)
   }
 
   applyEnsemble = async (): Promise<void> => {
     const { ensembleDraft, ensembleDraftRevision, ensembleDraftEpoch, ensemble } = this.state
+    const effective = resolveSubmittableEnsemble(ensembleDraft)
     if (this.ensembleDraftError()) return
-    if (ensembleDraft.enabled && !(ensemble.available && ensemble.verified)) return
+    if (effective.enabled && !(ensemble.available && ensemble.verified)) return
     try {
       await this.client().request('ensemble.set', {
-        settings: ensembleDraft,
+        settings: effective,
         revision: ensembleDraftRevision,
         actorEpoch: ensembleDraftEpoch,
       })
@@ -1610,7 +1669,7 @@ export class MotionStore {
 
   saveEnsemblePreset = async (): Promise<void> => {
     const { ensemblePresetName, ensembleDraft } = this.state
-    if (ensemblePresetName === '' || this.ensembleDraftError()) return
+    if (ensemblePresetName === '' || validateEnsemble(ensembleDraft)) return
     try {
       await this.client().request('ensemble.presetSave', { name: ensemblePresetName, settings: ensembleDraft })
       this.set({ actionError: null })

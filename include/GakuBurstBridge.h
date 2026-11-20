@@ -12,6 +12,7 @@
  * No allocation or exception crosses the ABI. No Unity type is exposed. */
 #define GBB_API_VERSION 2u
 #define GBB_API_VERSION_V3 3u
+/* Legacy v3 source-compatibility constant; dynamic implementations may exceed it. */
 #define GBB_MAX_CONTEXTS 3u
 #define GBB_MAX_BONES 64u
 #if defined(_WIN32)

@@ -4,7 +4,6 @@
 // and the tests; the native service re-validates independently.
 
 import {
-  ENSEMBLE_MAX_ACTORS,
   isSlotPlaceholder,
   type EnsembleSettings,
   type ImportClassification,
@@ -14,7 +13,13 @@ import {
 } from './protocol'
 
 export function validateEnsemble(settings: EnsembleSettings): string | null {
-  if (settings.masterSlot >= ENSEMBLE_MAX_ACTORS || settings.cameraSlot >= ENSEMBLE_MAX_ACTORS) {
+  if (
+    settings.slots.length === 0 ||
+    settings.masterSlot < 0 ||
+    settings.masterSlot >= settings.slots.length ||
+    settings.cameraSlot < 0 ||
+    settings.cameraSlot >= settings.slots.length
+  ) {
     return 'Ensemble slot selection is out of range'
   }
   const tokens = new Set<number>()
@@ -50,6 +55,16 @@ export function validateEnsemble(settings: EnsembleSettings): string | null {
   }
   if (settings.enabled && active === 0) return 'Enable at least one ensemble slot'
   return null
+}
+
+// Returns a copy where slots missing a bound actor or motion are skipped on submit.
+export function resolveSubmittableEnsemble(settings: EnsembleSettings): EnsembleSettings {
+  return {
+    ...settings,
+    slots: settings.slots.map((slot) =>
+      slot.actorToken !== 0 && slot.motionKey !== '' ? slot : { ...slot, enabled: false },
+    ),
+  }
 }
 
 // Extra UI gating from DrawEnsembleControls (beyond ensemble::Validate).

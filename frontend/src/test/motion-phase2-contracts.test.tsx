@@ -405,7 +405,7 @@ describe('Phase 2 C++ wire contract & crash resilience', () => {
       throw new Error('synthetic render explosion')
     })
     try {
-      await user.click(screen.getByText('多人舞台（最多3人）'))
+      await user.click(screen.getByText('多人舞台'))
       const boundary = await screen.findByTestId('motion-error-boundary')
       expect(boundary).toHaveTextContent('当前页面渲染遇到异常')
       expect(boundary).toHaveTextContent('synthetic render explosion')
@@ -486,7 +486,7 @@ describe('Phase 2 C++ wire contract & crash resilience', () => {
     await waitFor(() => expect(screen.getByTestId('library-page')).toBeInTheDocument())
 
     await user.click(screen.getByRole('button', { name: '动作' }))
-    await user.click(screen.getByText('多人舞台（最多3人）'))
+    await user.click(screen.getByText('多人舞台'))
     await user.click(screen.getByRole('combobox', { name: '演员1 角色' }))
     await user.click(await screen.findByRole('option', { name: '凛 · 2' }))
     expect(motionStore.getState().ensembleDraft.slots[0].actorToken).toBe(102)
