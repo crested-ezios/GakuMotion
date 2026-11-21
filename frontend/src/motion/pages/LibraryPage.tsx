@@ -5,19 +5,11 @@ import {
   RiArrowUpDownFill,
   RiArrowUpFill,
   RiDeleteBinFill,
-  RiDeleteBinLine,
   RiEyeFill,
-  RiEyeLine,
-  RiFilter2Fill,
-  RiFolderOpenFill,
   RiImageEditFill,
-  RiMoreFill,
   RiPauseFill,
   RiPencilFill,
-  RiPencilLine,
   RiPlayFill,
-  RiRefreshFill,
-  RiSearchLine,
 } from '@remixicon/react'
 import {
   AlertDialog,
@@ -30,335 +22,16 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import { Input } from '@/components/ui/input'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { cn } from '@/lib/utils'
 import type { LibraryEntry, PlaybackStatus } from '../protocol'
-import { motionStore, useMotionStore, type LibraryFilter } from '../store'
-import { formatMmSs } from '../time'
+import { motionStore, useMotionStore } from '../store'
 import { ContextMenu, type ContextMenuEntry } from '../components/ContextMenu'
-import { AlbumCover } from '../components/AlbumCover'
 import { CoverEditorModal } from '../components/CoverEditorModal'
-import { PendingBadge } from '../components/Unsupported'
 import { ImportDialog } from './ImportDialog'
+import { LibraryRow } from './library/LibraryRow'
+import { LibraryToolbar, filterAndSortEntries } from './library/LibraryToolbar'
 
 const ROW_HEIGHT = 56
 const VIRTUALIZE_THRESHOLD = 200
-
-const FILTER_OPTIONS: ReadonlyArray<{ value: LibraryFilter; label: string }> = [
-  { value: 'all', label: '全部曲目' },
-  { value: 'group', label: '团曲' },
-  { value: 'camera', label: '含镜头' },
-  { value: 'audio', label: '含音乐' },
-  { value: 'facial', label: '含表情' },
-  { value: 'motionOnly', label: '纯动作' },
-]
-
-function trackTags(entry: LibraryEntry): string[] {
-  const tags: string[] = []
-  if (entry.hasMotion) tags.push('动作')
-  if (entry.hasFacial) tags.push('表情')
-  if (entry.hasCamera) tags.push('镜头')
-  if (entry.hasAudio) tags.push('音频')
-  return tags
-}
-
-function formatSubtitle(raw?: string): string {
-  if (!raw) return ''
-  const parts = raw
-    .split(',')
-    .map((part) => part.trim())
-    .filter(Boolean)
-  return parts.join(' / ')
-}
-
-function PlayingEqualizer() {
-  return (
-    <span className="inline-flex h-3.5 items-end gap-[2px]" aria-hidden="true">
-      <span className="w-[2px] h-full rounded-full bg-primary animate-eq-1" />
-      <span className="w-[2px] h-full rounded-full bg-primary animate-eq-2" />
-      <span className="w-[2px] h-full rounded-full bg-primary animate-eq-3" />
-    </span>
-  )
-}
-
-interface LibraryRowProps {
-  entry: LibraryEntry
-  index: number
-  selected: boolean
-  loadedStatus: PlaybackStatus | null
-  busy: boolean
-  canSelect: boolean
-  canPause: boolean
-  canEdit: boolean
-  canDelete: boolean
-  style?: React.CSSProperties
-  onSelect: () => void
-  onDoubleClick: () => void
-  onContextMenu: (event: React.MouseEvent<HTMLDivElement>) => void
-  onPlay: () => void
-  onPause: () => void
-  onPreview: () => void
-  onEdit: () => void
-  onDelete: () => void
-}
-
-function LibraryRowCover({
-  entryId,
-  entryTitle,
-  hasCover,
-  hasAudio,
-}: {
-  entryId: string
-  entryTitle: string
-  hasCover: boolean
-  hasAudio: boolean
-}) {
-  const coverUri = useMotionStore((state) => state.coverCache[entryId] ?? '')
-  const hasCachedCover = useMotionStore((state) => Object.prototype.hasOwnProperty.call(state.coverCache, entryId))
-  const libraryRevision = useMotionStore((state) => state.library.revision)
-  React.useEffect(() => {
-    if ((hasCover || hasAudio) && !hasCachedCover) {
-      void motionStore.ensureTrackCover(entryId)
-    }
-  }, [entryId, hasCover, hasAudio, hasCachedCover, libraryRevision])
-  return (
-    <button
-      type="button"
-      title="点击编辑封面"
-      aria-label={`编辑 ${entryTitle} 封面`}
-      onClick={(event) => {
-        event.stopPropagation()
-        motionStore.openCoverEditorForTrack(entryId, 'library')
-      }}
-      onDoubleClick={(event) => event.stopPropagation()}
-      className="flex size-[var(--gaku-cover-row,42px)] shrink-0 items-center justify-center overflow-hidden rounded-md border border-border/60 bg-muted/40 transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-    >
-      <AlbumCover
-        src={coverUri}
-        imgTestId={`library-cover-${entryId}`}
-        defaultTestId={`library-default-cover-${entryId}`}
-      />
-    </button>
-  )
-}
-
-function LibraryRow({
-  entry,
-  index,
-  selected,
-  loadedStatus,
-  busy,
-  canSelect,
-  canPause,
-  canEdit,
-  canDelete,
-  style,
-  onSelect,
-  onDoubleClick,
-  onContextMenu,
-  onPlay,
-  onPause,
-  onPreview,
-  onEdit,
-  onDelete,
-}: LibraryRowProps) {
-  const tags = trackTags(entry)
-  const subtitleText = formatSubtitle(entry.subtitle)
-  const isPlaying = loadedStatus === 'playing'
-  const isPaused = loadedStatus === 'paused' || loadedStatus === 'preview'
-
-  return (
-    <div
-      role="row"
-      aria-selected={selected}
-      data-testid={`library-row-${entry.id}`}
-      style={style}
-      onClick={(event) => {
-        event.stopPropagation()
-        onSelect()
-      }}
-      onDoubleClick={(event) => {
-        event.stopPropagation()
-        onDoubleClick()
-      }}
-      onContextMenu={onContextMenu}
-      className={cn(
-        'group relative flex h-[var(--gaku-row-height,56px)] select-none items-center gap-3.5 rounded-lg px-3 text-left transition-all duration-150',
-        selected
-          ? 'bg-card shadow-[0_2px_8px_rgba(0,0,0,0.06)] dark:shadow-[0_2px_10px_rgba(0,0,0,0.28)]'
-          : 'hover:bg-card hover:shadow-[0_2px_8px_rgba(0,0,0,0.06)] dark:hover:shadow-[0_2px_10px_rgba(0,0,0,0.28)]',
-      )}
-    >
-      {/* 状态 / 序号：仅响应 Hover（click 后主动 blur，避免鼠标移开后停留在暂停按钮） */}
-      <div
-        role="cell"
-        className="relative flex w-8 shrink-0 items-center justify-center"
-        onClick={(event) => event.stopPropagation()}
-        onDoubleClick={(event) => event.stopPropagation()}
-      >
-        <span
-          className={cn(
-            'flex items-center justify-center transition-opacity group-hover:opacity-0',
-            isPlaying || isPaused ? 'text-primary' : 'text-sm font-medium tabular-nums text-muted-foreground',
-          )}
-        >
-          {isPlaying ? (
-            <PlayingEqualizer />
-          ) : isPaused ? (
-            <RiPlayFill className="size-4" />
-          ) : (
-            String(index + 1).padStart(2, '0')
-          )}
-        </span>
-
-        {isPlaying ? (
-          <button
-            type="button"
-            disabled={busy || !canPause}
-            aria-label={`暂停 ${entry.title}`}
-            title="暂停"
-            onClick={(event) => {
-              event.currentTarget.blur()
-              onPause()
-            }}
-            className="absolute inset-0 flex items-center justify-center rounded-md text-primary opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40"
-          >
-            <RiPauseFill className="size-4" />
-          </button>
-        ) : (
-          <button
-            type="button"
-            disabled={busy || !canSelect}
-            aria-label={`播放 ${entry.title}`}
-            title={isPaused ? '继续播放' : '播放'}
-            onClick={(event) => {
-              event.currentTarget.blur()
-              onPlay()
-            }}
-            className={cn(
-              'absolute inset-0 flex items-center justify-center rounded-md opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40',
-              isPaused ? 'text-primary' : 'text-foreground hover:text-primary',
-            )}
-          >
-            <RiPlayFill className="size-4" />
-          </button>
-        )}
-      </div>
-
-      {/* 演出曲目 + 右侧 3 个空心悬停小图标（正在播放时标题与小标题同时高亮为主色） */}
-      <div role="cell" className="flex min-w-0 flex-1 items-center justify-between gap-2.5">
-        <div className="flex min-w-0 flex-1 items-center gap-3">
-          <LibraryRowCover
-            entryId={entry.id}
-            entryTitle={entry.title}
-            hasCover={Boolean(entry.hasCover)}
-            hasAudio={Boolean(entry.hasAudio)}
-          />
-          <div className="min-w-0 flex-1 space-y-0.5">
-            <div
-              className={cn(
-                'truncate text-base font-medium leading-snug',
-                isPlaying ? 'text-primary' : 'text-foreground',
-              )}
-              title={entry.title}
-            >
-              {entry.title}
-            </div>
-            <div className="flex min-w-0 items-center gap-1.5 text-xs tabular-nums">
-              {entry.isGroup && (
-                <span className="inline-flex shrink-0 items-center rounded-lg border border-amber-400/60 bg-amber-500/15 px-1.5 py-0.5 text-micro leading-none text-amber-600 dark:text-amber-300">
-                  团曲
-                </span>
-              )}
-              <p
-                className={cn(
-                  'min-w-0 truncate',
-                  isPlaying ? 'text-primary/85' : 'text-muted-foreground',
-                )}
-              >
-                {subtitleText ? `${subtitleText} · ${entry.totalFrames} 帧` : `${entry.id} · ${entry.totalFrames} 帧`}
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Hover: 仅保留预览、管理、删除 3 个空心线框小图标 */}
-        <div
-          className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
-          onClick={(event) => event.stopPropagation()}
-          onDoubleClick={(event) => event.stopPropagation()}
-        >
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="size-8 text-muted-foreground hover:bg-accent/70 hover:text-foreground"
-            disabled={busy || !canSelect}
-            aria-label={`预览 ${entry.title}`}
-            title="加载预览"
-            onClick={onPreview}
-          >
-            <RiEyeLine className="size-4" />
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="size-8 text-muted-foreground hover:bg-accent/70 hover:text-foreground"
-            disabled={busy || !canEdit}
-            aria-label={`编辑 ${entry.title}`}
-            title="管理轨道与同步"
-            onClick={onEdit}
-          >
-            <RiPencilLine className="size-4" />
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="size-8 text-muted-foreground hover:bg-destructive/12 hover:text-destructive"
-            disabled={busy || !canDelete}
-            aria-label={`删除 ${entry.title}`}
-            title="删除"
-            onClick={onDelete}
-          >
-            <RiDeleteBinLine className="size-4" />
-          </Button>
-        </div>
-      </div>
-
-      {/* 包含内容 */}
-      <div role="cell" className="hidden w-[180px] shrink-0 items-center gap-1.5 sm:flex">
-        {tags.length > 0 ? (
-          tags.map((tag) => (
-            <span
-              key={tag}
-              className="rounded-[4px] border border-border/75 bg-muted/45 px-1.5 py-0.5 text-micro font-medium leading-none text-muted-foreground"
-            >
-              {tag}
-            </span>
-          ))
-        ) : (
-          <span className="text-xs text-muted-foreground/60">—</span>
-        )}
-      </div>
-
-      {/* 时长 */}
-      <div role="cell" className="w-16 shrink-0 text-right text-sm tabular-nums text-muted-foreground">
-        {formatMmSs(entry.durationSeconds)}
-      </div>
-    </div>
-  )
-}
 
 export function LibraryPage() {
   const library = useMotionStore((state) => state.library)
@@ -379,7 +52,6 @@ export function LibraryPage() {
   const capabilities = useMotionStore((state) => state.capabilities)
   const importBusy = useMotionStore((state) => state.importProgress?.active === true)
 
-  const [moreMenuOpen, setMoreMenuOpen] = React.useState(false)
   const [contextMenu, setContextMenu] = React.useState<{
     open: boolean
     x: number
@@ -399,31 +71,10 @@ export function LibraryPage() {
     motionStore.syncDropTarget()
   }, [injectionAllowed, importFormOpen, importUiVisible, coverEditorOpen, dialogBusy, busy, pendingDelete])
 
-  const visibleEntries = React.useMemo(() => {
-    const needle = search.trim().toLowerCase()
-    const filtered = library.entries.filter((entry) => {
-      if (
-        needle &&
-        !entry.title.toLowerCase().includes(needle) &&
-        !entry.id.toLowerCase().includes(needle) &&
-        !(entry.subtitle ?? '').toLowerCase().includes(needle)
-      ) {
-        return false
-      }
-      if (filter === 'group') return Boolean(entry.isGroup)
-      if (filter === 'camera') return entry.hasCamera
-      if (filter === 'audio') return entry.hasAudio
-      if (filter === 'facial') return entry.hasFacial
-      if (filter === 'motionOnly') return entry.hasMotion && !entry.hasCamera && !entry.hasAudio && !entry.hasFacial
-      return true
-    })
-    if (sort === 'default') return filtered
-    const copy = [...filtered]
-    if (sort === 'title') copy.sort((a, b) => a.title.localeCompare(b.title, 'zh-CN'))
-    else if (sort === 'durationDesc') copy.sort((a, b) => b.durationSeconds - a.durationSeconds)
-    else if (sort === 'durationAsc') copy.sort((a, b) => a.durationSeconds - b.durationSeconds)
-    return copy
-  }, [library.entries, search, filter, sort])
+  const visibleEntries = React.useMemo(
+    () => filterAndSortEntries(library.entries, search, filter, sort),
+    [library.entries, search, filter, sort],
+  )
 
   React.useEffect(() => {
     motionStore.preloadLibraryCovers(
@@ -536,183 +187,17 @@ export function LibraryPage() {
       data-testid="library-page"
       onClick={() => motionStore.selectLibrary(null)}
     >
-      {/* Header Strip: Single primary CTA + icon overflow menu */}
-      <div className="flex flex-wrap items-center justify-between gap-2.5" onClick={(event) => event.stopPropagation()}>
-        <div className="flex items-baseline gap-2.5">
-          <h1 className="text-title font-semibold tracking-tight text-foreground">演出曲库</h1>
-          <span
-            className="rounded-[4px] bg-muted/70 px-2 py-0.5 text-xs tabular-nums text-muted-foreground"
-            data-testid="library-count"
-          >
-            显示 {visibleEntries.length} / {library.entries.length} 个曲目
-          </span>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <Button
-            variant="default"
-            size="sm"
-            className="h-[var(--gaku-control-height,34px)] px-3.5 text-sm"
-            disabled={busy}
-            onClick={() => void motionStore.openImportNew([])}
-          >
-            <RiAddFill className="size-4" />
-            添加到曲库
-          </Button>
-
-          <Popover open={moreMenuOpen} onOpenChange={setMoreMenuOpen}>
-            <PopoverTrigger asChild>
-              <Button
-                type="button"
-                variant="secondary"
-                size="icon"
-                className="size-[var(--gaku-control-height,34px)]"
-                aria-label="更多曲库操作"
-                title="刷新、文件夹与重载"
-              >
-                <RiMoreFill className="size-4" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent side="bottom" align="end" className="w-48 p-1">
-              <button
-                type="button"
-                disabled={busy || !supports('library.refresh')}
-                onClick={() => {
-                  setMoreMenuOpen(false)
-                  void motionStore.refreshLibrary()
-                }}
-                className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-45"
-              >
-                <RiRefreshFill className={cn('size-3.5 text-muted-foreground', library.refreshing && 'animate-spin')} />
-                <span>{library.refreshing ? '正在刷新...' : '刷新曲库'}</span>
-              </button>
-              <button
-                type="button"
-                disabled={!supports('library.openFolder')}
-                onClick={() => {
-                  setMoreMenuOpen(false)
-                  void motionStore.openLibraryFolder()
-                }}
-                className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-45"
-              >
-                <RiFolderOpenFill className="size-3.5 text-muted-foreground" />
-                <span>打开曲库文件夹</span>
-              </button>
-              <button
-                type="button"
-                disabled={loaded.motionKey === '' || loaded.sourceMissing || busy || !supports('player.reload')}
-                onClick={() => {
-                  setMoreMenuOpen(false)
-                  void motionStore.reloadMotion()
-                }}
-                className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-45"
-              >
-                <RiRefreshFill className="size-3.5 text-muted-foreground" />
-                <span>重新加载当前曲目</span>
-              </button>
-            </PopoverContent>
-          </Popover>
-
-          {!supports('library.import') && <PendingBadge />}
-        </div>
-      </div>
-
-      {/* Notices */}
-      {(dropNotice || library.notice || (playlistNotice && playlistNotice !== library.notice) || loaded.sourceMissing || loaded.sourceChanged) && (
-        <div className="space-y-1" onClick={(event) => event.stopPropagation()}>
-          {dropNotice && (
-            <p className="rounded-md border border-warning/35 bg-warning/10 px-2.5 py-1.5 text-xs text-warning" data-testid="library-drop-notice">
-              {dropNotice}
-            </p>
-          )}
-          {library.notice && (
-            <p className="rounded-md bg-card px-2.5 py-1.5 text-xs text-muted-foreground">{library.notice}</p>
-          )}
-          {playlistNotice && playlistNotice !== library.notice && (
-            <p
-              className={cn(
-                'rounded-md border px-2.5 py-1.5 text-xs',
-                /失败|错误/.test(playlistNotice)
-                  ? 'border-destructive/40 bg-destructive/10 text-destructive'
-                  : 'border-primary/30 bg-primary/10 text-primary',
-              )}
-            >
-              {playlistNotice}
-            </p>
-          )}
-          {loaded.sourceMissing && (
-            <p className="rounded-md border border-warning/40 bg-warning/10 px-2.5 py-1.5 text-xs text-warning">
-              当前表演的源文件已移除；已加载内容保留，无法重新加载。
-            </p>
-          )}
-          {!loaded.sourceMissing && loaded.sourceChanged && (
-            <p className="rounded-md border border-warning/40 bg-warning/10 px-2.5 py-1.5 text-xs text-warning">
-              当前曲目的文件已更新，待重新加载。
-            </p>
-          )}
-        </div>
-      )}
-
-      {/* Search + Funnel Dropdown Filter Toolbar */}
-      <div className="flex items-center gap-2" onClick={(event) => event.stopPropagation()}>
-        <div className="relative min-w-[220px] flex-1 sm:max-w-[280px]">
-          <RiSearchLine className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            className="h-[var(--gaku-control-height,34px)] rounded-full pl-9 pr-14 text-sm"
-            placeholder="搜索..."
-            aria-label="搜索曲目"
-            value={search}
-            onChange={(event) => motionStore.setLibrarySearch(event.target.value)}
-          />
-          {search !== '' && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="absolute right-1.5 top-1/2 h-6 -translate-y-1/2 px-2 text-xs"
-              onClick={() => motionStore.setLibrarySearch('')}
-            >
-              清空
-            </Button>
-          )}
-        </div>
-
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              type="button"
-              variant={filter !== 'all' ? 'secondary' : 'ghost'}
-              size="icon"
-              className={cn(
-                'relative size-[var(--gaku-control-height,34px)]',
-                filter !== 'all' ? 'text-primary' : 'text-muted-foreground hover:text-foreground',
-              )}
-              aria-label="轨道筛选"
-              title="轨道筛选"
-            >
-              <RiFilter2Fill className="size-4" />
-              {filter !== 'all' && (
-                <span aria-hidden="true" className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-primary" />
-              )}
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuLabel>按轨道筛选</DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            {FILTER_OPTIONS.map((opt) => (
-              <DropdownMenuCheckboxItem
-                key={opt.value}
-                checked={filter === opt.value}
-                onCheckedChange={() =>
-                  motionStore.setLibraryFilter(filter === opt.value && opt.value !== 'all' ? 'all' : opt.value)
-                }
-              >
-                {opt.label}
-              </DropdownMenuCheckboxItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
+      <LibraryToolbar
+        library={library}
+        loaded={loaded}
+        visibleCount={visibleEntries.length}
+        search={search}
+        filter={filter}
+        dropNotice={dropNotice}
+        playlistNotice={playlistNotice}
+        busy={busy}
+        supports={supports}
+      />
 
       {/* Implicit Borderless List (horizontal padding prevents left/right card shadow clipping) */}
       {library.entries.length === 0 ? (
