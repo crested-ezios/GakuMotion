@@ -86,7 +86,7 @@ namespace GakuMotion
 		// 1. 尝试从 info.json 中读取 "has_facial" 字段
 		std::string err;
 		jsonlite::Value root;
-		if (jsonlite::ParseFile(dir + "/info.json", root, err))
+		if (ParseTrackInfoJsonFile(MotionPathFromUtf8(dir) / "info.json", root, err))
 		{
 			if (const auto* v = root.Find("has_facial"))
 			{

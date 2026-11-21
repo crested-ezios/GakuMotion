@@ -39,8 +39,11 @@
 
 #include <string>
 #include <vector>
+#include <map>
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -48,6 +51,18 @@
 #include <filesystem>
 #include <cmath>
 #include <cwctype>
+#include <mutex>
+#include <thread>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <cerrno>
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 namespace GakuMotion
 {
@@ -94,6 +109,34 @@ namespace GakuMotion
 		return sig;
 	}
 
+	struct MotionPositionEntry
+	{
+		int slot{1};
+		float x{0.0f};
+		float y{0.0f};
+		float z{0.0f};
+		float yawDegrees{0.0f};
+		bool hasMotion{false};
+		bool hasFacial{false};
+		std::string sourceVmd;
+		std::string sourceMorphVmd;
+		std::string sourceVmdSha256;
+		float sourceFps{0.0f};
+		uint32_t frames{0};
+		uint32_t bones{0};
+		std::string motionFile;
+		bool hasOverrides{false};
+	};
+
+	struct TrackPositionPlacementUpdate
+	{
+		int slot{1};
+		float x{0.0f};
+		float y{0.0f};
+		float z{0.0f};
+		float yawDegrees{0.0f};
+	};
+
 	// -----------------------------------------------------------------------------
 	// 2. 曲目库扫描（选曲列表的来源，与 GkGuiOverlay 的既有扫描规则保持一致：
 	//    含 motion.gkclip / motion.gk_world_dump / motion.gkmotion 的子目录可播）
@@ -122,6 +165,14 @@ namespace GakuMotion
 		PerformanceTiming timing;
 		bool metadataLoaded{false}; // 是否成功读取 info.json
 		std::string motionFile; // 扫描实际命中的动作文件，UTF-8；GUI 不重复探测磁盘
+		bool isGroup{false};
+		int positionCount{1};
+		std::vector<MotionPositionEntry> positions;
+
+		std::string SlotDirectory(int slot1Based) const
+		{
+			return ResolveMotionSlotDirectory(dir, slot1Based);
+		}
 
 		std::string DisplayLabel() const
 		{
@@ -244,6 +295,114 @@ namespace GakuMotion
 		return true;
 	}
 
+	inline std::mutex& InfoJsonMutationMutex()
+	{
+		static std::mutex mutex;
+		return mutex;
+	}
+
+	inline bool ReadTrackInfoJsonTextUnlocked(
+		const std::filesystem::path& infoPath,
+		std::string& outText,
+		std::string* outError = nullptr)
+	{
+		outText.clear();
+		if (outError) outError->clear();
+		std::error_code ec;
+		if (!std::filesystem::is_regular_file(infoPath, ec) || ec)
+		{
+			if (outError) *outError = ec ? ec.message() : "info.json not found";
+			return false;
+		}
+#ifdef _WIN32
+		HANDLE file = CreateFileW(
+			infoPath.c_str(),
+			GENERIC_READ,
+			FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+			nullptr,
+			OPEN_EXISTING,
+			FILE_ATTRIBUTE_NORMAL,
+			nullptr);
+		if (file == INVALID_HANDLE_VALUE)
+		{
+			if (outError)
+				*outError = std::error_code(static_cast<int>(GetLastError()), std::system_category()).message();
+			return false;
+		}
+		LARGE_INTEGER fileSize{};
+		if (!GetFileSizeEx(file, &fileSize) || fileSize.QuadPart < 0 ||
+			static_cast<uint64_t>(fileSize.QuadPart) > 64ULL * 1024ULL * 1024ULL)
+		{
+			const DWORD err = GetLastError();
+			CloseHandle(file);
+			if (outError)
+				*outError = err ? std::error_code(static_cast<int>(err), std::system_category()).message() : "invalid info.json size";
+			return false;
+		}
+		outText.resize(static_cast<size_t>(fileSize.QuadPart));
+		size_t totalRead = 0;
+		while (totalRead < outText.size())
+		{
+			DWORD bytesRead = 0;
+			const auto chunk = static_cast<DWORD>((std::min)(outText.size() - totalRead, size_t{0x40000000}));
+			if (!ReadFile(file, outText.data() + totalRead, chunk, &bytesRead, nullptr))
+			{
+				const DWORD err = GetLastError();
+				CloseHandle(file);
+				outText.clear();
+				if (outError)
+					*outError = std::error_code(static_cast<int>(err), std::system_category()).message();
+				return false;
+			}
+			if (bytesRead == 0) break;
+			totalRead += bytesRead;
+		}
+		CloseHandle(file);
+		outText.resize(totalRead);
+		return true;
+#else
+		std::ifstream in(infoPath, std::ios::binary);
+		if (!in)
+		{
+			if (outError) *outError = "cannot open info.json for reading";
+			return false;
+		}
+		std::ostringstream ss;
+		ss << in.rdbuf();
+		if (in.bad())
+		{
+			if (outError) *outError = "failed reading info.json";
+			return false;
+		}
+		outText = ss.str();
+		return true;
+#endif
+	}
+
+	inline bool ReadTrackInfoJsonText(
+		const std::filesystem::path& infoPath,
+		std::string& outText,
+		std::string* outError = nullptr)
+	{
+		std::lock_guard<std::mutex> lock(InfoJsonMutationMutex());
+		return ReadTrackInfoJsonTextUnlocked(infoPath, outText, outError);
+	}
+
+	inline bool ParseTrackInfoJsonFile(
+		const std::filesystem::path& infoPath,
+		jsonlite::Value& outValue,
+		std::string& outError)
+	{
+		std::string text;
+		std::string readErr;
+		if (!ReadTrackInfoJsonText(infoPath, text, &readErr))
+		{
+			outError = readErr.empty() ? "cannot open info.json for reading" : readErr;
+			return false;
+		}
+		return jsonlite::ParseText(text, outValue, outError);
+	}
+
 	inline MotionLibraryScanResult ScanMotionLibraryDetailed(const std::string& motionsRoot)
 	{
 		MotionLibraryScanResult result;
@@ -322,14 +481,26 @@ namespace GakuMotion
 
 			// info.json 是可选元数据：缺失或损坏都不影响曲目可用性
 			bool hasFacialExplicit = false;
+			bool infoIsGroup = false;
+			std::map<int, MotionPositionEntry> posMap;
+			{
+				MotionPositionEntry slot1;
+				slot1.slot = 1;
+				slot1.hasMotion = true;
+				slot1.hasFacial = m.hasFacial;
+				slot1.sourceFps = m.fps > 0.0f ? m.fps : 30.0f;
+				slot1.frames = m.totalFrames;
+				slot1.bones = m.boneCount;
+				slot1.motionFile = m.motionFile;
+				slot1.hasOverrides = m.hasOverrides;
+				posMap[1] = std::move(slot1);
+			}
+
 			if (exists("info.json"))
 			{
 				jsonlite::Value info;
 				std::string err;
-				std::ifstream metadata(entry.path() / "info.json", std::ios::binary);
-				std::ostringstream text;
-				text << metadata.rdbuf();
-				const bool parsed = metadata.is_open() && jsonlite::ParseText(text.str(), info, err) && info.IsObject();
+				const bool parsed = ParseTrackInfoJsonFile(entry.path() / "info.json", info, err) && info.IsObject();
 				if (parsed)
 				{
 					m.title = info.StringPath("title", m.name);
@@ -366,11 +537,143 @@ namespace GakuMotion
 						m.hasFacial = info.BoolPath("has_facial", false);
 						hasFacialExplicit = true;
 					}
+
+					posMap[1].sourceVmd = m.sourceVmd;
+					posMap[1].sourceMorphVmd = m.sourceMorphVmd;
+					posMap[1].sourceVmdSha256 = info.StringPath("source_vmd_sha256", "");
+					const float infoSourceFps = info.FloatPath("source_fps", m.fps);
+					if (std::isfinite(infoSourceFps) && infoSourceFps > 0.0f) posMap[1].sourceFps = infoSourceFps;
+					posMap[1].hasFacial = m.hasFacial;
+
+					infoIsGroup = info.BoolPath("is_group", false);
+					if (const auto* positionsArr = info.Find("positions"); positionsArr && positionsArr->IsArray())
+					{
+						for (size_t pi = 0; pi < positionsArr->arrayItems.size(); ++pi)
+						{
+							const auto& item = positionsArr->arrayItems[pi];
+							if (!item.IsObject()) continue;
+							const int slot = item.IntPath("slot", static_cast<int>(pi) + 1);
+							if (slot < 1) continue;
+							auto& pe = posMap[slot];
+							pe.slot = slot;
+							if (slot == 1)
+							{
+								pe.x = 0.0f;
+								pe.y = 0.0f;
+								pe.z = 0.0f;
+								pe.yawDegrees = 0.0f;
+								pe.hasMotion = true;
+								pe.motionFile = m.motionFile;
+								pe.hasOverrides = m.hasOverrides;
+							}
+							else
+							{
+								const float px = item.FloatPath("x", 0.0f);
+								const float py = item.FloatPath("y", 0.0f);
+								const float pz = item.FloatPath("z", 0.0f);
+								const float pyaw = item.FloatPath("yaw_degrees", 0.0f);
+								pe.x = std::isfinite(px) ? px : 0.0f;
+								pe.y = std::isfinite(py) ? py : 0.0f;
+								pe.z = std::isfinite(pz) ? pz : 0.0f;
+								pe.yawDegrees = std::isfinite(pyaw) ? pyaw : 0.0f;
+								pe.hasMotion = false;
+								pe.motionFile.clear();
+							}
+							pe.hasFacial = item.BoolPath("has_facial", slot == 1 ? m.hasFacial : false);
+							pe.sourceVmd = item.StringPath("source_vmd", slot == 1 ? m.sourceVmd : "");
+							pe.sourceMorphVmd = item.StringPath("source_morph_vmd", slot == 1 ? m.sourceMorphVmd : "");
+							pe.sourceVmdSha256 = item.StringPath("source_vmd_sha256", slot == 1 ? posMap[1].sourceVmdSha256 : "");
+							const float sfps = item.FloatPath("source_fps", 0.0f);
+							if (std::isfinite(sfps) && sfps > 0.0f) pe.sourceFps = sfps;
+							const int pf = item.IntPath("frames", slot == 1 ? static_cast<int>(m.totalFrames) : 0);
+							if (pf > 0) pe.frames = static_cast<uint32_t>(pf);
+							const int pb = item.IntPath("bones", slot == 1 ? static_cast<int>(m.boneCount) : 0);
+							if (pb > 0) pe.bones = static_cast<uint32_t>(pb);
+						}
+					}
 					m.metadataLoaded = true;
 				}
 				else warn(m.name + "/info.json: " + (err.empty() ? "invalid or unreadable metadata" : err), false);
 			}
 			if (!hasFacialExplicit && !m.hasFacial) m.hasFacial = exists("motion.morph_report.json");
+
+			// Probe positions/slot_{k}/ (k >= 2) using a temporary MotionEntry so slot 1 metadata stays intact.
+			const auto positionsDir = entry.path() / "positions";
+			if (std::filesystem::is_directory(positionsDir, ec))
+			{
+				std::filesystem::directory_iterator posIt(positionsDir, ec), posEnd;
+				if (ec)
+				{
+					warn(m.name + "/positions: " + ec.message());
+					ec.clear();
+				}
+				else
+				{
+					for (; posIt != posEnd; posIt.increment(ec))
+					{
+						if (ec) { ec.clear(); break; }
+						const auto& slotEntry = *posIt;
+						if (!slotEntry.is_directory(ec)) { ec.clear(); continue; }
+						const auto slotUtf8 = slotEntry.path().filename().u8string();
+						const std::string slotName(slotUtf8.begin(), slotUtf8.end());
+						int slotIndex = 0;
+						if (!ParseSlotDirectoryIndex(slotName, slotIndex)) continue;
+
+						std::filesystem::path slotMotionPath;
+						for (const char* candidate : {"motion.gkclip", "motion.gk_world_dump", "motion.gkmotion"})
+						{
+							const auto p = slotEntry.path() / candidate;
+							if (std::filesystem::exists(p, ec)) { slotMotionPath = p; break; }
+							ec.clear();
+						}
+
+						auto& pe = posMap[slotIndex];
+						pe.slot = slotIndex;
+						pe.hasOverrides = std::filesystem::exists(slotEntry.path() / "bone_overrides.json", ec);
+						ec.clear();
+
+						if (slotMotionPath.empty())
+						{
+							pe.hasMotion = false;
+							pe.motionFile.clear();
+							continue;
+						}
+
+						MotionEntry slotProbe;
+						std::string slotProbeErr;
+						if (!ProbeMotionLibraryFile(slotMotionPath, slotProbe, slotProbeErr))
+						{
+							warn(m.name + "/positions/" + slotName + ": " + slotProbeErr);
+							pe.hasMotion = false;
+							pe.motionFile.clear();
+							continue;
+						}
+						pe.hasMotion = true;
+						pe.motionFile = MotionPathToUtf8(slotMotionPath);
+						if (pe.frames == 0) pe.frames = slotProbe.totalFrames;
+						if (pe.bones == 0) pe.bones = slotProbe.boneCount;
+						if (pe.sourceFps <= 0.0f && std::isfinite(slotProbe.fps) && slotProbe.fps > 0.0f)
+							pe.sourceFps = slotProbe.fps;
+						const bool hasMorphReport = std::filesystem::exists(slotEntry.path() / "motion.morph_report.json", ec);
+						ec.clear();
+						pe.hasFacial = pe.hasFacial || slotProbe.hasFacial || hasMorphReport;
+					}
+				}
+			}
+			ec.clear();
+
+			m.positions.clear();
+			m.positions.reserve(posMap.size());
+			for (auto& [slotKey, pe] : posMap)
+			{
+				(void)slotKey;
+				if (pe.sourceFps <= 0.0f)
+					pe.sourceFps = (std::isfinite(m.fps) && m.fps > 0.0f) ? m.fps : 30.0f;
+				if (!hasFacialExplicit && pe.hasFacial) m.hasFacial = true;
+				m.positions.push_back(std::move(pe));
+			}
+			m.positionCount = static_cast<int>(m.positions.size());
+			m.isGroup = (m.positionCount >= 2) || infoIsGroup;
 			const auto afterTime = std::filesystem::last_write_time(motionPath, ec);
 			if (ec) { warn(m.name + ": motion changed during scan"); ec.clear(); continue; }
 			const auto afterSize = std::filesystem::file_size(motionPath, ec);
@@ -829,6 +1132,17 @@ namespace GakuMotion
 				next.enabled = c->BoolPath("enabled", next.enabled);
 				int mode = c->IntPath("mode", static_cast<int>(next.mode));
 				int followBehavior = c->IntPath("follow_behavior", static_cast<int>(next.followBehavior));
+				if (const auto* fsi = c->Find("follow_slot_index"))
+				{
+					if (!fsi->IsNumber()) { lastError = "camera follow_slot_index must be an integer"; return false; }
+					const double d = fsi->numberValue;
+					if (!std::isfinite(d) || d != std::floor(d) || d < -1.0 || d > 1000000.0)
+					{
+						lastError = "camera follow_slot_index must be >= -1";
+						return false;
+					}
+					next.followSlotIndex = static_cast<int>(d);
+				}
 				next.followActor = c->BoolPath("follow_actor", next.followActor);
 				next.limitToScene = c->BoolPath("limit_to_scene", next.limitToScene);
 				next.followFov = c->FloatPath("follow_fov", next.followFov);
@@ -1368,6 +1682,151 @@ namespace GakuMotion
 		return true;
 	}
 
+	inline bool WriteTrackInfoJsonAtomically(
+		const std::filesystem::path& infoPath,
+		const std::string& serialized,
+		std::string& outError)
+	{
+		static std::atomic<uint64_t> sequence{0};
+#ifdef _WIN32
+		const unsigned long pid = static_cast<unsigned long>(GetCurrentProcessId());
+#else
+		const unsigned long pid = static_cast<unsigned long>(::getpid());
+#endif
+		std::filesystem::path temp;
+		bool created = false;
+#ifdef _WIN32
+		HANDLE file = INVALID_HANDLE_VALUE;
+#else
+		int file = -1;
+#endif
+		for (unsigned retry = 0; retry < 32 && !created; ++retry)
+		{
+			temp = infoPath;
+			temp += ".tmp." + std::to_string(pid) + "." + std::to_string(++sequence);
+#ifdef _WIN32
+			file = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+			created = file != INVALID_HANDLE_VALUE;
+			if (!created && GetLastError() != ERROR_FILE_EXISTS && GetLastError() != ERROR_ALREADY_EXISTS)
+			{
+				outError = "Cannot open info.json staging file: " + std::error_code(GetLastError(), std::system_category()).message();
+				return false;
+			}
+#else
+			file = ::open(temp.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+			created = file >= 0;
+			if (!created && errno != EEXIST)
+			{
+				outError = "Cannot open info.json staging file: " + std::error_code(errno, std::generic_category()).message();
+				return false;
+			}
+#endif
+		}
+		if (!created)
+		{
+			outError = "Cannot create unique info.json staging file";
+			return false;
+		}
+		auto cleanup = [&] {
+			std::error_code ignored;
+			std::filesystem::remove(temp, ignored);
+		};
+		bool written = true;
+#ifdef _WIN32
+		for (size_t offset = 0; offset < serialized.size();)
+		{
+			DWORD count = 0;
+			const auto chunk = static_cast<DWORD>((std::min)(serialized.size() - offset, size_t{0x40000000}));
+			if (!WriteFile(file, serialized.data() + offset, chunk, &count, nullptr) || count != chunk)
+			{
+				outError = "Failed to write info.json staging file: " + std::error_code(GetLastError(), std::system_category()).message();
+				written = false;
+				break;
+			}
+			offset += count;
+		}
+		if (written && !FlushFileBuffers(file))
+		{
+			outError = "Failed to flush info.json staging file: " + std::error_code(GetLastError(), std::system_category()).message();
+			written = false;
+		}
+		if (!CloseHandle(file))
+		{
+			if (written)
+				outError = "Failed to close info.json staging file: " + std::error_code(GetLastError(), std::system_category()).message();
+			written = false;
+		}
+		if (!written)
+		{
+			cleanup();
+			return false;
+		}
+		bool moved = false;
+		DWORD moveErr = 0;
+		{
+			std::unique_lock<std::shared_mutex> commitWriteLock(jsonlite::JsonFileCommitMutex());
+			for (int attempt = 0; attempt < 10; ++attempt)
+			{
+				if (MoveFileExW(temp.c_str(), infoPath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+				{
+					moved = true;
+					break;
+				}
+				moveErr = GetLastError();
+				if ((moveErr != ERROR_ACCESS_DENIED && moveErr != ERROR_SHARING_VIOLATION) || attempt == 9)
+				{
+					break;
+				}
+				std::this_thread::sleep_for(std::chrono::milliseconds(2));
+			}
+		}
+		if (!moved)
+		{
+			outError = "Failed to commit info.json: " + std::error_code(static_cast<int>(moveErr), std::system_category()).message();
+			cleanup();
+			return false;
+		}
+#else
+		for (size_t offset = 0; offset < serialized.size();)
+		{
+			const auto count = ::write(file, serialized.data() + offset, serialized.size() - offset);
+			if (count < 0 && errno == EINTR) continue;
+			if (count <= 0)
+			{
+				outError = "Failed to write info.json staging file: " + std::error_code(errno, std::generic_category()).message();
+				written = false;
+				break;
+			}
+			offset += static_cast<size_t>(count);
+		}
+		if (written && ::fsync(file) != 0)
+		{
+			outError = "Failed to flush info.json staging file: " + std::error_code(errno, std::generic_category()).message();
+			written = false;
+		}
+		if (::close(file) != 0)
+		{
+			if (written)
+				outError = "Failed to close info.json staging file: " + std::error_code(errno, std::generic_category()).message();
+			written = false;
+		}
+		if (!written)
+		{
+			cleanup();
+			return false;
+		}
+		std::error_code ec;
+		std::filesystem::rename(temp, infoPath, ec);
+		if (ec)
+		{
+			cleanup();
+			outError = "Failed to commit info.json: " + ec.message();
+			return false;
+		}
+#endif
+		return true;
+	}
+
 	inline bool UpdateTrackInfoJsonCover(
 		const std::filesystem::path& trackDir,
 		bool hasCover,
@@ -1380,27 +1839,27 @@ namespace GakuMotion
 			outError = "Track directory is empty";
 			return false;
 		}
+		std::lock_guard<std::mutex> lock(InfoJsonMutationMutex());
 		const auto infoPath = trackDir / "info.json";
 		jsonlite::Value root;
 		root.type = jsonlite::Type::Object;
 		std::error_code ec;
 		if (std::filesystem::is_regular_file(infoPath, ec))
 		{
-			std::ifstream in(infoPath, std::ios::binary);
-			if (!in)
+			std::string rawText;
+			std::string readErr;
+			if (!ReadTrackInfoJsonTextUnlocked(infoPath, rawText, &readErr))
 			{
-				outError = "Cannot open info.json for reading";
+				outError = "Cannot open info.json for reading" + (readErr.empty() ? std::string() : ": " + readErr);
 				return false;
 			}
-			std::ostringstream ss;
-			ss << in.rdbuf();
 			std::string parseErr;
 			jsonlite::Value parsed;
-			if (jsonlite::ParseText(ss.str(), parsed, parseErr) && parsed.IsObject())
+			if (jsonlite::ParseText(rawText, parsed, parseErr) && parsed.IsObject())
 			{
 				root = std::move(parsed);
 			}
-			else if (!ss.str().empty())
+			else if (!rawText.empty())
 			{
 				outError = "info.json is malformed: " + parseErr;
 				return false;
@@ -1457,30 +1916,162 @@ namespace GakuMotion
 		SerializeJsonValue(root, serialized, 0);
 		serialized.push_back('\n');
 
-		const auto tmpPath = trackDir / "info.json.tmp";
+		return WriteTrackInfoJsonAtomically(infoPath, serialized, outError);
+	}
+
+	inline bool UpdateTrackInfoJsonPositionsPlacement(
+		const std::filesystem::path& trackDir,
+		const std::vector<TrackPositionPlacementUpdate>& updates,
+		std::string& outError)
+	{
+		outError.clear();
+		if (trackDir.empty())
 		{
-			std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
-			if (!out)
-			{
-				outError = "Cannot open info.json.tmp for writing";
-				return false;
-			}
-			out.write(serialized.data(), static_cast<std::streamsize>(serialized.size()));
-			if (!out.good())
-			{
-				out.close();
-				std::filesystem::remove(tmpPath, ec);
-				outError = "Failed to write info.json.tmp";
-				return false;
-			}
-		}
-		std::filesystem::rename(tmpPath, infoPath, ec);
-		if (ec)
-		{
-			std::filesystem::remove(tmpPath, ec);
-			outError = "Failed to commit info.json: " + ec.message();
+			outError = "Track directory is empty";
 			return false;
 		}
-		return true;
+		if (updates.empty())
+		{
+			outError = "Placement updates list is empty";
+			return false;
+		}
+		for (const auto& u : updates)
+		{
+			if (u.slot < 1)
+			{
+				outError = "Slot index must be >= 1";
+				return false;
+			}
+			if (!std::isfinite(u.x) || !std::isfinite(u.y) || !std::isfinite(u.z) || !std::isfinite(u.yawDegrees))
+			{
+				outError = "Placement coordinates and yaw must be finite";
+				return false;
+			}
+		}
+
+		std::lock_guard<std::mutex> lock(InfoJsonMutationMutex());
+		const auto infoPath = trackDir / "info.json";
+		std::error_code ec;
+		if (!std::filesystem::is_regular_file(infoPath, ec))
+		{
+			outError = "info.json not found";
+			return false;
+		}
+		jsonlite::Value root;
+		{
+			std::string rawText;
+			std::string readErr;
+			if (!ReadTrackInfoJsonTextUnlocked(infoPath, rawText, &readErr))
+			{
+				outError = "Cannot open info.json for reading" + (readErr.empty() ? std::string() : ": " + readErr);
+				return false;
+			}
+			std::string parseErr;
+			if (!jsonlite::ParseText(rawText, root, parseErr) || !root.IsObject())
+			{
+				outError = "info.json is malformed: " + parseErr;
+				return false;
+			}
+		}
+
+		jsonlite::Value* positionsVal = nullptr;
+		for (size_t i = root.objectMembers.size(); i-- > 0;)
+		{
+			if (root.objectMembers[i].first == "positions")
+			{
+				positionsVal = &root.objectMembers[i].second;
+				break;
+			}
+		}
+		if (!positionsVal || !positionsVal->IsArray())
+		{
+			outError = "info.json does not contain a positions array";
+			return false;
+		}
+
+		auto setOrReplace = [](jsonlite::Value& obj, const std::string& key, jsonlite::Value val) {
+			bool updated = false;
+			std::vector<std::pair<std::string, jsonlite::Value>> next;
+			next.reserve(obj.objectMembers.size() + 1);
+			for (auto& kv : obj.objectMembers)
+			{
+				if (kv.first == key)
+				{
+					if (!updated)
+					{
+						next.emplace_back(key, std::move(val));
+						updated = true;
+					}
+				}
+				else
+				{
+					next.push_back(std::move(kv));
+				}
+			}
+			if (!updated) next.emplace_back(key, std::move(val));
+			obj.objectMembers = std::move(next);
+		};
+
+		auto makeCleanNumber = [](float v) {
+			const float clean = (v == 0.0f || std::fabs(v) < 1e-7f) ? 0.0f : v;
+			std::string formatted = jsonlite::FormatNumber(static_cast<double>(clean), 6);
+			if (formatted == "-0") formatted = "0";
+			jsonlite::Value val;
+			val.type = jsonlite::Type::Number;
+			val.numberValue = std::strtod(formatted.c_str(), nullptr);
+			if (!std::isfinite(val.numberValue) || val.numberValue == 0.0) val.numberValue = 0.0;
+			return val;
+		};
+
+		for (const auto& u : updates)
+		{
+			jsonlite::Value* targetObj = nullptr;
+			for (auto& item : positionsVal->arrayItems)
+			{
+				if (!item.IsObject()) continue;
+				const auto* slotField = item.Find("slot");
+				if (slotField && slotField->IsNumber() && static_cast<int>(std::llround(slotField->numberValue)) == u.slot)
+				{
+					targetObj = &item;
+					break;
+				}
+			}
+			if (!targetObj && static_cast<size_t>(u.slot - 1) < positionsVal->arrayItems.size())
+			{
+				auto& candidate = positionsVal->arrayItems[static_cast<size_t>(u.slot - 1)];
+				if (candidate.IsObject() && candidate.Find("slot") == nullptr)
+					targetObj = &candidate;
+			}
+			if (!targetObj)
+			{
+				outError = "Target slot " + std::to_string(u.slot) + " not found in info.json positions";
+				return false;
+			}
+			setOrReplace(*targetObj, "x", makeCleanNumber(u.x));
+			setOrReplace(*targetObj, "y", makeCleanNumber(u.y));
+			setOrReplace(*targetObj, "z", makeCleanNumber(u.z));
+			setOrReplace(*targetObj, "yaw_degrees", makeCleanNumber(u.yawDegrees));
+		}
+
+		std::string serialized;
+		SerializeJsonValue(root, serialized, 0);
+		serialized.push_back('\n');
+
+		return WriteTrackInfoJsonAtomically(infoPath, serialized, outError);
+	}
+
+	inline bool UpdateTrackInfoJsonPositionPlacement(
+		const std::filesystem::path& trackDir,
+		int slot,
+		float x,
+		float y,
+		float z,
+		float yawDegrees,
+		std::string& outError)
+	{
+		return UpdateTrackInfoJsonPositionsPlacement(
+			trackDir,
+			std::vector<TrackPositionPlacementUpdate>{{slot, x, y, z, yawDegrees}},
+			outError);
 	}
 } // namespace GakuMotion

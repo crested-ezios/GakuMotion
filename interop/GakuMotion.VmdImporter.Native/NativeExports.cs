@@ -84,8 +84,9 @@ internal static unsafe class NativeExports
         }
         catch (Exception ex)
         {
-            WriteResponse(responseUtf8Json, responseCapacity, false, null,
-                ex.GetType().Name + ": " + ex.Message, "bad_request", 0);
+            if (WriteResponse(responseUtf8Json, responseCapacity, false, null,
+                ex.GetType().Name + ": " + ex.Message, "bad_request", 0) != 0)
+                return BufferTooSmall;
             return Failed;
         }
         finally
@@ -115,8 +116,9 @@ internal static unsafe class NativeExports
             }
             catch (Exception ex)
             {
-                WriteResponse(responseUtf8Json, responseCapacity, ok: false, null,
-                    "导入请求解析失败: " + ex.Message, "bad_request", 0);
+                if (WriteResponse(responseUtf8Json, responseCapacity, ok: false, null,
+                    "导入请求解析失败: " + ex.Message, "bad_request", 0) != 0)
+                    return BufferTooSmall;
                 return Failed;
             }
 
@@ -129,8 +131,9 @@ internal static unsafe class NativeExports
         }
         catch (Exception ex)
         {
-            WriteResponse(responseUtf8Json, responseCapacity, ok: false, null,
-                ex.GetType().Name + ": " + ex.Message, "internal", 0);
+            if (WriteResponse(responseUtf8Json, responseCapacity, ok: false, null,
+                ex.GetType().Name + ": " + ex.Message, "internal", 0) != 0)
+                return BufferTooSmall;
             return Failed;
         }
         finally

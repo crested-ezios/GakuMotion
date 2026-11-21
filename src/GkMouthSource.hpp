@@ -69,7 +69,8 @@ namespace GakuMotion::mouth_source
         return true;
     }
 
-    inline std::string Restore(MotionClip& clip, const std::string& directory)
+    inline std::string Restore(MotionClip& clip, const std::string& directory,
+        const jsonlite::Value* preloadedMetadata = nullptr)
     {
         if (HasFamily(clip, 8, 10)) return "embedded";
         if (clip.blendshape_names.empty()) return "no_facial_tracks";
@@ -82,9 +83,11 @@ namespace GakuMotion::mouth_source
         if (!reader) return "source_reader_unavailable";
         if (!std::isfinite(clip.fps) || clip.fps <= 0 || !clip.total_frames ||
             clip.total_frames > 1000000 || clip.total_frames > static_cast<uint32_t>(INT32_MAX / Names.size())) return "invalid_clip_dimensions";
-        jsonlite::Value metadata;
+        jsonlite::Value localMetadata;
         std::string metadataError;
-        const bool known = jsonlite::ParseFile(directory + "/info.json", metadata, metadataError);
+        const bool known = preloadedMetadata != nullptr ||
+            jsonlite::ParseFile(directory + "/info.json", localMetadata, metadataError);
+        const jsonlite::Value& metadata = preloadedMetadata != nullptr ? *preloadedMetadata : localMetadata;
         const auto* morphFps = known && separateMorph ? metadata.Find("source_morph_fps") : nullptr;
         const auto* configuredFps = morphFps ? morphFps : known ? metadata.Find("source_fps") : nullptr;
         const float sourceFps = configuredFps && configuredFps->IsNumber()

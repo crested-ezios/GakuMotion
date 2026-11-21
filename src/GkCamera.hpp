@@ -203,6 +203,7 @@ namespace GakuMotion
 		CameraMode mode{CameraMode::Track};
 		FollowBehavior followBehavior{FollowBehavior::FollowMove};
 		CameraFollowTarget followTarget{CameraFollowTarget::Hips};
+		int followSlotIndex{-1}; // -1 = all active actors (group center); 0..N-1 = specific formation slot
 		bool followActor{false}; // also translate the VMD path with the selected actor
 		bool limitToScene{false};
 		Vector3 boundsMin{-5, 0.05f, -5}, boundsMax{5, 5, 5}; // world-space AABB, opt-in
@@ -248,6 +249,7 @@ namespace GakuMotion
 			const int followBehaviorValue = static_cast<int>(followBehavior);
 			return modeValue >= 0 && modeValue <= 2 && followBehaviorValue >= 0 && followBehaviorValue <= 1 &&
 				CameraFollowTargetBoneId(followTarget) >= 0 &&
+				followSlotIndex >= -1 &&
 				CameraFinite(boundsMin) && CameraFinite(boundsMax) &&
 				boundsMin.x <= boundsMax.x && boundsMin.y <= boundsMax.y && boundsMin.z <= boundsMax.z &&
 				CameraFinite(followOffset) && CameraFinite(targetOffset) &&
@@ -271,6 +273,7 @@ namespace GakuMotion
 		{
 			auto same = [](Vector3 a, Vector3 b) { return a.x == b.x && a.y == b.y && a.z == b.z; };
 			return enabled == b.enabled && mode == b.mode && followBehavior == b.followBehavior && followTarget == b.followTarget &&
+				followSlotIndex == b.followSlotIndex &&
 				followActor == b.followActor &&
 				limitToScene == b.limitToScene && same(boundsMin, b.boundsMin) && same(boundsMax, b.boundsMax) &&
 				same(followOffset, b.followOffset) && same(targetOffset, b.targetOffset) &&
@@ -351,6 +354,7 @@ namespace GakuMotion
 				fnWrite(camera, transform, saved);
 			if (fnReleaseVcam) fnReleaseVcam(restore);
 			owned = false;
+			ownedGroupMode_ = false;
 			captureRestorePending = false;
 			camera = transform = actor = nullptr;
 			followCaptured = false;
@@ -395,6 +399,7 @@ namespace GakuMotion
 			}
 			catch (...) { result.confirmed = false; }
 			owned = false;
+			ownedGroupMode_ = false;
 			captureRestorePending = !result.confirmed;
 			if (result.confirmed) camera = transform = actor = nullptr;
 			followCaptured = false;
@@ -463,7 +468,19 @@ namespace GakuMotion
 
 		void Tick(bool active, float time, float dt, void* targetActor, uint64_t physicalFrame = 0)
 		{
-			if (!active || !settings.enabled || !settings.IsValid() || !targetActor)
+			if (!targetActor)
+			{
+				Release();
+				return;
+			}
+			std::vector<void*> single{targetActor};
+			TickMulti(active, time, dt, single, targetActor, physicalFrame);
+		}
+
+		void TickMulti(bool active, float time, float dt, const std::vector<void*>& targetActors,
+		               void* anchorActor, uint64_t physicalFrame = 0)
+		{
+			if (!active || !settings.enabled || !settings.IsValid() || targetActors.empty())
 			{
 				Release();
 				return;
@@ -475,23 +492,97 @@ namespace GakuMotion
 				Release(false);
 				return;
 			}
-			if (owned && (camera != next || actor != targetActor || !fnAlive(transform))) Release();
-			Vector3 actorOrigin, hips;
-			Quaternion actorRotation;
-			if (!fnActorPose(targetActor, actorOrigin, actorRotation, hips))
+			std::vector<void*> aliveActors;
+			aliveActors.reserve(targetActors.size());
+			for (void* candidate : targetActors)
+			{
+				if (candidate && fnAlive(candidate)) aliveActors.push_back(candidate);
+			}
+			if (aliveActors.empty())
+			{
+				Release(false);
+				return;
+			}
+			const bool isGroupMode = aliveActors.size() > 1;
+			void* primaryActor = aliveActors.front();
+			if (owned && (camera != next || !fnAlive(transform) || isGroupMode != ownedGroupMode_ ||
+				(!isGroupMode && actor != primaryActor)))
+			{
+				Release();
+			}
+			Vector3 sumOrigin{}, sumHips{};
+			int validPoses = 0;
+			Vector3 firstOrigin{}, firstHips{};
+			Quaternion firstRotation = Quaternion::Identity();
+			for (void* candidate : aliveActors)
+			{
+				Vector3 candidateOrigin{}, candidateHips{};
+				Quaternion candidateRotation{};
+				if (fnActorPose(candidate, candidateOrigin, candidateRotation, candidateHips) &&
+					CameraFinite(candidateOrigin) && CameraFinite(candidateHips))
+				{
+					if (validPoses == 0)
+					{
+						firstOrigin = candidateOrigin;
+						firstHips = candidateHips;
+						firstRotation = candidateRotation;
+					}
+					sumOrigin = sumOrigin + candidateOrigin;
+					sumHips = sumHips + candidateHips;
+					++validPoses;
+				}
+			}
+			if (validPoses == 0)
 			{
 				Release();
 				return;
 			}
-			Vector3 followTarget = hips;
-			if (settings.mode == CameraMode::Follow && settings.followTarget != CameraFollowTarget::Hips &&
-				(!fnFollowTarget || !fnFollowTarget(targetActor, settings.followTarget, followTarget) || !CameraFinite(followTarget)))
+			const float invPoseCount = 1.0f / static_cast<float>(validPoses);
+			Vector3 actorOrigin = Vector3{sumOrigin.x * invPoseCount, sumOrigin.y * invPoseCount, sumOrigin.z * invPoseCount};
+			const Vector3 hips = Vector3{sumHips.x * invPoseCount, sumHips.y * invPoseCount, sumHips.z * invPoseCount};
+			Quaternion actorRotation = firstRotation;
+			if (anchorActor && fnAlive(anchorActor))
 			{
-				followTargetError_ = std::string("跟随部位（") + CameraFollowTargetLabel(settings.followTarget) +
-					"）当前不可用；" + (owned ? "保持上次镜头，等待目标恢复。" : "等待目标恢复后接管镜头。");
-				if (owned) fnWrite(camera, transform, desired);
-				Publish();
-				return;
+				Vector3 anchorOrigin{}, anchorHips{};
+				Quaternion anchorRot{};
+				if (fnActorPose(anchorActor, anchorOrigin, anchorRot, anchorHips) && CameraFinite(anchorOrigin))
+				{
+					actorOrigin = anchorOrigin;
+					actorRotation = anchorRot;
+				}
+			}
+			Vector3 followTarget = hips;
+			if (settings.mode == CameraMode::Follow && settings.followTarget != CameraFollowTarget::Hips)
+			{
+				if (!fnFollowTarget)
+				{
+					followTargetError_ = std::string("跟随部位（") + CameraFollowTargetLabel(settings.followTarget) +
+						"）当前不可用；" + (owned ? "保持上次镜头，等待目标恢复。" : "等待目标恢复后接管镜头。");
+					if (owned) fnWrite(camera, transform, desired);
+					Publish();
+					return;
+				}
+				Vector3 sumTarget{};
+				int validTargets = 0;
+				for (void* candidate : aliveActors)
+				{
+					Vector3 sample{};
+					if (fnFollowTarget(candidate, settings.followTarget, sample) && CameraFinite(sample))
+					{
+						sumTarget = sumTarget + sample;
+						++validTargets;
+					}
+				}
+				if (validTargets == 0)
+				{
+					followTargetError_ = std::string("跟随部位（") + CameraFollowTargetLabel(settings.followTarget) +
+						"）当前不可用；" + (owned ? "保持上次镜头，等待目标恢复。" : "等待目标恢复后接管镜头。");
+					if (owned) fnWrite(camera, transform, desired);
+					Publish();
+					return;
+				}
+				const float invTargetCount = 1.0f / static_cast<float>(validTargets);
+				followTarget = Vector3{sumTarget.x * invTargetCount, sumTarget.y * invTargetCount, sumTarget.z * invTargetCount};
 			}
 			followTargetError_.clear();
 			if (!owned)
@@ -501,7 +592,8 @@ namespace GakuMotion
 				if (!tr || !fnAlive(tr) || !fnRead(next, tr, initial)) return;
 				camera = next;
 				transform = tr;
-				actor = targetActor;
+				actor = primaryActor;
+				ownedGroupMode_ = isGroupMode;
 				saved = desired = initial;
 				origin = actorOrigin;
 				originRotation = actorRotation;
@@ -612,7 +704,7 @@ namespace GakuMotion
 		// Called at the render boundary after all actor/Cinemachine updates.
 		void BeforeRender(void* renderingCamera)
 		{
-			if (owned && fnAlive && (!fnAlive(camera) || !fnAlive(transform) || !fnAlive(actor)))
+			if (owned && fnAlive && (!fnAlive(camera) || !fnAlive(transform) || (!ownedGroupMode_ && !fnAlive(actor))))
 			{
 				Release(false);
 				return;
@@ -635,6 +727,7 @@ namespace GakuMotion
 		uint64_t lastFollowFrame_{0};
 		std::string followTargetError_;
 		bool trackDirty_{false};
+		bool ownedGroupMode_{false};
 		mutable std::mutex snapshotMutex_;
 		Snapshot snapshot_;
 	};

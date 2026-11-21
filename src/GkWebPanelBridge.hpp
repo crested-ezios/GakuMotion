@@ -25,6 +25,7 @@
 #include "../include/GakuWebPanel.h"
 #include "GakuMotion.hpp"
 #include "GkJsonLite.hpp"
+#include "GkPortraitCache.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -198,6 +199,7 @@ namespace GakuMotion::webpanel
 		std::function<AudioProbeView(const std::string& pathUtf8, bool includeCover)> probeAudio;
 		std::function<std::string(const std::string& trackDirUtf8)> getTrackCoverDataUri;
 		std::function<std::string(const std::string& pathUtf8)> readImagePreviewDataUri;
+		std::function<bool(const std::string& normCharCode, std::string& outDataUri, bool& outCached)> getActorPortraitDataUri;
 		std::function<ScreenshotCapabilitiesView()> getScreenshotCapabilities;
 		std::function<ScreenshotCaptureView()> captureScreenshot;
 		std::function<AudioEffectState()> getAudioEffectsState;
@@ -241,7 +243,9 @@ namespace GakuMotion::webpanel
 		"screenshot.capabilities", "screenshot.capture",
 		"clock.setRunMode", "clock.configure",
 		"audioEffect.set",
-		"actors.selectTarget",
+		"actors.selectTarget", "actors.getPortrait",
+		"formation.selectSlot", "formation.swapSlots", "formation.setSlotOffset",
+		"formation.resetSlotOffset", "formation.saveSlotOffset", "formation.setSlotSource",
 		"facial.setWeights", "facial.save",
 		"position.set", "position.save",
 		"camera.set", "camera.save",
@@ -251,7 +255,6 @@ namespace GakuMotion::webpanel
 		"appearance.get",
 		"dialog.pickFile", "dialog.poll",
 		"drop.setTarget", "drop.poll", "drop.peek",
-		"ensemble.set", "ensemble.presetSave", "ensemble.presetLoad", "ensemble.probe",
 		"bone.get", "bone.set", "bone.reset", "bone.resetAll", "bone.setMaster",
 		"bone.reload", "bone.saveToMotion", "bone.saveToGlobal",
 		"gaze.get", "gaze.set", "gaze.cycle",
@@ -264,9 +267,9 @@ namespace GakuMotion::webpanel
 
 	inline constexpr const char* kSupportedEvents[] = {
 		"player.stateChanged", "permission.changed", "library.changed", "loaded.changed",
-		"playlist.changed", "actors.changed", "camera.changed", "stage.changed",
+		"playlist.changed", "actors.changed", "formation.changed", "camera.changed", "stage.changed",
 		"stage.nodesChanged",
-		"facial.changed", "position.changed", "ensemble.changed", "settings.changed",
+		"facial.changed", "position.changed", "settings.changed",
 		"import.progress", "appearance.changed", "bridge.closed",
 		"gaze.changed", "bone.changed", "sole.changed", "solePitch.changed",
 		"studio.changed", "experiments.changed",
@@ -517,6 +520,7 @@ namespace GakuMotion::webpanel
 			if (method == "state.get")
 			{
 				std::lock_guard<std::recursive_mutex> lock(core_.stateMutex);
+				EnsureFormationSyncedLocked();
 				return CmdResult::Ok(BuildSnapshotLocked());
 			}
 
@@ -541,8 +545,6 @@ namespace GakuMotion::webpanel
 					return CmdResult::Err("invalid_params", "delta must be a non-zero integer in [-100, 100]");
 				std::lock_guard<std::recursive_mutex> lock(core_.stateMutex);
 				if (const auto guard = MutationGuardLocked(); !guard.ok) return guard;
-				if (core_.EnsembleActive())
-					return CmdResult::Err("protected", "Cycle is disabled while the ensemble stage is active");
 				if (core_.motions.empty()) return CmdResult::Err("not_ready", "Motion library is empty");
 				core_.QueueCycleMotion(static_cast<int>(delta));
 				ForcePlayerEvent();
@@ -659,10 +661,6 @@ namespace GakuMotion::webpanel
 				if (const auto guard = MutationGuardLocked(); !guard.ok) return guard;
 				if (FindPlaylistIndex(core_.motions, key) < 0)
 					return CmdResult::Err("invalid_params", "Motion key not found: " + key);
-				if (core_.EnsembleActive())
-					for (const auto& slot : core_.ensembleActiveSettings.slots)
-						if (slot.enabled && slot.motionKey == key)
-							return CmdResult::Err("protected", "Motion is in use by the ensemble stage");
 				GuiCommand command{GuiAction::DeleteFiles, 0, true, key};
 				command.libraryRevision = core_.libraryRevision;
 				core_.QueueGui(std::move(command));
@@ -710,6 +708,15 @@ namespace GakuMotion::webpanel
 				core_.QueueGui(std::move(command));
 				return CmdResult::Ok();
 			}
+			if (method == "actors.getPortrait") return ActorsGetPortrait(params);
+
+			// Formation ---------------------------------------------------------
+			if (method == "formation.selectSlot") return FormationSelectSlot(params);
+			if (method == "formation.swapSlots") return FormationSwapSlots(params);
+			if (method == "formation.setSlotOffset") return FormationSetSlotOffset(params);
+			if (method == "formation.resetSlotOffset") return FormationResetSlotOffset(params);
+			if (method == "formation.saveSlotOffset") return FormationSaveSlotOffset(params);
+			if (method == "formation.setSlotSource") return FormationSetSlotSource(params);
 
 			// Facial / position ---------------------------------------------------
 			if (method == "facial.setWeights")
@@ -723,10 +730,15 @@ namespace GakuMotion::webpanel
 						return CmdResult::Err("invalid_params", "Facial weights must be within 0..2");
 				std::lock_guard<std::recursive_mutex> lock(core_.stateMutex);
 				if (const auto guard = MutationGuardLocked(); !guard.ok) return guard;
-				// Same direct write the ImGui overlay performs under stateMutex.
-				core_.player.controller.facialWeights = {
+				EnsureFormationSyncedLocked();
+				const FacialWeights fw{
 					static_cast<float>(overall), static_cast<float>(brow),
 					static_cast<float>(eye), static_cast<float>(mouth)};
+				if (!core_.SetSlotFacialWeights(core_.formation.selectedSlotIndex, fw))
+				{
+					core_.player.controller.facialWeights = fw;
+				}
+				forceDomainRefresh_.store(true, std::memory_order_release);
 				return CmdResult::Ok();
 			}
 			if (method == "facial.save")
@@ -772,6 +784,7 @@ namespace GakuMotion::webpanel
 				if (!parsed.IsValid())
 					return CmdResult::Err("invalid_params", "Camera settings failed validation");
 				core_.QueueCameraSettings(parsed);
+				forceDomainRefresh_.store(true, std::memory_order_release);
 				return CmdResult::Ok();
 			}
 			if (method == "camera.save")
@@ -818,12 +831,6 @@ namespace GakuMotion::webpanel
 			if (method == "drop.setTarget") return DropSetTarget(params);
 			if (method == "drop.poll") return DropPoll();
 			if (method == "drop.peek") return DropPeekMethod();
-
-			if (method == "ensemble.set") return EnsembleSet(params);
-			if (method == "ensemble.preset") return EnsemblePreset(params);
-			if (method == "ensemble.presetSave" || method == "ensemble.preset.save") return EnsemblePresetSave(params);
-			if (method == "ensemble.presetLoad" || method == "ensemble.preset.load") return EnsemblePresetLoad(params);
-			if (method == "ensemble.probe") return EnsembleProbe(params);
 
 			if (method == "bone.tree") return BoneTree();
 			if (method == "bone.get") return BoneGet(params);
@@ -1197,13 +1204,40 @@ namespace GakuMotion::webpanel
 					",\"cameraFrames\":" + JNum(info.cameraFrames) + "}";
 			}
 			probes += "]";
+			std::string motionCandidatesJson = "[";
+			for (size_t i = 0; i < classification.motionCandidates.size(); ++i)
+			{
+				if (i) motionCandidatesJson += ",";
+				motionCandidatesJson += JString(classification.motionCandidates[i]);
+			}
+			motionCandidatesJson += "]";
 			const std::string classificationJson = "{\"suggestedTitle\":" + JString(classification.suggestedTitle) +
 				",\"motionCandidate\":" + JString(classification.motionCandidate) +
+				",\"motionCandidates\":" + motionCandidatesJson +
 				",\"facialCandidate\":" + JString(classification.facialCandidate) +
 				",\"cameraCandidate\":" + JString(classification.cameraCandidate) +
 				",\"audioCandidate\":" + JString(classification.audioCandidate) +
 				",\"unsupportedAudioCount\":" + JNum(classification.unsupportedAudioCount) + "}";
 			return CmdResult::Ok("{\"classification\":" + classificationJson + ",\"probes\":" + probes + "}");
+		}
+
+		static std::string MotionPositionsJson(const std::vector<MotionPositionEntry>& positions)
+		{
+			std::string out = "[";
+			for (size_t j = 0; j < positions.size(); ++j)
+			{
+				const auto& p = positions[j];
+				if (j) out += ",";
+				out += "{\"slot\":" + JNum(p.slot) +
+					",\"x\":" + JNum(p.x) +
+					",\"y\":" + JNum(p.y) +
+					",\"z\":" + JNum(p.z) +
+					",\"yawDegrees\":" + JNum(p.yawDegrees) +
+					",\"hasMotion\":" + JBool(p.hasMotion) +
+					",\"hasFacial\":" + JBool(p.hasFacial) + "}";
+			}
+			out += "]";
+			return out;
 		}
 
 		CmdResult LibraryStartEdit(const jsonlite::Value& params)
@@ -1220,6 +1254,9 @@ namespace GakuMotion::webpanel
 			const int index = FindPlaylistIndex(core_.motions, key);
 			if (index < 0) return CmdResult::Err("invalid_params", "Motion key not found: " + key);
 			const MotionEntry& entry = core_.motions[index];
+			const int posCount = entry.isGroup || !entry.positions.empty()
+				? (std::max)(entry.positionCount, static_cast<int>(entry.positions.size()))
+				: (std::max)(1, entry.positionCount);
 			return CmdResult::Ok("{\"key\":" + JString(key) +
 				",\"title\":" + JString(entry.title) +
 				",\"subtitle\":" + JString(entry.subtitle) +
@@ -1228,6 +1265,9 @@ namespace GakuMotion::webpanel
 				",\"hasAudio\":" + JBool(entry.hasAudio) +
 				",\"audioFile\":" + JString(entry.audioFile) +
 				",\"hasCover\":" + JBool(entry.hasCover) +
+				",\"isGroup\":" + JBool(entry.isGroup) +
+				",\"positionCount\":" + JNum(posCount) +
+				",\"positions\":" + MotionPositionsJson(entry.positions) +
 				",\"timing\":" + TimingJson(entry.timing) + "}");
 		}
 
@@ -1586,7 +1626,8 @@ namespace GakuMotion::webpanel
 			bool rebakeOutput = edit && resolvedFps > 0.0f;
 			if (draft->Find("rebakeOutput") && !BoolParam(*draft, "rebakeOutput", rebakeOutput))
 				return CmdResult::Err("invalid_params", "rebakeOutput must be a boolean");
-			const std::string motion = ImportSlotString(*draft, "motionFile", "motionMode", "motionPath");
+			std::string motion = ImportSlotString(*draft, "motionFile", "motionMode", "motionPath");
+			if (motion.empty()) StringParam(*draft, "motionVmd", motion);
 			const std::string facial = ImportSlotString(*draft, "facialFile", "facialMode", "facialPath");
 			const std::string camera = ImportSlotString(*draft, "cameraFile", "cameraMode", "cameraPath");
 			const std::string audio = ImportSlotString(*draft, "audioFile", "audioMode", "audioPath");
@@ -1606,6 +1647,78 @@ namespace GakuMotion::webpanel
 			request.rebakeOutput = rebakeOutput;
 			request.timing = timing;
 			request.editKey = editKey;
+
+			if (const jsonlite::Value* positionsVal = draft->Find("positions"))
+			{
+				if (!positionsVal->IsArray() || positionsVal->Size() == 0 || positionsVal->Size() > 64)
+					return CmdResult::Err("invalid_params", "positions must be a non-empty array (max 64)");
+				request.positionsExplicit = true;
+				for (size_t i = 0; i < positionsVal->Size(); ++i)
+				{
+					const jsonlite::Value* posObj = positionsVal->At(i);
+					if (!posObj || !posObj->IsObject())
+						return CmdResult::Err("invalid_params", "each position entry must be an object");
+					int64_t slotNum = static_cast<int64_t>(i + 1);
+					if (posObj->Find("slot") && (!IntParam(*posObj, "slot", slotNum) || slotNum < 1 || slotNum > 64))
+						return CmdResult::Err("invalid_params", "position.slot must be within 1..64");
+					int64_t sourceSlotNum = 0;
+					if (posObj->Find("sourceSlot") && (!IntParam(*posObj, "sourceSlot", sourceSlotNum) || sourceSlotNum < 0 || sourceSlotNum > 64))
+						return CmdResult::Err("invalid_params", "position.sourceSlot must be >= 0");
+					double px = 0.0, py = 0.0, pz = 0.0, pyaw = 0.0, pSourceFps = 0.0;
+					if ((posObj->Find("x") && (!NumberParam(*posObj, "x", px) || px < -100.0 || px > 100.0)) ||
+						(posObj->Find("y") && (!NumberParam(*posObj, "y", py) || py < -100.0 || py > 100.0)) ||
+						(posObj->Find("z") && (!NumberParam(*posObj, "z", pz) || pz < -100.0 || pz > 100.0)) ||
+						(posObj->Find("yawDegrees") && (!NumberParam(*posObj, "yawDegrees", pyaw) || pyaw < -360.0 || pyaw > 360.0)))
+						return CmdResult::Err("invalid_params", "position placement coordinates/yaw are out of range");
+					if (posObj->Find("sourceFps") && !NumberParam(*posObj, "sourceFps", pSourceFps))
+						return CmdResult::Err("invalid_params", "position.sourceFps must be finite");
+					if (pSourceFps != 0.0 && pSourceFps != 25.0 && pSourceFps != 30.0 && pSourceFps != 60.0)
+						return CmdResult::Err("invalid_params", "position.sourceFps must be 0, 25, 30, or 60");
+					bool pDisableMorph = false, pClearMorph = false, pRebake = false, pPreserve = false;
+					if ((posObj->Find("disableMorph") && !BoolParam(*posObj, "disableMorph", pDisableMorph)) ||
+						(posObj->Find("clearMorph") && !BoolParam(*posObj, "clearMorph", pClearMorph)) ||
+						(posObj->Find("rebakeOutput") && !BoolParam(*posObj, "rebakeOutput", pRebake)) ||
+						(posObj->Find("preserveExisting") && !BoolParam(*posObj, "preserveExisting", pPreserve)))
+						return CmdResult::Err("invalid_params", "position boolean flags must be booleans");
+
+					std::string pMotion = ImportSlotString(*posObj, "motionFile", "motionMode", "motionPath");
+					if (pMotion.empty()) StringParam(*posObj, "motionVmd", pMotion);
+					if (pMotion == "[保持当前动作]") pPreserve = true;
+					std::string pFacial = ImportSlotString(*posObj, "facialFile", "facialMode", "facialPath");
+					if (pFacial.empty()) StringParam(*posObj, "morphVmd", pFacial);
+					if (pFacial == "（不导入）" || pFacial == "（留空 / 清除）") pDisableMorph = true;
+
+					ImportPositionSlot ps;
+					ps.slot = static_cast<int>(slotNum);
+					ps.sourceSlot = static_cast<int>(sourceSlotNum);
+					ps.disableMorph = pDisableMorph;
+					ps.clearMorph = pClearMorph;
+					ps.sourceFps = static_cast<float>(pSourceFps);
+					ps.rebakeOutput = pRebake;
+					ps.preserveExisting = pPreserve;
+					ps.x = static_cast<float>(px);
+					ps.y = static_cast<float>(py);
+					ps.z = static_cast<float>(pz);
+					ps.yawDegrees = static_cast<float>(pyaw);
+
+					if (!ps.preserveExisting && IsImportSlotFile(pMotion))
+					{
+						if (auto check = ValidateImportTrackFile(pMotion, "动作", 0); !check.ok) return check;
+						ps.motionVmd = pMotion;
+					}
+					else if (!edit && !ps.preserveExisting)
+					{
+						return CmdResult::Err("invalid_params", "请为每个位置选择有效的身体动作 (.vmd) 文件");
+					}
+
+					if (!ps.disableMorph && !ps.clearMorph && IsImportSlotFile(pFacial))
+					{
+						if (auto check = ValidateImportTrackFile(pFacial, "表情", 1); !check.ok) return check;
+						ps.morphVmd = pFacial;
+					}
+					request.positions.push_back(std::move(ps));
+				}
+			}
 
 			if (usingRequestSchema)
 			{
@@ -1645,15 +1758,28 @@ namespace GakuMotion::webpanel
 				}
 				else
 				{
-					if (!IsImportSlotFile(motion))
+					if (IsImportSlotFile(motion))
+					{
+						if (auto check = ValidateImportTrackFile(motion, "动作", 0); !check.ok) return check;
+						request.vmd = motion;
+					}
+					else if (!request.positions.empty() && !request.positions.front().motionVmd.empty())
+					{
+						request.vmd = request.positions.front().motionVmd;
+					}
+					else
+					{
 						return CmdResult::Err("invalid_params", "请选择有效的身体动作 (.vmd) 文件");
-					if (auto check = ValidateImportTrackFile(motion, "动作", 0); !check.ok) return check;
-					request.vmd = motion;
+					}
 					request.disableMorph = disableMorph || facial == "（不导入）" || facial == "（留空 / 清除）";
 					if (!request.disableMorph && IsImportSlotFile(facial))
 					{
 						if (auto check = ValidateImportTrackFile(facial, "表情", 1); !check.ok) return check;
 						request.morphVmd = facial;
+					}
+					else if (!request.disableMorph && !request.positions.empty() && !request.positions.front().morphVmd.empty())
+					{
+						request.morphVmd = request.positions.front().morphVmd;
 					}
 					if (IsImportSlotFile(camera))
 					{
@@ -1744,173 +1870,193 @@ namespace GakuMotion::webpanel
 			return CmdResult::Ok("{\"started\":true}");
 		}
 
-		static bool ParseEnsembleSettings(const jsonlite::Value& value, ensemble::Settings& settings, std::string& error)
+		void EnsureFormationSyncedLocked()
 		{
-			if (!value.IsObject()) { error = "settings object is required"; return false; }
-			const auto boolField = [&](const char* name, bool& target) {
-				const jsonlite::Value* field = value.Find(name);
-				if (!field) return true;
-				if (!field->IsBool()) { error = std::string(name) + " must be a boolean"; return false; }
-				target = field->boolValue; return true;
-			};
-			const jsonlite::Value* slots = value.Find("slots");
-			if (!slots || !slots->IsArray() || slots->Size() == 0 || slots->Size() > 32)
-			{ error = "Ensemble preset requires at least one logical slot"; return false; }
-			settings.slots.resize(slots->Size());
-			const auto indexField = [&](const char* name, uint32_t& target) {
-				int64_t number = 0;
-				if (!IntParam(value, name, number) || number < 0 || number >= static_cast<int64_t>(settings.slots.size()))
-				{ error = std::string(name) + " is out of range"; return false; }
-				target = static_cast<uint32_t>(number); return true;
-			};
-			if (!boolField("enabled", settings.enabled) || !indexField("masterSlot", settings.masterSlot) ||
-				!indexField("cameraSlot", settings.cameraSlot)) return false;
-			for (size_t i = 0; i < settings.slots.size(); ++i)
+			if (core_.formation.actorEpoch != core_.sceneActorRegistry.Epoch())
 			{
-				const jsonlite::Value* object = slots->At(i);
-				if (!object || !object->IsObject()) { error = "ensemble slot must be an object"; return false; }
-				auto& slot = settings.slots[i];
-				if (!BoolParam(*object, "enabled", slot.enabled)) { error = "slot.enabled must be a boolean"; return false; }
-				int64_t token = 0;
-				if (!IntParam(*object, "actorToken", token) || token < 0) { error = "slot.actorToken must be a non-negative integer"; return false; }
-				slot.actorToken = static_cast<uint64_t>(token);
-				if (!StringParam(*object, "actorHint", slot.actorHint) || !StringParam(*object, "motionKey", slot.motionKey))
-				{ error = "slot.actorHint and slot.motionKey must be strings"; return false; }
-				if (!VecParam(*object, "offset", slot.offset)) { error = "slot.offset must carry finite x/y/z"; return false; }
-				double yaw = 0;
-				if (!NumberParam(*object, "yawDegrees", yaw)) { error = "slot.yawDegrees must be a finite number"; return false; }
-				slot.yawDegrees = static_cast<float>(yaw);
+				core_.SyncFormationWithRoster();
 			}
-			return ensemble::Validate(settings, error);
 		}
 
-		CmdResult EnsembleSet(const jsonlite::Value& params)
+		CmdResult ActorsGetPortrait(const jsonlite::Value& params)
 		{
-			const jsonlite::Value* settingsValue = Param(params, "settings");
-			int64_t revision = -1, epoch = -1;
-			if (!settingsValue || !IntParam(params, "revision", revision) || !IntParam(params, "actorEpoch", epoch))
-				return CmdResult::Err("invalid_params", "settings, revision and actorEpoch are required");
-			ensemble::Settings settings;
-			std::string error;
-			if (!ParseEnsembleSettings(*settingsValue, settings, error))
-				return CmdResult::Err("invalid_params", error);
-			std::lock_guard<std::recursive_mutex> lock(core_.stateMutex);
-			if (static_cast<uint64_t>(revision) != core_.ensembleSnapshot.revision)
-				return CmdResult::Err("stale_revision", "名单或组合已变化，请重新应用");
-			if (static_cast<uint64_t>(epoch) != core_.sceneActorRegistry.Epoch())
-				return CmdResult::Err("stale_token", "演员名单已变化，请重新绑定");
-			if (core_.EnsembleActive() && core_.player.state == PlaybackState::Playing)
-				return CmdResult::Err("protected", "多人舞台正在播放，请先暂停再修改配置");
-			if (settings.enabled)
+			const jsonlite::Value* charField = Param(params, "character");
+			const jsonlite::Value* tokenField = Param(params, "token");
+			if (!charField && !tokenField)
+				return CmdResult::Err("invalid_params", "character or token is required");
+
+			std::string normCode;
+			if (charField)
 			{
-				if (!settings.slots[settings.masterSlot].enabled || !settings.slots[settings.cameraSlot].enabled)
-					return CmdResult::Err("invalid_params", "主槽与镜头跟随槽必须启用");
-				if (!core_.ensembleSnapshot.available || !core_.ensembleSnapshot.verified)
-					return CmdResult::Err("not_ready", "多人观察尚未通过：请在摄影场景开启观察探针并确认全部演员");
-				for (const auto& slot : settings.slots)
+				if (!charField->IsString() || !portrait::IsSafeCharacterCode(charField->stringValue))
+					return CmdResult::Err("invalid_params", "character code is invalid");
+				normCode = portrait::NormalizeCharacterCode(charField->stringValue);
+			}
+			else
+			{
+				int64_t token = 0;
+				if (!IntParam(params, "token", token) || token <= 0)
+					return CmdResult::Err("invalid_params", "token must be a positive integer");
+				std::lock_guard<std::recursive_mutex> lock(core_.stateMutex);
+				for (const auto& item : core_.sceneActorRegistry.Entries())
 				{
-					if (!slot.enabled) continue;
-					if (!core_.sceneActorRegistry.Resolve(slot.actorToken, static_cast<uint64_t>(epoch)))
-						return CmdResult::Err("stale_token", "槽位演员未绑定或已失效");
-					if (FindPlaylistIndex(core_.motions, slot.motionKey) < 0)
-						return CmdResult::Err("invalid_params", "曲库动作不存在：" + slot.motionKey);
+					if (item.token == static_cast<uint64_t>(token))
+					{
+						if (portrait::IsSafeCharacterCode(item.character))
+							normCode = portrait::NormalizeCharacterCode(item.character);
+						break;
+					}
+				}
+				if (normCode.empty())
+				{
+					return CmdResult::Ok("{\"ok\":true,\"character\":\"\",\"cached\":false,\"dataUri\":null}");
 				}
 			}
-			core_.QueueEnsemble(settings, static_cast<uint64_t>(revision), static_cast<uint64_t>(epoch));
+
+			std::string dataUri;
+			bool cached = false;
+			if (hooks_.getActorPortraitDataUri)
+			{
+				hooks_.getActorPortraitDataUri(normCode, dataUri, cached);
+			}
+			else
+			{
+				std::string configRoot;
+				{
+					std::lock_guard<std::recursive_mutex> lock(core_.stateMutex);
+					configRoot = core_.configRoot;
+				}
+				const auto path = portrait::PortraitCachePath(configRoot, normCode);
+				std::error_code ec;
+				if (!path.empty() && std::filesystem::is_regular_file(path, ec) && !ec)
+				{
+					std::ifstream ifs(path, std::ios::binary | std::ios::ate);
+					if (ifs)
+					{
+						const auto len = ifs.tellg();
+						if (len >= 45 && len <= static_cast<std::streamoff>(16LL * 1024LL * 1024LL))
+						{
+							ifs.seekg(0);
+							std::vector<uint8_t> bytes(static_cast<size_t>(len));
+							if (ifs.read(reinterpret_cast<char*>(bytes.data()), len) &&
+								portrait::IsValidPngBytes(bytes))
+							{
+								dataUri = cover::ToDataUri(bytes, "image/png");
+								cached = !dataUri.empty();
+							}
+						}
+					}
+				}
+			}
+
+			return CmdResult::Ok("{\"ok\":true,\"character\":" + JString(normCode) +
+				",\"cached\":" + JBool(cached) +
+				",\"dataUri\":" + (cached && !dataUri.empty() ? JString(dataUri) : "null") + "}");
+		}
+
+		CmdResult FormationSelectSlot(const jsonlite::Value& params)
+		{
+			int64_t slotIndex = -1;
+			if (!IntParam(params, "slotIndex", slotIndex) || slotIndex < 0)
+				return CmdResult::Err("invalid_params", "slotIndex must be a non-negative integer");
+			std::lock_guard<std::recursive_mutex> lock(core_.stateMutex);
+			EnsureFormationSyncedLocked();
+			if (slotIndex >= core_.formation.slotCount)
+				return CmdResult::Err("invalid_params", "slotIndex is out of range");
+			if (const auto guard = MutationGuardLocked(); !guard.ok) return guard;
+			core_.QueueFormationSelectSlot(static_cast<int>(slotIndex));
+			forceDomainRefresh_.store(true, std::memory_order_release);
 			return CmdResult::Ok();
 		}
 
-		static bool ValidPresetName(const std::string& name)
+		CmdResult FormationSwapSlots(const jsonlite::Value& params)
 		{
-			return !name.empty() && name.size() <= 80 && name != "." && name != ".." &&
-				name.find_first_of("/\\:*?\"<>|") == std::string::npos;
-		}
-
-		static std::string EnsembleSettingsJson(const ensemble::Settings& settings)
-		{
-			std::string slots = "[";
-			for (size_t i = 0; i < settings.slots.size(); ++i)
-			{
-				const auto& slot = settings.slots[i];
-				if (i) slots += ",";
-				slots += "{\"enabled\":" + JBool(slot.enabled) +
-					",\"actorToken\":" + JNum(static_cast<double>(slot.actorToken)) +
-					",\"actorHint\":" + JString(slot.actorHint) +
-					",\"motionKey\":" + JString(slot.motionKey) +
-					",\"offset\":" + JVec(slot.offset) +
-					",\"yawDegrees\":" + JNum(slot.yawDegrees) + "}";
-			}
-			slots += "]";
-			return "{\"enabled\":" + JBool(settings.enabled) +
-				",\"masterSlot\":" + JNum(settings.masterSlot) +
-				",\"cameraSlot\":" + JNum(settings.cameraSlot) +
-				",\"slots\":" + slots + "}";
-		}
-
-		CmdResult EnsemblePresetSave(const jsonlite::Value& params)
-		{
-			std::string name;
-			const jsonlite::Value* settingsValue = Param(params, "settings");
-			if (!StringParam(params, "name", name) || !ValidPresetName(name))
-				return CmdResult::Err("invalid_params", "预设名称无效");
-			if (!settingsValue) return CmdResult::Err("invalid_params", "settings object is required");
-			ensemble::Settings settings;
-			std::string error;
-			if (!ParseEnsembleSettings(*settingsValue, settings, error))
-				return CmdResult::Err("invalid_params", error);
+			int64_t fromSlotIndex = -1, toSlotIndex = -1;
+			if (!IntParam(params, "fromSlotIndex", fromSlotIndex) || fromSlotIndex < 0 ||
+				!IntParam(params, "toSlotIndex", toSlotIndex) || toSlotIndex < 0 ||
+				fromSlotIndex == toSlotIndex)
+				return CmdResult::Err("invalid_params", "fromSlotIndex and toSlotIndex must be distinct non-negative integers");
 			std::lock_guard<std::recursive_mutex> lock(core_.stateMutex);
-			if (core_.configRoot.empty())
-				return CmdResult::Err("not_ready", "配置目录尚未就绪");
-			const std::string path = core_.configRoot + "/ensembles/" + name + ".json";
-			if (!ensemble::Save(path, settings, error))
-			{
-				core_.ensembleSnapshot.notice = error;
-				return CmdResult::Err("failed", error);
-			}
-			core_.ensembleSnapshot.notice = "组合预设已保存";
+			EnsureFormationSyncedLocked();
+			if (fromSlotIndex >= core_.formation.slotCount || toSlotIndex >= core_.formation.slotCount)
+				return CmdResult::Err("invalid_params", "slot indices are out of range");
+			if (const auto guard = MutationGuardLocked(); !guard.ok) return guard;
+			core_.QueueFormationSwapSlots(static_cast<int>(fromSlotIndex), static_cast<int>(toSlotIndex));
+			forceDomainRefresh_.store(true, std::memory_order_release);
 			return CmdResult::Ok();
 		}
 
-		CmdResult EnsemblePresetLoad(const jsonlite::Value& params)
+		CmdResult FormationSetSlotOffset(const jsonlite::Value& params)
 		{
-			std::string name;
-			if (!StringParam(params, "name", name) || !ValidPresetName(name))
-				return CmdResult::Err("invalid_params", "预设名称无效");
-			std::lock_guard<std::recursive_mutex> lock(core_.stateMutex);
-			if (core_.configRoot.empty())
-				return CmdResult::Err("not_ready", "配置目录尚未就绪");
-			if (core_.EnsembleActive() && core_.player.state == PlaybackState::Playing)
-				return CmdResult::Err("protected", "多人舞台正在播放，请先暂停再载入预设");
-			ensemble::Settings draft;
-			std::string error;
-			const std::string path = core_.configRoot + "/ensembles/" + name + ".json";
-			if (!ensemble::Load(path, draft, error))
+			int64_t slotIndex = -1;
+			double x = 0.0, y = 0.0, z = 0.0, yawDegrees = 0.0;
+			if (!IntParam(params, "slotIndex", slotIndex) || slotIndex < 0 ||
+				!NumberParam(params, "x", x) || !NumberParam(params, "y", y) || !NumberParam(params, "z", z))
+				return CmdResult::Err("invalid_params", "slotIndex, x, y, z are required");
+			for (const double v : {x, y, z})
+				if (v < -10.0 || v > 10.0)
+					return CmdResult::Err("invalid_params", "offset x/y/z must be within -10..10");
+			if (params.Find("yawDegrees"))
 			{
-				core_.ensembleSnapshot.notice = error;
-				return CmdResult::Err("failed", error);
+				if (!NumberParam(params, "yawDegrees", yawDegrees) || yawDegrees < -360.0 || yawDegrees > 360.0)
+					return CmdResult::Err("invalid_params", "yawDegrees must be within -360..360");
 			}
-			for (auto& slot : draft.slots) slot.actorToken = 0;
-			core_.ensembleSnapshot.notice = "已载入草稿；请逐槽绑定当前演员后应用，原组合仍保留";
-			return CmdResult::Ok("{\"settings\":" + EnsembleSettingsJson(draft) + "}");
-		}
-
-		CmdResult EnsemblePreset(const jsonlite::Value& params)
-		{
-			bool save = false;
-			if (!BoolParam(params, "save", save))
-				return CmdResult::Err("invalid_params", "save must be a boolean");
-			return save ? EnsemblePresetSave(params) : EnsemblePresetLoad(params);
-		}
-
-		CmdResult EnsembleProbe(const jsonlite::Value& params)
-		{
-			bool enabled = false;
-			if (!BoolParam(params, "enabled", enabled))
-				return CmdResult::Err("invalid_params", "enabled must be a boolean");
 			std::lock_guard<std::recursive_mutex> lock(core_.stateMutex);
-			GuiCommand command{GuiAction::EnsembleProbe};
-			command.flag = enabled;
-			core_.QueueGui(std::move(command));
+			EnsureFormationSyncedLocked();
+			if (slotIndex >= core_.formation.slotCount)
+				return CmdResult::Err("invalid_params", "slotIndex is out of range");
+			if (const auto guard = MutationGuardLocked(); !guard.ok) return guard;
+			core_.QueueFormationSetSlotOffset(static_cast<int>(slotIndex),
+				Vector3{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)},
+				static_cast<float>(yawDegrees));
+			forceDomainRefresh_.store(true, std::memory_order_release);
+			return CmdResult::Ok();
+		}
+
+		CmdResult FormationResetSlotOffset(const jsonlite::Value& params)
+		{
+			int64_t slotIndex = -1;
+			if (!IntParam(params, "slotIndex", slotIndex) || slotIndex < 0)
+				return CmdResult::Err("invalid_params", "slotIndex must be a non-negative integer");
+			std::lock_guard<std::recursive_mutex> lock(core_.stateMutex);
+			EnsureFormationSyncedLocked();
+			if (slotIndex >= core_.formation.slotCount)
+				return CmdResult::Err("invalid_params", "slotIndex is out of range");
+			if (const auto guard = MutationGuardLocked(); !guard.ok) return guard;
+			core_.QueueFormationResetSlotOffset(static_cast<int>(slotIndex));
+			forceDomainRefresh_.store(true, std::memory_order_release);
+			return CmdResult::Ok();
+		}
+
+		CmdResult FormationSaveSlotOffset(const jsonlite::Value& params)
+		{
+			int64_t slotIndex = -1;
+			if (!IntParam(params, "slotIndex", slotIndex) || slotIndex < 0)
+				return CmdResult::Err("invalid_params", "slotIndex must be a non-negative integer");
+			std::lock_guard<std::recursive_mutex> lock(core_.stateMutex);
+			EnsureFormationSyncedLocked();
+			if (slotIndex >= core_.formation.slotCount)
+				return CmdResult::Err("invalid_params", "slotIndex is out of range");
+			if (const auto guard = MutationGuardLocked(); !guard.ok) return guard;
+			core_.QueueFormationSaveSlotOffset(static_cast<int>(slotIndex));
+			forceDomainRefresh_.store(true, std::memory_order_release);
+			return CmdResult::Ok();
+		}
+
+		CmdResult FormationSetSlotSource(const jsonlite::Value& params)
+		{
+			int64_t slotIndex = -1, sourceSlotIndex = -1;
+			if (!IntParam(params, "slotIndex", slotIndex) || slotIndex < 0 ||
+				!IntParam(params, "sourceSlotIndex", sourceSlotIndex) || sourceSlotIndex < 0)
+				return CmdResult::Err("invalid_params", "slotIndex and sourceSlotIndex must be non-negative integers");
+			std::lock_guard<std::recursive_mutex> lock(core_.stateMutex);
+			EnsureFormationSyncedLocked();
+			const int maxSource = (std::max)(1, core_.formation.trackPositionCount);
+			if (slotIndex >= core_.formation.slotCount || sourceSlotIndex >= maxSource)
+				return CmdResult::Err("invalid_params", "slotIndex or sourceSlotIndex is out of range");
+			if (const auto guard = MutationGuardLocked(); !guard.ok) return guard;
+			core_.QueueFormationSetSlotSource(static_cast<int>(slotIndex), static_cast<int>(sourceSlotIndex));
+			forceDomainRefresh_.store(true, std::memory_order_release);
 			return CmdResult::Ok();
 		}
 
@@ -2579,6 +2725,7 @@ namespace GakuMotion::webpanel
 				!intField("mode", mode, 0, 2) ||
 				!intField("followBehavior", followBehavior, 0, 1) ||
 				!intField("followTarget", followTarget, 0, 2) ||
+				!intField("followSlotIndex", settings.followSlotIndex, -1, 1024) ||
 				!boolField("followActor", settings.followActor) ||
 				!boolField("limitToScene", settings.limitToScene) ||
 				!vecField("boundsMin", settings.boundsMin) ||
@@ -2707,8 +2854,7 @@ namespace GakuMotion::webpanel
 				title = index >= 0 && !core_.motions[index].title.empty()
 					? core_.motions[index].title : core_.loadedMotionKey;
 			}
-			const int playMode = core_.EnsembleActive() ? (player.loop ? 1 : 0)
-				: static_cast<int>(core_.playlist.mode);
+			const int playMode = static_cast<int>(core_.playlist.mode);
 			return "{\"state\":" + JString(state) + ",\"title\":" + JString(title) +
 				",\"time\":" + JNum(player.currentTime) +
 				",\"duration\":" + JNum(player.TimelineDuration()) +
@@ -2734,6 +2880,9 @@ namespace GakuMotion::webpanel
 			{
 				const auto& entry = core_.motions[i];
 				if (i) entries += ",";
+				const int posCount = entry.isGroup || !entry.positions.empty()
+					? (std::max)(entry.positionCount, static_cast<int>(entry.positions.size()))
+					: (std::max)(1, entry.positionCount);
 				entries += "{\"id\":" + JString(entry.name) + ",\"title\":" + JString(entry.title) +
 					",\"subtitle\":" + JString(entry.subtitle) +
 					",\"directory\":" + JString(entry.dir) +
@@ -2743,7 +2892,10 @@ namespace GakuMotion::webpanel
 					",\"hasCamera\":" + JBool(entry.hasCamera) +
 					",\"hasAudio\":" + JBool(entry.hasAudio) +
 					",\"audioFile\":" + JString(entry.audioFile) +
-					",\"hasCover\":" + JBool(entry.hasCover) + "}";
+					",\"hasCover\":" + JBool(entry.hasCover) +
+					",\"isGroup\":" + JBool(entry.isGroup) +
+					",\"positionCount\":" + JNum(posCount) +
+					",\"positions\":" + MotionPositionsJson(entry.positions) + "}";
 			}
 			entries += "]";
 			return "{\"revision\":" + JNum(static_cast<double>(core_.libraryRevision)) +
@@ -2763,8 +2915,7 @@ namespace GakuMotion::webpanel
 
 		std::string PlaylistJsonLocked() const
 		{
-			const int mode = core_.EnsembleActive() ? (core_.player.loop ? 1 : 0)
-				: static_cast<int>(core_.playlist.mode);
+			const int mode = static_cast<int>(core_.playlist.mode);
 			return "{\"mode\":" + JNum(mode) + ",\"notice\":" + JString(core_.playlistNotice) + "}";
 		}
 
@@ -2776,9 +2927,24 @@ namespace GakuMotion::webpanel
 			{
 				const auto& item = entries[i];
 				const std::string label = FormatSceneActorLabel(item, i + 1);
+				std::string displayName = item.displayName;
+				if (displayName.empty() && !item.character.empty())
+				{
+					if (const char* cn = LookupIdolChineseName(item.character.c_str()))
+						displayName = cn;
+				}
+				if (displayName.empty()) displayName = item.presetName;
+				const std::string shortName = !item.shortName.empty()
+					? item.shortName
+					: (!item.character.empty() || !item.displayName.empty() || !item.presetName.empty()
+						? ResolveSceneActorShortName(item)
+						: std::string());
 				if (i) actors += ",";
 				actors += "{\"token\":" + JNum(static_cast<double>(item.token)) +
 					",\"label\":" + JString(label) +
+					",\"character\":" + JString(item.character) +
+					",\"displayName\":" + JString(displayName) +
+					",\"shortName\":" + JString(shortName) +
 					",\"selected\":" + JBool(item.actor == core_.player.controller.targetActor) + "}";
 			}
 			actors += "]";
@@ -2793,6 +2959,51 @@ namespace GakuMotion::webpanel
 				",\"boundLabel\":" + JString(labelFor(core_.player.controller.currentBinding.actor)) + "}";
 		}
 
+		std::string FormationJsonLocked() const
+		{
+			const auto& fm = core_.formation;
+			std::string slotsJson = "[";
+			for (size_t i = 0; i < fm.slots.size(); ++i)
+			{
+				const auto& s = fm.slots[i];
+				if (i) slotsJson += ",";
+				const bool hasTrackMotion = !core_.loadedMotionKey.empty() && !s.isOverflow;
+				slotsJson += "{\"slotIndex\":" + JNum(s.slotIndex) +
+					",\"occupied\":" + JBool(s.occupied) +
+					",\"actorToken\":" + JNum(static_cast<double>(s.actorToken)) +
+					",\"actorInstanceId\":" + JNum(s.actorInstanceId) +
+					",\"character\":" + JString(s.character) +
+					",\"shortName\":" + JString(s.shortName) +
+					",\"displayName\":" + JString(s.displayName) +
+					",\"isOverflow\":" + JBool(s.isOverflow) +
+					",\"hasTrackMotion\":" + JBool(hasTrackMotion) +
+					",\"sourceSlotIndex\":" + JNum(s.sourceSlotIndex) +
+					",\"placementDirty\":" + JBool(s.placementDirty) +
+					",\"hasActorBoneOverrides\":" + JBool(s.hasActorBoneOverrides) +
+					",\"physicsBackend\":" + JString(s.physicsBackend) +
+					",\"offset\":{\"x\":" + JNum(s.offset.x) +
+					",\"y\":" + JNum(s.offset.y) +
+					",\"z\":" + JNum(s.offset.z) +
+					",\"yawDegrees\":" + JNum(s.yawDegrees) + "}" +
+					",\"facialWeights\":{\"overall\":" + JNum(s.facialWeights.overall) +
+					",\"brow\":" + JNum(s.facialWeights.brow) +
+					",\"eye\":" + JNum(s.facialWeights.eye) +
+					",\"mouth\":" + JNum(s.facialWeights.mouth) + "}}";
+			}
+			slotsJson += "]";
+			return "{\"active\":" + JBool(fm.active) +
+				",\"available\":" + JBool(fm.available) +
+				",\"verified\":" + JBool(fm.verified) +
+				",\"isGroupSong\":" + JBool(fm.isGroupSong) +
+				",\"trackPositionCount\":" + JNum(fm.trackPositionCount) +
+				",\"slotCount\":" + JNum(fm.slotCount) +
+				",\"selectedSlotIndex\":" + JNum(fm.selectedSlotIndex) +
+				",\"revision\":" + JNum(static_cast<double>(fm.revision)) +
+				",\"actorEpoch\":" + JNum(static_cast<double>(fm.actorEpoch)) +
+				",\"notice\":" + JString(fm.notice) +
+				",\"slots\":" + slotsJson + "}";
+		}
+
 		static std::string CameraTransformJson(const CameraModeTransform& transform)
 		{
 			return "{\"position\":" + JVec(transform.position) + ",\"rotation\":" + JVec(transform.rotation) + "}";
@@ -2804,6 +3015,7 @@ namespace GakuMotion::webpanel
 				",\"mode\":" + JNum(static_cast<int>(settings.mode)) +
 				",\"followBehavior\":" + JNum(static_cast<int>(settings.followBehavior)) +
 				",\"followTarget\":" + JNum(static_cast<int>(settings.followTarget)) +
+				",\"followSlotIndex\":" + JNum(settings.followSlotIndex) +
 				",\"followActor\":" + JBool(settings.followActor) +
 				",\"limitToScene\":" + JBool(settings.limitToScene) +
 				",\"boundsMin\":" + JVec(settings.boundsMin) +
@@ -2929,27 +3141,6 @@ namespace GakuMotion::webpanel
 		{
 			return "{\"offset\":" + JVec(core_.player.controller.initialPositionOffset) +
 				",\"notice\":" + JString(core_.initialPositionNotice) + "}";
-		}
-
-		std::string EnsembleJsonLocked() const
-		{
-			const auto& snapshot = core_.ensembleSnapshot;
-			std::string physics = "[";
-			for (size_t i = 0; i < snapshot.physics.size(); ++i)
-			{
-				if (i) physics += ",";
-				physics += JString(snapshot.physics[i]);
-			}
-			physics += "]";
-			return "{\"settings\":" + EnsembleSettingsJson(snapshot.settings) +
-				",\"revision\":" + JNum(static_cast<double>(snapshot.revision)) +
-				",\"actorEpoch\":" + JNum(static_cast<double>(core_.sceneActorRegistry.Epoch())) +
-				",\"available\":" + JBool(snapshot.available) +
-				",\"verified\":" + JBool(snapshot.verified) +
-				",\"probeEnabled\":" + JBool(snapshot.probeEnabled) +
-				",\"active\":" + JBool(snapshot.active) +
-				",\"notice\":" + JString(snapshot.notice) +
-				",\"physics\":" + physics + "}";
 		}
 
 		std::string ImportProgressJsonLocked() const
@@ -3355,12 +3546,12 @@ namespace GakuMotion::webpanel
 				",\"loaded\":" + LoadedJsonLocked() +
 				",\"playlist\":" + PlaylistJsonLocked() +
 				",\"actors\":" + ActorsJsonLocked() +
+				",\"formation\":" + FormationJsonLocked() +
 				",\"camera\":" + CameraJsonLocked() +
 				",\"stage\":" + StageJsonWithNodesLocked(stageNodes) +
 				",\"stageNodes\":" + stageNodes +
 				",\"facial\":" + FacialJsonLocked() +
 				",\"position\":" + PositionJsonLocked() +
-				",\"ensemble\":" + EnsembleJsonLocked() +
 				",\"physicsBackend\":" + JNum(core_.guiPhysicsBackend.load()) +
 				",\"musicVolumeSupport\":" + JNum(core_.player.fnAudioVolumeSupport ? core_.player.fnAudioVolumeSupport() : 0) +
 				",\"musicVolumeNotice\":" + JString(core_.musicVolumeNotice) +
@@ -3403,12 +3594,12 @@ namespace GakuMotion::webpanel
 			lastLoaded_.clear();
 			lastPlaylist_.clear();
 			lastActors_.clear();
+			lastFormation_.clear();
 			lastCamera_.clear();
 			lastStage_.clear();
 			lastStageNodes_.clear();
 			lastFacial_.clear();
 			lastPosition_.clear();
-			lastEnsemble_.clear();
 			lastImportProgress_.clear();
 			lastAppearance_.clear();
 			lastGaze_.clear();
@@ -3456,8 +3647,8 @@ namespace GakuMotion::webpanel
 			if (!visible_ && !baselinePending_) return;
 
 			const auto now = std::chrono::steady_clock::now();
-			std::string permission, player, library, loaded, playlist, actors, camera, stage, stageNodes,
-				facial, position, ensemble, importProgress, appearance,
+			std::string permission, player, library, loaded, playlist, actors, formation, camera, stage, stageNodes,
+				facial, position, importProgress, appearance,
 				gaze, bone, sole, solePitch, studio, experiments, clock, clockMeta, audioEffect;
 			int physicsBackend = 0;
 			bool injectionAllowed = false;
@@ -3489,17 +3680,18 @@ namespace GakuMotion::webpanel
 					(now - lastSlowDomainPoll_ >= std::chrono::milliseconds(100));
 				if (refreshSlowDomains)
 				{
+					EnsureFormationSyncedLocked();
 					lastSlowDomainPoll_ = now;
 					library = LibraryJsonLocked();
 					loaded = LoadedJsonLocked();
 					playlist = PlaylistJsonLocked();
 					actors = ActorsJsonLocked();
+					formation = FormationJsonLocked();
 					camera = CameraJsonLocked();
 					stageNodes = StageNodesJsonLocked();
 					stage = StageJsonWithNodesLocked(stageNodes);
 					facial = FacialJsonLocked();
 					position = PositionJsonLocked();
-					ensemble = EnsembleJsonLocked();
 					importProgress = ImportProgressJsonLocked();
 					gaze = GazeJsonLocked();
 					bone = BoneJsonLocked();
@@ -3553,6 +3745,7 @@ namespace GakuMotion::webpanel
 				emitChanged("loaded.changed", loaded, lastLoaded_);
 				emitChanged("playlist.changed", playlist, lastPlaylist_);
 				emitChanged("actors.changed", actors, lastActors_);
+				emitChanged("formation.changed", formation, lastFormation_);
 				emitChanged("camera.changed", camera, lastCamera_);
 				emitChanged("stage.changed", stage, lastStage_);
 				if (baseline || stageNodes != lastStageNodes_)
@@ -3562,7 +3755,6 @@ namespace GakuMotion::webpanel
 				}
 				emitChanged("facial.changed", facial, lastFacial_);
 				emitChanged("position.changed", position, lastPosition_);
-				emitChanged("ensemble.changed", ensemble, lastEnsemble_);
 				if (importProgress != "null")
 					emitChanged("import.progress", importProgress, lastImportProgress_);
 				emitChanged("appearance.changed", appearance, lastAppearance_);
@@ -3667,8 +3859,8 @@ namespace GakuMotion::webpanel
 		std::chrono::steady_clock::time_point lastSlowDomainPoll_{};
 		std::chrono::steady_clock::time_point lastAudioEffectPoll_{};
 		std::string lastPermission_, lastPlayer_, lastLibrary_, lastLoaded_, lastPlaylist_,
-			lastActors_, lastCamera_, lastStage_, lastStageNodes_, lastFacial_, lastPosition_,
-			lastEnsemble_, lastImportProgress_, lastAppearance_, lastGaze_, lastBone_, lastSole_,
+			lastActors_, lastFormation_, lastCamera_, lastStage_, lastStageNodes_, lastFacial_, lastPosition_,
+			lastImportProgress_, lastAppearance_, lastGaze_, lastBone_, lastSole_,
 			lastSolePitch_, lastStudio_, lastExperiments_, lastClock_, lastClockMeta_, lastAudioEffect_;
 		int lastPhysicsBackend_{-1};
 	};

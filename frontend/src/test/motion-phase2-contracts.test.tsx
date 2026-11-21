@@ -2,11 +2,13 @@ import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import MotionApp from '@/motion/components/MotionApp'
+import * as ActorSlotStripMod from '@/motion/components/ActorSlotStrip'
 import { MotionErrorBoundary } from '@/motion/components/MotionErrorBoundary'
 import { setMotionBridge } from '@/motion/bridge'
 import {
   DEFAULT_CAMERA_SETTINGS,
   DEFAULT_PLAYER_STATE,
+  DEFAULT_STAGE_FORMATION,
   DEFAULT_STAGE_SETTINGS,
   defaultSoleSettings,
   defaultStudioSettings,
@@ -71,10 +73,13 @@ const PHASE2_CAPABILITIES: MotionMethodName[] = [
   'drop.setTarget',
   'drop.poll',
   'drop.peek',
-  'ensemble.set',
-  'ensemble.presetSave',
-  'ensemble.presetLoad',
-  'ensemble.probe',
+  'actors.getPortrait',
+  'formation.selectSlot',
+  'formation.swapSlots',
+  'formation.setSlotOffset',
+  'formation.resetSlotOffset',
+  'formation.saveSlotOffset',
+  'formation.setSlotSource',
   'bone.get',
   'bone.set',
   'bone.reset',
@@ -194,6 +199,9 @@ class FakeNativePhase2Bridge implements MotionBridgeClient {
                 hasFacial: true,
                 hasCamera: false,
                 hasAudio: true,
+                isGroup: false,
+                positionCount: 1,
+                positions: [],
               },
             ],
           },
@@ -208,11 +216,35 @@ class FakeNativePhase2Bridge implements MotionBridgeClient {
           actors: {
             epoch: 2,
             actors: [
-              { token: 101, label: '咲季 · 1', selected: true },
-              { token: 102, label: '凛 · 2', selected: false },
+              { token: 101, label: '咲季 · 1', character: 'hski', displayName: '花海咲季', shortName: '咲季', selected: true },
+              { token: 102, label: '凛 · 2', character: 'ttmr', displayName: '月村手毬', shortName: '凛', selected: false },
             ],
             targetLabel: '咲季 · 1',
             boundLabel: '尚未绑定角色',
+          },
+          formation: {
+            ...DEFAULT_STAGE_FORMATION,
+            slotCount: 2,
+            slots: [
+              {
+                ...DEFAULT_STAGE_FORMATION.slots[0],
+                slotIndex: 0,
+                occupied: true,
+                actorToken: 101,
+                character: 'hski',
+                shortName: '咲季',
+                displayName: '花海咲季',
+              },
+              {
+                ...DEFAULT_STAGE_FORMATION.slots[0],
+                slotIndex: 1,
+                occupied: true,
+                actorToken: 102,
+                character: 'ttmr',
+                shortName: '凛',
+                displayName: '月村手毬',
+              },
+            ],
           },
           camera: {
             settings: { ...DEFAULT_CAMERA_SETTINGS },
@@ -230,29 +262,6 @@ class FakeNativePhase2Bridge implements MotionBridgeClient {
           },
           facial: { weights: { overall: 1, brow: 1, eye: 1, mouth: 1 }, notice: '' },
           position: { offset: { x: 0, y: 0, z: 0 }, notice: '' },
-          ensemble: {
-            settings: {
-              enabled: false,
-              masterSlot: 0,
-              cameraSlot: 0,
-              slots: [0, 1, 2].map(() => ({
-                enabled: false,
-                actorToken: 0,
-                actorHint: '',
-                motionKey: '',
-                offset: { x: 0, y: 0, z: 0 },
-                yawDegrees: 0,
-              })),
-            },
-            revision: 1,
-            actorEpoch: 2,
-            available: true,
-            verified: true,
-            probeEnabled: false,
-            active: false,
-            notice: '',
-            physics: [],
-          },
           physicsBackend: 2,
           musicVolumeSupport: 1,
           musicVolumeNotice: '',
@@ -400,12 +409,11 @@ describe('Phase 2 C++ wire contract & crash resilience', () => {
     render(<MotionApp />)
     await waitFor(() => expect(screen.getByTestId('library-page')).toBeInTheDocument())
 
-    await user.click(screen.getByRole('button', { name: '动作' }))
-    const spy = vi.spyOn(motionStore, 'ensembleDraftError').mockImplementation(() => {
+    const spy = vi.spyOn(ActorSlotStripMod, 'ActorSlotStrip').mockImplementation(() => {
       throw new Error('synthetic render explosion')
     })
     try {
-      await user.click(screen.getByText('多人舞台'))
+      await user.click(screen.getByRole('button', { name: '动作' }))
       const boundary = await screen.findByTestId('motion-error-boundary')
       expect(boundary).toHaveTextContent('当前页面渲染遇到异常')
       expect(boundary).toHaveTextContent('synthetic render explosion')
@@ -478,7 +486,7 @@ describe('Phase 2 C++ wire contract & crash resilience', () => {
     expect(screen.queryByTestId('import-progress-modal')).not.toBeInTheDocument()
   })
 
-  it('supports editing unoverridden bones in BoneSection and selecting slot actor/motion in EnsembleSection', async () => {
+  it('supports editing unoverridden bones in BoneSection and selecting slots in ActorSlotStrip', async () => {
     const user = userEvent.setup()
     const bridge = new FakeNativePhase2Bridge()
     setMotionBridge(bridge)
@@ -486,14 +494,7 @@ describe('Phase 2 C++ wire contract & crash resilience', () => {
     await waitFor(() => expect(screen.getByTestId('library-page')).toBeInTheDocument())
 
     await user.click(screen.getByRole('button', { name: '动作' }))
-    await user.click(screen.getByText('多人舞台'))
-    await user.click(screen.getByRole('combobox', { name: '演员1 角色' }))
-    await user.click(await screen.findByRole('option', { name: '凛 · 2' }))
-    expect(motionStore.getState().ensembleDraft.slots[0].actorToken).toBe(102)
-
-    await user.click(screen.getByRole('combobox', { name: '演员1 动作' }))
-    await user.click(await screen.findByRole('option', { name: 'Starlight Step' }))
-    expect(motionStore.getState().ensembleDraft.slots[0].motionKey).toBe('starlight-step')
+    expect(screen.getByTestId('actor-slot-strip')).toBeInTheDocument()
 
     await user.click(screen.getByText('高级动作设置'))
     await user.click(screen.getByRole('button', { name: '头部 (Head)' }))

@@ -13,6 +13,7 @@ using GakuMotion.VmdImporter.Vmd;
 internal static unsafe class Program
 {
     private static delegate* unmanaged<byte*, byte*, int, int> _run;
+    private static delegate* unmanaged<byte*, byte*, int, int> _runCamera;
     private static string _root = string.Empty;
     private static int _cases, _failed;
 
@@ -23,8 +24,13 @@ internal static unsafe class Program
         {
             native = NativeLibrary.Load(Path.GetFullPath(args[1]));
             _run = (delegate* unmanaged<byte*, byte*, int, int>)NativeLibrary.GetExport(native, "GkVmdImport_Run");
+            _runCamera = (delegate* unmanaged<byte*, byte*, int, int>)NativeLibrary.GetExport(native, "GkCameraImport_Run");
         }
-        else _run = &NativeExports.Run;
+        else
+        {
+            _run = &NativeExports.Run;
+            _runCamera = &NativeExports.RunCamera;
+        }
         _root = Fixtures.NewTempRoot("edit-track");
         try
         {
@@ -399,6 +405,636 @@ internal static unsafe class Program
                 Require(!Edit(track, ("audio", "https://example.com/stream.mp3")).Ok, "network audio accepted");
                 Same(before, Snapshot(track));
             });
+            Case("group song import writes slot 1 at root, slots 2+ under positions/slot_{k}, and shared camera/audio", () =>
+            {
+                string seed = Path.Combine(_root, "group-new"), library = Path.Combine(seed, "motions");
+                string vmd1 = Fixtures.WriteSyntheticVmd(Path.Combine(seed, "s1"), frames: 5);
+                string vmd2 = Fixtures.WriteSyntheticVmd(Path.Combine(seed, "s2"), frames: 12);
+                string vmd3 = Fixtures.WriteSyntheticVmd(Path.Combine(seed, "s3"), frames: 8);
+                string morph2 = Fixtures.WriteSyntheticVmd(Path.Combine(seed, "m2"), frames: 6);
+                string wav = Path.Combine(seed, "shared.wav"); Wav(wav, sample: 77);
+                string cam = Path.Combine(seed, "shared.gkcamera"); Camera(cam, x: 3);
+
+                Result r = RunRequest(new JsonObject
+                {
+                    ["motions_root"] = library,
+                    ["title"] = "GroupThree",
+                    ["audio"] = wav,
+                    ["camera_vmd"] = cam,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["motion_vmd"] = vmd1, ["disable_morph"] = true, ["x"] = 9.0f, ["yaw_degrees"] = 45.0f },
+                        new JsonObject { ["slot"] = 2, ["motion_vmd"] = vmd2, ["morph_vmd"] = morph2, ["x"] = -1.25f, ["y"] = 0.5f, ["z"] = 2.0f, ["yaw_degrees"] = 30.0f },
+                        new JsonObject { ["slot"] = 3, ["motion_vmd"] = vmd3, ["disable_morph"] = true, ["x"] = 1.25f, ["y"] = 0.0f, ["z"] = -0.5f, ["yaw_degrees"] = -15.0f }
+                    }
+                });
+                Require(r.Ok, "group import failed: " + r.Error);
+                string track = r.Directory;
+                Require(File.Exists(Path.Combine(track, "motion.gkclip")), "slot 1 clip missing");
+                Require(File.Exists(Path.Combine(track, "source.vmd")), "slot 1 source.vmd missing");
+                Require(File.Exists(Path.Combine(track, "camera.gkcamera")), "shared camera missing");
+                Require(File.Exists(Path.Combine(track, "song.wav")), "shared audio missing");
+                foreach (int k in new[] { 2, 3 })
+                {
+                    string slotDir = Path.Combine(track, "positions", $"slot_{k}");
+                    Require(File.Exists(Path.Combine(slotDir, "motion.gkclip")), $"slot {k} clip missing");
+                    Require(File.Exists(Path.Combine(slotDir, "source.vmd")), $"slot {k} source.vmd missing");
+                    Require(File.Exists(Path.Combine(slotDir, "motion.morph_report.json")), $"slot {k} morph report missing");
+                    Require(!File.Exists(Path.Combine(slotDir, "camera.gkcamera")), $"slot {k} must not duplicate camera");
+                    Require(!File.Exists(Path.Combine(slotDir, "song.wav")), $"slot {k} must not duplicate audio");
+                }
+                Require(File.Exists(Path.Combine(track, "positions", "slot_2", "source_morph.vmd")), "slot 2 source_morph.vmd missing");
+
+                JsonObject meta = Info(track);
+                Require(meta["is_group"]!.GetValue<bool>(), "is_group should be true");
+                Require(meta["position_count"]!.GetValue<int>() == 3, "position_count != 3");
+                Require(meta["total_frames"]!.GetValue<int>() == 12, "top-level total_frames should be max across slots (12)");
+                Require(meta["source_vmd"]!.GetValue<string>() == Path.GetFullPath(vmd1), "top-level source_vmd must stay slot 1");
+
+                var positions = (JsonArray)meta["positions"]!;
+                Require(positions.Count == 3, "positions array length != 3");
+                Require(positions[0]!["x"]!.GetValue<float>() == 0.0f && positions[0]!["yaw_degrees"]!.GetValue<float>() == 0.0f,
+                    "slot 1 placement must be normalized to 0,0,0,0");
+                Require(Math.Abs(positions[1]!["x"]!.GetValue<float>() - (-1.25f)) < 1e-4f &&
+                        Math.Abs(positions[1]!["y"]!.GetValue<float>() - 0.5f) < 1e-4f &&
+                        Math.Abs(positions[1]!["z"]!.GetValue<float>() - 2.0f) < 1e-4f &&
+                        Math.Abs(positions[1]!["yaw_degrees"]!.GetValue<float>() - 30.0f) < 1e-4f,
+                    "slot 2 placement mismatch");
+                Require(positions[1]!["frames"]!.GetValue<int>() == 12, "slot 2 frames mismatch");
+                Require(positions[2]!["frames"]!.GetValue<int>() == 8, "slot 3 frames mismatch");
+                Require(!string.IsNullOrEmpty(positions[1]!["source_vmd_sha256"]!.GetValue<string>()), "slot 2 sha256 missing");
+            });
+            Case("group song initial_placement-only and metadata-only edit performs zero rebake", () =>
+            {
+                string track = GroupTrack(3);
+                // Delete source.vmd in slots 1 and 2 to prove evaluator cannot run on placement-only edit.
+                File.Delete(Path.Combine(track, "source.vmd"));
+                File.Delete(Path.Combine(track, "positions", "slot_2", "source.vmd"));
+                var before = Snapshot(track);
+
+                Result r = RunRequest(new JsonObject
+                {
+                    ["edit_dir"] = track,
+                    ["title"] = "GroupZeroRebake",
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["preserve_existing"] = true },
+                        new JsonObject { ["slot"] = 2, ["preserve_existing"] = true, ["x"] = -2.5f, ["y"] = 0.25f, ["z"] = 1.5f, ["yaw_degrees"] = 45.0f },
+                        new JsonObject { ["slot"] = 3, ["preserve_existing"] = true, ["x"] = 2.5f, ["y"] = 0.0f, ["z"] = -1.5f, ["yaw_degrees"] = -60.0f }
+                    }
+                });
+                Require(r.Ok, "zero-rebake edit failed: " + r.Error);
+                var after = Snapshot(track);
+                foreach (string rel in before.Keys.Where(k => k != "info.json"))
+                    Require(before[rel] == after[rel], "zero-rebake edit mutated " + rel);
+
+                JsonObject meta = Info(track);
+                Require(meta["title"]!.GetValue<string>() == "GroupZeroRebake", "title not updated");
+                var pos = (JsonArray)meta["positions"]!;
+                Require(Math.Abs(pos[1]!["x"]!.GetValue<float>() - (-2.5f)) < 1e-4f &&
+                        Math.Abs(pos[1]!["yaw_degrees"]!.GetValue<float>() - 45.0f) < 1e-4f,
+                    "slot 2 placement not updated");
+                Require(Math.Abs(pos[2]!["x"]!.GetValue<float>() - 2.5f) < 1e-4f &&
+                        Math.Abs(pos[2]!["yaw_degrees"]!.GetValue<float>() - (-60.0f)) < 1e-4f,
+                    "slot 3 placement not updated");
+            });
+            Case("group song selective edit rebakes only modified slot and preserves unmodified slots & sidecars", () =>
+            {
+                string track = GroupTrack(3);
+                foreach (int slot in new[] { 1, 2, 3 })
+                {
+                    string dir = slot == 1 ? track : Path.Combine(track, "positions", $"slot_{slot}");
+                    File.WriteAllText(Path.Combine(dir, "bone_overrides.json"), $"{{\"slot\":{slot}}}");
+                    File.WriteAllText(Path.Combine(dir, "root_height_calibration.json"), $"{{\"h\":{slot}}}");
+                    File.WriteAllText(Path.Combine(dir, "aux_replay.json"), $"{{\"aux\":{slot}}}");
+                }
+                string clip1Before = Digest(Path.Combine(track, "motion.gkclip"));
+                string src1Before = Digest(Path.Combine(track, "source.vmd"));
+                string clip2Before = Digest(Path.Combine(track, "positions", "slot_2", "motion.gkclip"));
+                string clip3Before = Digest(Path.Combine(track, "positions", "slot_3", "motion.gkclip"));
+                string src3Before = Digest(Path.Combine(track, "positions", "slot_3", "source.vmd"));
+
+                string newVmd2 = Fixtures.WriteSyntheticVmd(Path.Combine(_root, "sel-vmd2"), frames: 15);
+                Result r = RunRequest(new JsonObject
+                {
+                    ["edit_dir"] = track,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["preserve_existing"] = true },
+                        new JsonObject { ["slot"] = 2, ["motion_vmd"] = newVmd2, ["x"] = -1.0f, ["yaw_degrees"] = 12.0f },
+                        new JsonObject { ["slot"] = 3, ["preserve_existing"] = true, ["x"] = 1.0f }
+                    }
+                });
+                Require(r.Ok, "selective edit failed: " + r.Error);
+                Require(clip1Before == Digest(Path.Combine(track, "motion.gkclip")), "slot 1 clip changed");
+                Require(src1Before == Digest(Path.Combine(track, "source.vmd")), "slot 1 source.vmd changed");
+                Require(clip3Before == Digest(Path.Combine(track, "positions", "slot_3", "motion.gkclip")), "slot 3 clip changed");
+                Require(src3Before == Digest(Path.Combine(track, "positions", "slot_3", "source.vmd")), "slot 3 source.vmd changed");
+                Require(clip2Before != Digest(Path.Combine(track, "positions", "slot_2", "motion.gkclip")), "slot 2 clip not rebaked");
+                Require(Info(track)["total_frames"]!.GetValue<int>() == 15, "top-level total_frames not updated to 15");
+
+                foreach (int slot in new[] { 1, 2, 3 })
+                {
+                    string dir = slot == 1 ? track : Path.Combine(track, "positions", $"slot_{slot}");
+                    Require(File.ReadAllText(Path.Combine(dir, "bone_overrides.json")) == $"{{\"slot\":{slot}}}", $"slot {slot} bone_overrides lost");
+                    Require(File.ReadAllText(Path.Combine(dir, "root_height_calibration.json")) == $"{{\"h\":{slot}}}", $"slot {slot} calibration lost");
+                    Require(File.ReadAllText(Path.Combine(dir, "aux_replay.json")) == $"{{\"aux\":{slot}}}", $"slot {slot} aux_replay lost");
+                }
+            });
+            Case("group song slot deletion renumbers positions/slot_{k} and shrinking to 1 clears is_group", () =>
+            {
+                string track = GroupTrack(3);
+                string slot3Dir = Path.Combine(track, "positions", "slot_3");
+                File.WriteAllText(Path.Combine(slot3Dir, "bone_overrides.json"), "{\"surviving\":3}");
+                File.WriteAllText(Path.Combine(slot3Dir, "root_height_calibration.json"), "{\"cal\":3}");
+                string clip3Before = Digest(Path.Combine(slot3Dir, "motion.gkclip"));
+                string clip1Before = Digest(Path.Combine(track, "motion.gkclip"));
+
+                // Delete slot 2 using source_slot renumbering (3 -> 2).
+                Result r1 = RunRequest(new JsonObject
+                {
+                    ["edit_dir"] = track,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["source_slot"] = 1, ["preserve_existing"] = true },
+                        new JsonObject { ["slot"] = 2, ["source_slot"] = 3, ["preserve_existing"] = true, ["x"] = 3.0f, ["yaw_degrees"] = 15.0f }
+                    }
+                });
+                Require(r1.Ok, "slot delete failed: " + r1.Error);
+                Require(!Directory.Exists(slot3Dir), "old positions/slot_3 should be removed");
+                string slot2Dir = Path.Combine(track, "positions", "slot_2");
+                Require(Directory.Exists(slot2Dir), "renumbered positions/slot_2 missing");
+                Require(Digest(Path.Combine(slot2Dir, "motion.gkclip")) == clip3Before, "slot 3 clip did not move to slot 2");
+                Require(Digest(Path.Combine(track, "motion.gkclip")) == clip1Before, "slot 1 clip mutated");
+                Require(File.ReadAllText(Path.Combine(slot2Dir, "bone_overrides.json")) == "{\"surviving\":3}", "slot 3 bone_overrides lost");
+                Require(File.ReadAllText(Path.Combine(slot2Dir, "root_height_calibration.json")) == "{\"cal\":3}", "slot 3 calibration lost");
+                JsonObject meta1 = Info(track);
+                Require(meta1["is_group"]!.GetValue<bool>() && meta1["position_count"]!.GetValue<int>() == 2, "group metadata wrong after delete");
+
+                // Shrink from 2 slots to 1 slot -> removes positions/ and clears is_group.
+                Result r2 = RunRequest(new JsonObject
+                {
+                    ["edit_dir"] = track,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["source_slot"] = 1, ["preserve_existing"] = true }
+                    }
+                });
+                Require(r2.Ok, "shrink to 1 failed: " + r2.Error);
+                Require(!Directory.Exists(Path.Combine(track, "positions")), "positions/ directory should be removed when shrunk to 1");
+                Require(Digest(Path.Combine(track, "motion.gkclip")) == clip1Before, "slot 1 clip changed when shrinking");
+                JsonObject meta2 = Info(track);
+                Require(!meta2["is_group"]!.GetValue<bool>() && meta2["position_count"]!.GetValue<int>() == 1, "is_group/position_count wrong after shrink");
+            });
+            Case("group song edit appends new positions without rebaking existing slots", () =>
+            {
+                string seed = Path.Combine(_root, "append-seed"), library = Path.Combine(seed, "motions");
+                string vmd1 = Fixtures.WriteSyntheticVmd(Path.Combine(seed, "s1"), frames: 5);
+                Result initRes = RunRequest(new JsonObject { ["motion_vmd"] = vmd1, ["motions_root"] = library, ["title"] = "Expandable" });
+                Require(initRes.Ok, initRes.Error);
+                string track = initRes.Directory;
+                string clip1Before = Digest(Path.Combine(track, "motion.gkclip"));
+
+                string vmd2 = Fixtures.WriteSyntheticVmd(Path.Combine(seed, "s2"), frames: 11);
+                Result append2 = RunRequest(new JsonObject
+                {
+                    ["edit_dir"] = track,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["preserve_existing"] = true },
+                        new JsonObject { ["slot"] = 2, ["motion_vmd"] = vmd2, ["x"] = 1.5f, ["yaw_degrees"] = -20.0f }
+                    }
+                });
+                Require(append2.Ok, "append slot 2 failed: " + append2.Error);
+                Require(clip1Before == Digest(Path.Combine(track, "motion.gkclip")), "slot 1 rebaked on append");
+                Require(File.Exists(Path.Combine(track, "positions", "slot_2", "motion.gkclip")), "slot 2 clip not created");
+                JsonObject meta = Info(track);
+                Require(meta["is_group"]!.GetValue<bool>() && meta["position_count"]!.GetValue<int>() == 2 &&
+                        meta["total_frames"]!.GetValue<int>() == 11, "appended metadata mismatch");
+            });
+            Case("group song invalid inputs fail atomically without mutating original track", () =>
+            {
+                string track = GroupTrack(2);
+                var before = Snapshot(track);
+
+                // 1. Empty positions array
+                Require(!RunRequest(new JsonObject { ["edit_dir"] = track, ["positions"] = new JsonArray() }).Ok, "empty positions accepted");
+                Same(before, Snapshot(track));
+
+                // 2. Non-finite placement coordinate (raw JSON text since JsonObject rejects NaN serialization depending on writer)
+                Require(!RunRawJson($"{{\"edit_dir\":{JsonSerializer.Serialize(track)},\"positions\":[{{\"slot\":1,\"preserve_existing\":true}},{{\"slot\":2,\"preserve_existing\":true,\"x\":\"bad\"}}]}}").Ok,
+                    "invalid x accepted");
+                Same(before, Snapshot(track));
+
+                // 3. Invalid slot source_fps (42)
+                Require(!RunRequest(new JsonObject
+                {
+                    ["edit_dir"] = track,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["preserve_existing"] = true },
+                        new JsonObject { ["slot"] = 2, ["preserve_existing"] = true, ["source_fps"] = 42 }
+                    }
+                }).Ok, "invalid slot source_fps accepted");
+                Same(before, Snapshot(track));
+
+                // 4. Duplicate slot numbers
+                Require(!RunRequest(new JsonObject
+                {
+                    ["edit_dir"] = track,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["preserve_existing"] = true },
+                        new JsonObject { ["slot"] = 1, ["preserve_existing"] = true }
+                    }
+                }).Ok, "duplicate slot accepted");
+                Same(before, Snapshot(track));
+
+                // 5. Missing source.vmd on slot-2 disable_morph rebake
+                string trackNoSrc = GroupTrack(2);
+                File.Delete(Path.Combine(trackNoSrc, "positions", "slot_2", "source.vmd"));
+                var beforeNoSrc = Snapshot(trackNoSrc);
+                Require(!RunRequest(new JsonObject
+                {
+                    ["edit_dir"] = trackNoSrc,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["preserve_existing"] = true },
+                        new JsonObject { ["slot"] = 2, ["disable_morph"] = true }
+                    }
+                }).Ok, "missing slot 2 source.vmd accepted on disable_morph");
+                Same(beforeNoSrc, Snapshot(trackNoSrc));
+
+                // 6. Bound target_leg_geometry.json in positions/slot_2/ blocks rebake atomically
+                string trackGeo = GroupTrack(2);
+                File.WriteAllText(Path.Combine(trackGeo, "positions", "slot_2", "target_leg_geometry.json"), "{}");
+                var beforeGeo = Snapshot(trackGeo);
+                Require(!RunRequest(new JsonObject
+                {
+                    ["edit_dir"] = trackGeo,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["preserve_existing"] = true },
+                        new JsonObject { ["slot"] = 2, ["disable_morph"] = true }
+                    }
+                }).Ok, "target_leg_geometry in slot 2 accepted on rebake");
+                Same(beforeGeo, Snapshot(trackGeo));
+            });
+            Case("group song slot reorder with new VMD at vacated slot succeeds without false source_slot collision", () =>
+            {
+                // Case A: 2-slot [1, 2] -> [new->1, 1->2]
+                string track2 = GroupTrack(2);
+                File.WriteAllText(Path.Combine(track2, "bone_overrides.json"), "{\"from\":1}");
+                File.WriteAllText(Path.Combine(track2, "root_height_calibration.json"), "{\"cal\":1}");
+                string slot1ClipBefore = Digest(Path.Combine(track2, "motion.gkclip"));
+                string newVmd1 = Fixtures.WriteSyntheticVmd(Path.Combine(_root, "reorder-new1"), frames: 18);
+
+                Result rA = RunRequest(new JsonObject
+                {
+                    ["edit_dir"] = track2,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["motion_vmd"] = newVmd1, ["x"] = 9.0f, ["yaw_degrees"] = 45.0f },
+                        new JsonObject { ["slot"] = 2, ["source_slot"] = 1, ["preserve_existing"] = true, ["x"] = -1.5f, ["yaw_degrees"] = 30.0f }
+                    }
+                });
+                Require(rA.Ok, "reorder [1->2, new->1] failed: " + rA.Error);
+                string slot2Dir = Path.Combine(track2, "positions", "slot_2");
+                Require(Digest(Path.Combine(slot2Dir, "motion.gkclip")) == slot1ClipBefore, "old slot 1 clip did not move to slot 2");
+                Require(File.ReadAllText(Path.Combine(slot2Dir, "bone_overrides.json")) == "{\"from\":1}", "old slot 1 bone_overrides lost");
+                Require(File.ReadAllText(Path.Combine(slot2Dir, "root_height_calibration.json")) == "{\"cal\":1}", "old slot 1 calibration lost");
+                JsonObject metaA = Info(track2);
+                var posA = (JsonArray)metaA["positions"]!;
+                Require(metaA["source_vmd"]!.GetValue<string>() == Path.GetFullPath(newVmd1), "new slot 1 source_vmd mismatch");
+                Require(posA[0]!["x"]!.GetValue<float>() == 0.0f && posA[0]!["yaw_degrees"]!.GetValue<float>() == 0.0f, "new slot 1 placement not zeroed");
+                Require(Math.Abs(posA[1]!["x"]!.GetValue<float>() - (-1.5f)) < 1e-4f, "moved slot 2 x mismatch");
+
+                // Case B: 3-slot [1, 2, 3] -> delete slot 2, promote 3->2, place new VMD at 3
+                string track3 = GroupTrack(3);
+                string slot3DirBefore = Path.Combine(track3, "positions", "slot_3");
+                File.WriteAllText(Path.Combine(slot3DirBefore, "bone_overrides.json"), "{\"from\":3}");
+                string slot3ClipBefore = Digest(Path.Combine(slot3DirBefore, "motion.gkclip"));
+                string track3Slot1ClipBefore = Digest(Path.Combine(track3, "motion.gkclip"));
+                string newVmd3 = Fixtures.WriteSyntheticVmd(Path.Combine(_root, "reorder-new3"), frames: 22);
+
+                Result rB = RunRequest(new JsonObject
+                {
+                    ["edit_dir"] = track3,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["source_slot"] = 1, ["preserve_existing"] = true },
+                        new JsonObject { ["slot"] = 2, ["source_slot"] = 3, ["preserve_existing"] = true, ["x"] = 2.0f },
+                        new JsonObject { ["slot"] = 3, ["motion_vmd"] = newVmd3, ["x"] = -2.0f }
+                    }
+                });
+                Require(rB.Ok, "reorder [3->2, new->3] failed: " + rB.Error);
+                Require(Digest(Path.Combine(track3, "motion.gkclip")) == track3Slot1ClipBefore, "slot 1 clip changed");
+                string track3Slot2Dir = Path.Combine(track3, "positions", "slot_2");
+                Require(Digest(Path.Combine(track3Slot2Dir, "motion.gkclip")) == slot3ClipBefore, "old slot 3 clip did not move to slot 2");
+                Require(File.ReadAllText(Path.Combine(track3Slot2Dir, "bone_overrides.json")) == "{\"from\":3}", "old slot 3 bone_overrides lost");
+                JsonObject metaB = Info(track3);
+                var posB = (JsonArray)metaB["positions"]!;
+                Require(posB[2]!["source_vmd"]!.GetValue<string>() == Path.GetFullPath(newVmd3), "new slot 3 source_vmd mismatch");
+                Require(posB[2]!["frames"]!.GetValue<int>() == 22, "new slot 3 frames mismatch");
+            });
+            Case("replacing embedded-morph body VMD with morph-free body VMD clears source_morph_vmd", () =>
+            {
+                string seed = Path.Combine(_root, "morph-clear-provenance");
+                string library = Path.Combine(seed, "motions");
+                string embeddedVmd1 = WriteSyntheticVmdWithMorph(Path.Combine(seed, "e1.vmd"), frames: 6, "あ");
+                string embeddedVmd2 = WriteSyntheticVmdWithMorph(Path.Combine(seed, "e2.vmd"), frames: 8, "あ");
+                string cleanVmd1 = Fixtures.WriteSyntheticVmd(Path.Combine(seed, "clean1"), frames: 14);
+                string cleanVmd2 = Fixtures.WriteSyntheticVmd(Path.Combine(seed, "clean2"), frames: 12);
+                string wav = Path.Combine(seed, "song.wav"); Wav(wav, sample: 33);
+
+                Result imp = RunRequest(new JsonObject
+                {
+                    ["motions_root"] = library,
+                    ["title"] = "EmbeddedMorphReplace",
+                    ["audio"] = wav,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["motion_vmd"] = embeddedVmd1 },
+                        new JsonObject { ["slot"] = 2, ["motion_vmd"] = embeddedVmd2, ["x"] = 1.0f }
+                    }
+                });
+                Require(imp.Ok, "seed import failed: " + imp.Error);
+                string track = imp.Directory;
+                JsonObject initMeta = Info(track);
+                Require(initMeta["has_facial"]!.GetValue<bool>(), "seed should have facial");
+                Require(initMeta["source_morph_vmd"]!.GetValue<string>() == Path.GetFullPath(embeddedVmd1), "slot 1 initial source_morph_vmd");
+                var initPos = (JsonArray)initMeta["positions"]!;
+                Require(initPos[1]!["source_morph_vmd"]!.GetValue<string>() == Path.GetFullPath(embeddedVmd2), "slot 2 initial source_morph_vmd");
+
+                // 1. Replace slot 2 via positions[] with morph-free body VMD
+                Result rSlot2 = RunRequest(new JsonObject
+                {
+                    ["edit_dir"] = track,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["preserve_existing"] = true },
+                        new JsonObject { ["slot"] = 2, ["motion_vmd"] = cleanVmd2, ["x"] = 1.0f }
+                    }
+                });
+                Require(rSlot2.Ok, "slot 2 body replace failed: " + rSlot2.Error);
+                JsonObject metaAfterSlot2 = Info(track);
+                var posAfterSlot2 = (JsonArray)metaAfterSlot2["positions"]!;
+                Require(!posAfterSlot2[1]!["has_facial"]!.GetValue<bool>(), "slot 2 has_facial should be false");
+                Require(posAfterSlot2[1]!["source_morph_vmd"]!.GetValue<string>() == "", "slot 2 source_morph_vmd must be cleared");
+                Require(posAfterSlot2[0]!["has_facial"]!.GetValue<bool>() &&
+                        posAfterSlot2[0]!["source_morph_vmd"]!.GetValue<string>() == Path.GetFullPath(embeddedVmd1),
+                    "slot 1 provenance should stay intact");
+
+                // 2. Replace slot 1 via legacy positions: null path with morph-free body VMD
+                Result rSlot1 = RunRequest(new JsonObject
+                {
+                    ["edit_dir"] = track,
+                    ["motion_vmd"] = cleanVmd1
+                });
+                Require(rSlot1.Ok, "legacy slot 1 body replace failed: " + rSlot1.Error);
+                JsonObject metaAfterSlot1 = Info(track);
+                var posAfterSlot1 = (JsonArray)metaAfterSlot1["positions"]!;
+                Require(!metaAfterSlot1["has_facial"]!.GetValue<bool>(), "top-level has_facial should be false");
+                Require(metaAfterSlot1["source_morph_vmd"]!.GetValue<string>() == "", "top-level source_morph_vmd must be cleared");
+                Require(!posAfterSlot1[0]!["has_facial"]!.GetValue<bool>(), "positions[0] has_facial should be false");
+                Require(posAfterSlot1[0]!["source_morph_vmd"]!.GetValue<string>() == "", "positions[0] source_morph_vmd must be cleared");
+            });
+            Case("rebake_output re-enables embedded morphs after disable_morph and restores original source_morph_vmd", () =>
+            {
+                string seed = Path.Combine(_root, "morph-reenable-provenance");
+                string library = Path.Combine(seed, "motions");
+                string embeddedVmd1 = WriteSyntheticVmdWithMorph(Path.Combine(seed, "emb1.vmd"), frames: 6, "あ");
+                string embeddedVmd2 = WriteSyntheticVmdWithMorph(Path.Combine(seed, "emb2.vmd"), frames: 8, "あ");
+                string wav = Path.Combine(seed, "song.wav"); Wav(wav, sample: 37);
+
+                Result imp = RunRequest(new JsonObject
+                {
+                    ["motions_root"] = library,
+                    ["title"] = "ReenableEmbeddedMorph",
+                    ["audio"] = wav,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["motion_vmd"] = embeddedVmd1, ["disable_morph"] = true },
+                        new JsonObject { ["slot"] = 2, ["motion_vmd"] = embeddedVmd2, ["disable_morph"] = true, ["x"] = 1.0f }
+                    }
+                });
+                Require(imp.Ok, "seed import failed: " + imp.Error);
+                string track = imp.Directory;
+                JsonObject initMeta = Info(track);
+                Require(!initMeta["has_facial"]!.GetValue<bool>(), "initial has_facial must be false");
+                Require(initMeta["source_morph_vmd"]!.GetValue<string>() == "", "initial slot 1 source_morph_vmd must be empty");
+                var initPos = (JsonArray)initMeta["positions"]!;
+                Require(!initPos[1]!["has_facial"]!.GetValue<bool>(), "initial slot 2 has_facial must be false");
+                Require(initPos[1]!["source_morph_vmd"]!.GetValue<string>() == "", "initial slot 2 source_morph_vmd must be empty");
+
+                // 1. Re-enable slot 2 via positions[] rebake_output: true without replacing motion_vmd/morph_vmd
+                Result rSlot2 = RunRequest(new JsonObject
+                {
+                    ["edit_dir"] = track,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["preserve_existing"] = true },
+                        new JsonObject { ["slot"] = 2, ["rebake_output"] = true, ["x"] = 1.0f }
+                    }
+                });
+                Require(rSlot2.Ok, "positions[] slot 2 rebake failed: " + rSlot2.Error);
+                JsonObject metaAfterSlot2 = Info(track);
+                var posAfterSlot2 = (JsonArray)metaAfterSlot2["positions"]!;
+                Require(posAfterSlot2[1]!["has_facial"]!.GetValue<bool>(), "slot 2 has_facial must be true after rebake");
+                Require(posAfterSlot2[1]!["source_morph_vmd"]!.GetValue<string>() == Path.GetFullPath(embeddedVmd2),
+                    "slot 2 source_morph_vmd mismatch: " + posAfterSlot2[1]!["source_morph_vmd"]!.GetValue<string>());
+                Require(!posAfterSlot2[0]!["has_facial"]!.GetValue<bool>() &&
+                        posAfterSlot2[0]!["source_morph_vmd"]!.GetValue<string>() == "",
+                    "slot 1 must remain disable_morph until rebaked");
+
+                // 2. Re-enable slot 1 via legacy positions: null rebake_output: true without replacing motion_vmd/morph_vmd
+                Result rSlot1 = RunRequest(new JsonObject
+                {
+                    ["edit_dir"] = track,
+                    ["rebake_output"] = true
+                });
+                Require(rSlot1.Ok, "legacy positions:null rebake failed: " + rSlot1.Error);
+                JsonObject metaAfterSlot1 = Info(track);
+                var posAfterSlot1 = (JsonArray)metaAfterSlot1["positions"]!;
+                Require(metaAfterSlot1["has_facial"]!.GetValue<bool>(), "top-level has_facial must be true after legacy rebake");
+                Require(metaAfterSlot1["source_morph_vmd"]!.GetValue<string>() == Path.GetFullPath(embeddedVmd1),
+                    "top-level source_morph_vmd mismatch: " + metaAfterSlot1["source_morph_vmd"]!.GetValue<string>());
+                Require(posAfterSlot1[0]!["has_facial"]!.GetValue<bool>(), "positions[0] has_facial must be true");
+                Require(posAfterSlot1[0]!["source_morph_vmd"]!.GetValue<string>() == Path.GetFullPath(embeddedVmd1),
+                    "positions[0] source_morph_vmd mismatch: " + posAfterSlot1[0]!["source_morph_vmd"]!.GetValue<string>());
+
+                // 3. Standalone solo song legacy disable_morph -> rebake_output: true
+                Result soloImp = RunRequest(new JsonObject
+                {
+                    ["motions_root"] = library,
+                    ["title"] = "SoloReenableEmbeddedMorph",
+                    ["motion_vmd"] = embeddedVmd1,
+                    ["disable_morph"] = true,
+                    ["clear_audio"] = true
+                });
+                Require(soloImp.Ok, "solo seed import failed: " + soloImp.Error);
+                Result soloRebake = RunRequest(new JsonObject
+                {
+                    ["edit_dir"] = soloImp.Directory,
+                    ["rebake_output"] = true
+                });
+                Require(soloRebake.Ok, "solo legacy rebake failed: " + soloRebake.Error);
+                JsonObject soloMeta = Info(soloImp.Directory);
+                Require(soloMeta["has_facial"]!.GetValue<bool>(), "solo has_facial must be true after rebake");
+                Require(soloMeta["source_morph_vmd"]!.GetValue<string>() == Path.GetFullPath(embeddedVmd1),
+                    "solo source_morph_vmd mismatch: " + soloMeta["source_morph_vmd"]!.GetValue<string>());
+            });
+            Case("new group import backfills empty slot 1 motion_vmd from top-level motion_vmd", () =>
+            {
+                string seed = Path.Combine(_root, "backfill-slot1-motion");
+                string library = Path.Combine(seed, "motions");
+                string vmd1 = Fixtures.WriteSyntheticVmd(Path.Combine(seed, "s1"), frames: 7);
+                string vmd2 = Fixtures.WriteSyntheticVmd(Path.Combine(seed, "s2"), frames: 9);
+                string wav = Path.Combine(seed, "song.wav"); Wav(wav, sample: 41);
+
+                Result imp = RunRequest(new JsonObject
+                {
+                    ["motions_root"] = library,
+                    ["title"] = "BackfillSlot1",
+                    ["motion_vmd"] = vmd1,
+                    ["audio"] = wav,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["motion_vmd"] = "", ["disable_morph"] = true },
+                        new JsonObject { ["slot"] = 2, ["motion_vmd"] = vmd2, ["x"] = 1.5f }
+                    }
+                });
+                Require(imp.Ok, "group import with empty slot 1 motion_vmd failed: " + imp.Error);
+                JsonObject meta = Info(imp.Directory);
+                Require(meta["is_group"]!.GetValue<bool>() && meta["position_count"]!.GetValue<int>() == 2, "group metadata mismatch");
+                Require(meta["source_vmd"]!.GetValue<string>() == Path.GetFullPath(vmd1), "top-level source_vmd mismatch");
+                var pos = (JsonArray)meta["positions"]!;
+                Require(pos[0]!["source_vmd"]!.GetValue<string>() == Path.GetFullPath(vmd1), "slot 1 source_vmd mismatch");
+                Require(!pos[0]!["has_facial"]!.GetValue<bool>(), "slot 1 disable_morph flag was lost");
+                Require(pos[1]!["source_vmd"]!.GetValue<string>() == Path.GetFullPath(vmd2), "slot 2 source_vmd mismatch");
+            });
+            Case("Bug1D-Legacy: rebake without replaceBody when source_vmd is empty or missing never leaks staging path", () =>
+            {
+                string seed = Path.Combine(_root, "bug1d-legacy");
+                string library = Path.Combine(seed, "motions");
+                string embeddedVmd = WriteSyntheticVmdWithMorph(Path.Combine(seed, "emb.vmd"), frames: 6, "あ");
+
+                // 1. Empty source_vmd
+                Result impEmpty = RunRequest(new JsonObject
+                {
+                    ["motions_root"] = library,
+                    ["title"] = "Bug1DLegacyEmpty",
+                    ["motion_vmd"] = embeddedVmd,
+                    ["disable_morph"] = true,
+                    ["clear_audio"] = true
+                });
+                Require(impEmpty.Ok, "seed import failed: " + impEmpty.Error);
+                JsonObject metaEmpty = Info(impEmpty.Directory);
+                metaEmpty["source_vmd"] = "";
+                if (metaEmpty["positions"] is JsonArray arrEmpty && arrEmpty.Count > 0 && arrEmpty[0] is JsonObject p0Empty)
+                    p0Empty["source_vmd"] = "";
+                File.WriteAllText(Path.Combine(impEmpty.Directory, "info.json"), metaEmpty.ToJsonString());
+
+                Result editEmpty = Edit(impEmpty.Directory, ("rebake_output", true));
+                Require(editEmpty.Ok, "Bug1D-Legacy empty rebake failed: " + editEmpty.Error);
+                JsonObject afterEmpty = Info(impEmpty.Directory);
+                string srcEmpty = afterEmpty["source_vmd"]?.GetValue<string>() ?? "";
+                string morphEmpty = afterEmpty["source_morph_vmd"]?.GetValue<string>() ?? "";
+                Require(afterEmpty["has_facial"]!.GetValue<bool>(), "Bug1D-Legacy empty did not re-enable facial");
+                Require(!srcEmpty.Contains("gkmotion-cs-edit-", StringComparison.OrdinalIgnoreCase), "staging path leaked in source_vmd: " + srcEmpty);
+                Require(!morphEmpty.Contains("gkmotion-cs-edit-", StringComparison.OrdinalIgnoreCase), "staging path leaked in source_morph_vmd: " + morphEmpty);
+
+                // 2. Missing source_vmd
+                Result impMissing = RunRequest(new JsonObject
+                {
+                    ["motions_root"] = library,
+                    ["title"] = "Bug1DLegacyMissing",
+                    ["motion_vmd"] = embeddedVmd,
+                    ["disable_morph"] = true,
+                    ["clear_audio"] = true
+                });
+                Require(impMissing.Ok, "seed import (missing) failed: " + impMissing.Error);
+                JsonObject metaMissing = Info(impMissing.Directory);
+                metaMissing.Remove("source_vmd");
+                if (metaMissing["positions"] is JsonArray arrMissing && arrMissing.Count > 0 && arrMissing[0] is JsonObject p0Missing)
+                    p0Missing.Remove("source_vmd");
+                File.WriteAllText(Path.Combine(impMissing.Directory, "info.json"), metaMissing.ToJsonString());
+
+                Result editMissing = Edit(impMissing.Directory, ("rebake_output", true));
+                Require(editMissing.Ok, "Bug1D-Legacy missing rebake failed: " + editMissing.Error);
+                JsonObject afterMissing = Info(impMissing.Directory);
+                string srcMissing = afterMissing["source_vmd"]?.GetValue<string>() ?? "";
+                string morphMissing = afterMissing["source_morph_vmd"]?.GetValue<string>() ?? "";
+                Require(afterMissing["has_facial"]!.GetValue<bool>(), "Bug1D-Legacy missing did not re-enable facial");
+                Require(!srcMissing.Contains("gkmotion-cs-edit-", StringComparison.OrdinalIgnoreCase), "staging path leaked in source_vmd (missing): " + srcMissing);
+                Require(!morphMissing.Contains("gkmotion-cs-edit-", StringComparison.OrdinalIgnoreCase), "staging path leaked in source_morph_vmd (missing): " + morphMissing);
+            });
+            Case("Bug1D-Group: group slot rebake without replaceBody when source_vmd is empty or missing never leaks staging path", () =>
+            {
+                string seed = Path.Combine(_root, "bug1d-group");
+                string library = Path.Combine(seed, "motions");
+                string emb1 = WriteSyntheticVmdWithMorph(Path.Combine(seed, "emb1.vmd"), frames: 6, "あ");
+                string emb2 = WriteSyntheticVmdWithMorph(Path.Combine(seed, "emb2.vmd"), frames: 8, "あ");
+                string wav = Path.Combine(seed, "song.wav"); Wav(wav, sample: 39);
+
+                Result imp = RunRequest(new JsonObject
+                {
+                    ["motions_root"] = library,
+                    ["title"] = "Bug1DGroup",
+                    ["audio"] = wav,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["motion_vmd"] = emb1, ["disable_morph"] = true },
+                        new JsonObject { ["slot"] = 2, ["motion_vmd"] = emb2, ["disable_morph"] = true, ["x"] = 1.0f }
+                    }
+                });
+                Require(imp.Ok, "Bug1D-Group seed import failed: " + imp.Error);
+                JsonObject meta = Info(imp.Directory);
+                var posArr = (JsonArray)meta["positions"]!;
+                ((JsonObject)posArr[1]!).Remove("source_vmd");
+                File.WriteAllText(Path.Combine(imp.Directory, "info.json"), meta.ToJsonString());
+
+                Result edit = RunRequest(new JsonObject
+                {
+                    ["edit_dir"] = imp.Directory,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["preserve_existing"] = true },
+                        new JsonObject { ["slot"] = 2, ["rebake_output"] = true, ["x"] = 1.0f }
+                    }
+                });
+                Require(edit.Ok, "Bug1D-Group rebake failed: " + edit.Error);
+                JsonObject after = Info(imp.Directory);
+                var afterPos = (JsonArray)after["positions"]!;
+                var slot2 = (JsonObject)afterPos[1]!;
+                string slot2Src = slot2["source_vmd"]?.GetValue<string>() ?? "";
+                string slot2Morph = slot2["source_morph_vmd"]?.GetValue<string>() ?? "";
+                Require(slot2["has_facial"]!.GetValue<bool>(), "Bug1D-Group slot 2 did not re-enable facial");
+                Require(!slot2Src.Contains("gkmotion-cs-edit-", StringComparison.OrdinalIgnoreCase), "staging path leaked in group slot 2 source_vmd: " + slot2Src);
+                Require(!slot2Morph.Contains("gkmotion-cs-edit-", StringComparison.OrdinalIgnoreCase), "staging path leaked in group slot 2 source_morph_vmd: " + slot2Morph);
+            });
+            Case("parse-error returns BufferTooSmall (rc=3) when responseCapacity is too small", () =>
+            {
+                byte[] badJson = Encoding.UTF8.GetBytes("{invalid json\0");
+                byte[] tiny = new byte[10];
+                int rcBody, rcCamera;
+                fixed (byte* p = badJson) fixed (byte* q = tiny)
+                {
+                    rcBody = _run(p, q, tiny.Length);
+                    rcCamera = _runCamera(p, q, tiny.Length);
+                }
+                Require(rcBody == 3, $"GkVmdImport_Run parse error with tiny buffer returned rc={rcBody}, expected 3");
+                Require(rcCamera == 3, $"GkCameraImport_Run parse error with tiny buffer returned rc={rcCamera}, expected 3");
+
+                byte[] big = new byte[4096];
+                fixed (byte* p = badJson) fixed (byte* q = big)
+                {
+                    rcBody = _run(p, q, big.Length);
+                    rcCamera = _runCamera(p, q, big.Length);
+                }
+                Require(rcBody == 1, $"GkVmdImport_Run parse error with adequate buffer returned rc={rcBody}, expected 1");
+                Require(rcCamera == 1, $"GkCameraImport_Run parse error with adequate buffer returned rc={rcCamera}, expected 1");
+            });
         }
         finally
         {
@@ -445,13 +1081,46 @@ internal static unsafe class Program
     }
     private static Result RunRequest(JsonObject request)
     {
-        byte[] input = Encoding.UTF8.GetBytes(request.ToJsonString() + '\0'), output = new byte[65536];
+        return RunRawJson(request.ToJsonString());
+    }
+    private static Result RunRawJson(string json)
+    {
+        byte[] input = Encoding.UTF8.GetBytes(json + '\0'), output = new byte[65536];
         int code;
         fixed (byte* p = input) fixed (byte* q = output) code = _run(p, q, output.Length);
         using JsonDocument response = JsonDocument.Parse(output.AsMemory(0, Array.IndexOf(output, (byte)0)));
         JsonElement root = response.RootElement;
         return new Result(code == 0 && root.GetProperty("ok").GetBoolean(),
             root.GetProperty("dir").GetString() ?? "", root.GetProperty("error").GetString() ?? "");
+    }
+    private static string GroupTrack(int slotCount)
+    {
+        string seed = Path.Combine(_root, "grp-" + _cases + "-" + Guid.NewGuid().ToString("N"));
+        string library = Path.Combine(seed, "motions");
+        var posArr = new JsonArray();
+        for (int s = 1; s <= slotCount; s++)
+        {
+            string vmd = Fixtures.WriteSyntheticVmd(Path.Combine(seed, $"s{s}"), frames: 4 + s);
+            posArr.Add((JsonNode)new JsonObject
+            {
+                ["slot"] = s,
+                ["motion_vmd"] = vmd,
+                ["x"] = s == 1 ? 0.0f : (s - 1.5f) * 2.0f,
+                ["y"] = 0.0f,
+                ["z"] = s == 1 ? 0.0f : -0.5f * s,
+                ["yaw_degrees"] = s == 1 ? 0.0f : 15.0f * (s - 1)
+            });
+        }
+        string wav = Path.Combine(seed, "song.wav"); Wav(wav, sample: 42);
+        Result r = RunRequest(new JsonObject
+        {
+            ["motions_root"] = library,
+            ["title"] = "GroupFixture",
+            ["audio"] = wav,
+            ["positions"] = posArr
+        });
+        Require(r.Ok, "GroupTrack fixture import failed: " + r.Error);
+        return r.Directory;
     }
     private static void ExpectConflict(Action action, string detail)
     {
@@ -607,5 +1276,62 @@ internal static unsafe class Program
             file.WriteByte((byte)(len & 0xFF));
             pic.Position = 0; pic.CopyTo(file);
         }
+    }
+
+    private static string WriteSyntheticVmdWithMorph(string path, int frames, string morphName)
+    {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        Encoding shiftJis = Encoding.GetEncoding(932);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+        using var ms = new MemoryStream();
+        using (var writer = new BinaryWriter(ms, Encoding.ASCII, leaveOpen: true))
+        {
+            byte[] header = new byte[30];
+            Encoding.ASCII.GetBytes("Vocaloid Motion Data 0002", header);
+            writer.Write(header);
+
+            byte[] model = new byte[20];
+            shiftJis.GetBytes("morph probe", model);
+            writer.Write(model);
+
+            // Bone keyframes: 上半身 across frames
+            writer.Write((uint)frames);
+            for (int f = 0; f < frames; f++)
+            {
+                byte[] boneName = new byte[15];
+                shiftJis.GetBytes("上半身", boneName);
+                writer.Write(boneName);
+                writer.Write((uint)f);
+                writer.Write(0f); writer.Write(0f); writer.Write(0f);
+                writer.Write(0f); writer.Write(0f); writer.Write(0f); writer.Write(1f);
+                byte[] curves = new byte[64];
+                for (int c = 0; c < 4; c++)
+                {
+                    int at = c * 16;
+                    curves[at + 0] = 20; curves[at + 4] = 20; curves[at + 8] = 107; curves[at + 12] = 107;
+                }
+                writer.Write(curves);
+            }
+
+            // Morph keyframes
+            writer.Write((uint)frames);
+            byte[] morphBytes = new byte[15];
+            shiftJis.GetBytes(morphName, morphBytes);
+            for (int f = 0; f < frames; f++)
+            {
+                writer.Write(morphBytes);
+                writer.Write((uint)f);
+                writer.Write(f == 0 ? 0.0f : 0.8f);
+            }
+
+            writer.Write((uint)0); // camera
+            writer.Write((uint)0); // light
+            writer.Write((uint)0); // self-shadow
+            writer.Write((uint)0); // property
+        }
+
+        File.WriteAllBytes(path, ms.ToArray());
+        return path;
     }
 }

@@ -257,7 +257,7 @@ namespace GakuMotion
 			const ImVec2 btnSize((std::max)(34.0f, ImGui::GetFrameHeight()), (std::max)(24.0f, ImGui::GetFrameHeight()));
 
 			// 上一曲 (|<)
-			ImGui::BeginDisabled(ctx.ensembleSnapshot.active || !ctx.motions || ctx.motions->empty());
+			ImGui::BeginDisabled(!ctx.motions || ctx.motions->empty());
 			if (TransportIconButton("##prev", TransportBtnIcon::Prev, btnSize))
 			{
 				if (ctx.fnCycleMotion) ctx.fnCycleMotion(ctx.self, -1);
@@ -300,7 +300,7 @@ namespace GakuMotion
 			ImGui::SameLine();
 
 			// 下一曲 (>|)
-			ImGui::BeginDisabled(ctx.ensembleSnapshot.active || !ctx.motions || ctx.motions->empty());
+			ImGui::BeginDisabled(!ctx.motions || ctx.motions->empty());
 			if (TransportIconButton("##next", TransportBtnIcon::Next, btnSize))
 			{
 				if (ctx.fnCycleMotion) ctx.fnCycleMotion(ctx.self, 1);
@@ -313,16 +313,13 @@ namespace GakuMotion
 
 			// 播放模式切换 (0:播放一次, 1:单曲循环, 2:列表循环, 3:随机播放)
 			int currentPlayMode = ctx.playlistMode;
-			const char* const ensemblePlayModes[] = {"演出一次", "整场循环"};
 			if (currentPlayMode < 0 || currentPlayMode > 3) currentPlayMode = 1;
 			ImGui::SetNextItemWidth(playModeWidth);
-			if (ImGui::Combo("##play_mode", &currentPlayMode,
-				ctx.ensembleSnapshot.active ? ensemblePlayModes : kTransportPlayModes,
-				ctx.ensembleSnapshot.active ? IM_ARRAYSIZE(ensemblePlayModes) : IM_ARRAYSIZE(kTransportPlayModes)))
+			if (ImGui::Combo("##play_mode", &currentPlayMode, kTransportPlayModes, IM_ARRAYSIZE(kTransportPlayModes)))
 			{
 				overlay.PlaylistAction(ctx, GuiPlaylistAction::SetMode, "", currentPlayMode);
 			}
-			if (ImGui::IsItemHovered()) ImGui::SetTooltip(ctx.ensembleSnapshot.active ? "整场演出循环模式" : "播放列表循环模式");
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("播放列表循环模式");
 
 			const float playbackSpeedWidth = TransportComboWidth(kTransportPlaybackSpeedLabels);
 			TransportSameLineIfRoom(playbackSpeedWidth, 18.0f);

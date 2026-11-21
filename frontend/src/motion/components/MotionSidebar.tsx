@@ -25,7 +25,6 @@ export function MotionSidebar() {
   const developerMode = useMotionStore((state) => state.developerMode)
   const libraryCount = useMotionStore((state) => state.library.entries.length)
   const theme = useMotionStore((state) => state.appearance?.theme ?? 0)
-  const ensembleActive = useMotionStore((state) => state.ensemble.active)
   const isLightTheme = theme === 2 || theme === 3
 
   const renderItem = (page: MotionPage, label: string, Icon: RemixiconComponentType, badgeText?: string) => {
@@ -93,11 +92,7 @@ export function MotionSidebar() {
             item.page,
             item.label,
             item.icon,
-            item.page === 'library' && libraryCount > 0
-              ? String(libraryCount)
-              : item.page === 'motion' && ensembleActive
-                ? '3P'
-                : undefined,
+            item.page === 'library' && libraryCount > 0 ? String(libraryCount) : undefined,
           ),
         )}
       </div>

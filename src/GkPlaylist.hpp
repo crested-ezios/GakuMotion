@@ -21,6 +21,23 @@ namespace GakuMotion
 	enum class PlaylistMode { Once, SingleLoop, ListLoop, Shuffle };
 	enum class GuiPlaylistAction { Move = 1, SaveList = 3, LoadList = 4, SetMode = 5, DeleteFiles = 6 };
 
+	struct ImportPositionSlot
+	{
+		int slot{1};
+		int sourceSlot{0};
+		std::string motionVmd;
+		std::string morphVmd;
+		bool disableMorph{false};
+		bool clearMorph{false};
+		float sourceFps{0.0f};
+		bool rebakeOutput{false};
+		bool preserveExisting{false};
+		float x{0.0f};
+		float y{0.0f};
+		float z{0.0f};
+		float yawDegrees{0.0f};
+	};
+
 	struct MotionImportRequest
 	{
 		std::string vmd, audio, title, subtitle, python;
@@ -43,6 +60,8 @@ namespace GakuMotion
 		PerformanceTiming timing;
 		// 兼容旧请求结构；产品始终使用 NativeAOT，不再回落解释器。
 		bool useCsharp{true};
+		std::vector<ImportPositionSlot> positions;
+		bool positionsExplicit{false};
 	};
 
 	struct ImportProgressState

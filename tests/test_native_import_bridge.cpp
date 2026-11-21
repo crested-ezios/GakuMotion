@@ -2,9 +2,11 @@
 // Unity or the GakuMotion plugin. Inputs are self-authored synthetic fixtures.
 #include "GkCsharpImport.hpp"
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 
 namespace fs=std::filesystem;
 namespace bridge=GakuMotion::csharp_import;
@@ -190,6 +192,72 @@ int wmain(int argc,wchar_t** argv)
     const auto invalidCamera=unicode/L"无效镜头.vmd"; Write(invalidCamera,"invalid VMD");
     CHECK(bridge::BeginCamera(Utf8(invalidCamera),Utf8(track),60,0.083f,true,"",message));
     CHECK(WaitCamera(message)==-1 && Read(track/L"camera.gkcamera")==cameraBytes);
+
+    // Group-song ("团曲") round-trip through real NativeAOT DLL under Unicode path
+    const auto body2=unicode/L"动作 二号位.vmd";
+    Vmd(body2,false);
+    MotionImportRequest groupReq;
+    groupReq.motionsRoot=Utf8(library);
+    groupReq.title="桥接团曲";
+    groupReq.clearAudio=true;
+    groupReq.transactionRoot=Utf8(transactions);
+    groupReq.log=Utf8(unicode/L"团曲导入.log");
+    GakuMotion::ImportPositionSlot slot1; slot1.slot=1; slot1.motionVmd=Utf8(body);
+    GakuMotion::ImportPositionSlot slot2; slot2.slot=2; slot2.motionVmd=Utf8(body2);
+    slot2.x=-1.5f; slot2.y=0.25f; slot2.z=2.0f; slot2.yawDegrees=45.0f;
+    groupReq.positions={slot1,slot2};
+    groupReq.positionsExplicit=true;
+    CHECK(bridge::CanHandle(groupReq,message) && bridge::Begin(groupReq,message));
+    CHECK(WaitBody(message,&progress)==1 && fs::is_empty(transactions));
+
+    fs::path groupTrack;
+    for (const auto& entry:fs::directory_iterator(library))
+        if (entry.is_directory() && entry.path()!=track && fs::exists(entry.path()/L"positions"/L"slot_2"/L"motion.gkclip"))
+            groupTrack=entry.path();
+    CHECK(!groupTrack.empty());
+    GakuMotion::jsonlite::Value grpMeta; std::string grpErr;
+    CHECK(GakuMotion::jsonlite::ParseText(Read(groupTrack/L"info.json"),grpMeta,grpErr));
+    CHECK(grpMeta.BoolPath("is_group",false) && grpMeta.IntPath("position_count",0)==2);
+    const std::string slot1ClipBefore=Read(groupTrack/L"motion.gkclip");
+    const std::string slot2ClipBefore=Read(groupTrack/L"positions"/L"slot_2"/L"motion.gkclip");
+    CHECK(!slot1ClipBefore.empty() && !slot2ClipBefore.empty());
+
+    // Zero-rebake placement-only edit via C++ bridge
+    MotionImportRequest zeroEdit;
+    zeroEdit.editDir=Utf8(groupTrack);
+    zeroEdit.transactionRoot=Utf8(transactions);
+    zeroEdit.positionsExplicit=true;
+    GakuMotion::ImportPositionSlot e1; e1.slot=1; e1.preserveExisting=true;
+    GakuMotion::ImportPositionSlot e2; e2.slot=2; e2.preserveExisting=true; e2.x=2.25f; e2.yawDegrees=-30.0f;
+    zeroEdit.positions={e1,e2};
+    CHECK(bridge::CanHandle(zeroEdit,message) && bridge::Begin(zeroEdit,message));
+    CHECK(WaitBody(message,&progress)==1);
+    CHECK(Read(groupTrack/L"motion.gkclip")==slot1ClipBefore &&
+        Read(groupTrack/L"positions"/L"slot_2"/L"motion.gkclip")==slot2ClipBefore);
+    GakuMotion::jsonlite::Value grpMeta2;
+    CHECK(GakuMotion::jsonlite::ParseText(Read(groupTrack/L"info.json"),grpMeta2,grpErr));
+    const auto* posArr=grpMeta2.Find("positions");
+    CHECK(posArr && posArr->IsArray() && posArr->arrayItems.size()==2 &&
+        std::fabs(posArr->arrayItems[1].FloatPath("x",0.0f)-2.25f)<1e-3f &&
+        std::fabs(posArr->arrayItems[1].FloatPath("yaw_degrees",0.0f)-(-30.0f))<1e-3f);
+
+    // Selective slot-2 edit preserves slot 1 clip bytes verbatim
+    MotionImportRequest selEdit;
+    selEdit.editDir=Utf8(groupTrack);
+    selEdit.transactionRoot=Utf8(transactions);
+    selEdit.positionsExplicit=true;
+    GakuMotion::ImportPositionSlot s2d; s2d.slot=2; s2d.disableMorph=true;
+    selEdit.positions={e1,s2d};
+    CHECK(bridge::CanHandle(selEdit,message) && bridge::Begin(selEdit,message));
+    CHECK(WaitBody(message,&progress)==1 && Read(groupTrack/L"motion.gkclip")==slot1ClipBefore);
+
+    // Reject empty explicit positions and non-finite coordinates before spawning worker
+    MotionImportRequest badGroup=zeroEdit;
+    badGroup.positions.clear();
+    CHECK(!bridge::CanHandle(badGroup,message) && !bridge::Begin(badGroup,message) && !bridge::Busy());
+    badGroup.positions={e1,e2};
+    badGroup.positions[1].x=std::numeric_limits<float>::quiet_NaN();
+    CHECK(!bridge::CanHandle(badGroup,message) && !bridge::Begin(badGroup,message) && !bridge::Busy());
 
     CHECK(bridge::BeginCamera(Utf8(camera),Utf8(track),60,0.083f,true,"",message));
     bridge::Shutdown();

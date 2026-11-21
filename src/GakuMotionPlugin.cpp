@@ -16,6 +16,7 @@
 #include "GkExactMethod.hpp"
 #include "GkBgmSuppression.hpp"
 #include "GkPhotographyEnsembleProbe.hpp"
+#include "GkPortraitCache.hpp"
 #include <cstddef>
 #include "GkFaceRuntime.hpp"
 #include "GkBurstBridgeClient.hpp"
@@ -159,7 +160,7 @@ namespace
 		std::string motionFile, reason;
 		std::chrono::steady_clock::time_point lastTick{};
 	};
-	std::deque<EnsemblePhysicsState> g_ensemblePhysics(GakuMotion::ensemble::InitialSlots);
+	std::deque<EnsemblePhysicsState> g_ensemblePhysics(3);
 
 	bool HasEnsemblePhysics()
 	{
@@ -197,7 +198,7 @@ namespace
 			auto& slot = g_ensemblePhysics[i];
 			if (slot.fallback.HasCaptureWrites())
 			{
-				auto* track = core.EnsemblePlayer(i);
+				auto* track = core.PlayerForActor(slot.actor);
 				clean = track && track->controller.targetActor == slot.actor
 					? slot.fallback.RestoreForCapture(track->controller) && clean : false;
 			}
@@ -228,12 +229,10 @@ namespace
 	{
 		auto* track = core.PlayerForActor(actor);
 		if (!track) return;
-		const size_t count = core.ensembleActiveSettings.slots.size();
-		size_t index = count;
-		for (size_t i = 0; i < count; ++i) if (core.EnsemblePlayer(i) == track) { index = i; break; }
-		if (index == count) return;
+		const int slotIndex = core.SlotIndexForActor(actor);
+		if (slotIndex < 0 || static_cast<size_t>(slotIndex) >= core.formation.slots.size()) return;
+		const size_t index = static_cast<size_t>(slotIndex);
 		if (g_ensemblePhysics.size() <= index) g_ensemblePhysics.resize(index + 1);
-		if (core.ensembleSnapshot.physics.size() <= index) core.ensembleSnapshot.physics.resize(index + 1);
 		auto& slot = g_ensemblePhysics[index];
 		auto& ctrl = track->controller;
 		auto binding = ctrl.bindings.find(actor);
@@ -247,14 +246,14 @@ namespace
 				g_capturePhysicsUnconfirmed |= !fallbackClean || !bridgeClean;
 			}
 			if (!ClearEnsemblePhysicsSlot(index, !canDrive))
-			{ core.ensembleSnapshot.physics[index] = "capture_destroy_unconfirmed"; return; }
-			core.ensembleSnapshot.physics[index] = "off";
+			{ core.formation.slots[index].physicsBackend = "capture_destroy_unconfirmed"; return; }
+			core.formation.slots[index].physicsBackend = "off";
 			return;
 		}
 		if (slot.frame == frame && slot.actor == actor) return;
 		const int requested = core.config.secondaryPhysicsBackend;
 		const bool useV3 = requested == 2 && g_multiBurstBridge.Ensure();
-		const bool legacyOwner = requested == 2 && !useV3 && index == core.ensembleActiveSettings.masterSlot;
+		const bool legacyOwner = requested == 2 && !useV3 && index == 0;
 		if (slot.actor != actor || slot.session != core.injectionSession || slot.backend != requested ||
 			slot.beforeQuartz != core.config.beforeQuartzExperiment || slot.sleeveDiagnostics != core.config.sleeveMuscleDiagnostics ||
 			slot.motionFile != track->loadedMotionFile || slot.seeks != core.player.SeekCount() || core.player.scrubbing ||
@@ -267,7 +266,7 @@ namespace
 				g_capturePhysicsUnconfirmed |= !fallbackClean || !bridgeClean;
 			}
 			if (!ClearEnsemblePhysicsSlot(index, slot.actor != actor))
-			{ core.ensembleSnapshot.physics[index] = "capture_destroy_unconfirmed"; return; }
+			{ core.formation.slots[index].physicsBackend = "capture_destroy_unconfirmed"; return; }
 			slot.actor = actor; slot.session = core.injectionSession; slot.backend = requested;
 			slot.beforeQuartz = core.config.beforeQuartzExperiment; slot.sleeveDiagnostics = core.config.sleeveMuscleDiagnostics;
 			slot.motionFile = track->loadedMotionFile; slot.legacyOwner = legacyOwner;
@@ -309,7 +308,7 @@ namespace
 		d.bridge_identity_skips = bridgePerf.identity_skips;
 		const std::string reason = requested == 0 ? "off" : requested == 1 ? "fallback" :
 			useV3 ? g_multiBurstBridge.State(index).reason : legacyOwner ? g_burstBridge.reason : "fallback_legacy_bridge_master_only";
-		core.ensembleSnapshot.physics[index] = native ? "native" : slot.actual == 0 ? "off" : "fallback: " + reason;
+		core.formation.slots[index].physicsBackend = native ? "native" : slot.actual == 0 ? "off" : "fallback: " + reason;
 		if (slot.reason != reason)
 		{
 			slot.reason = reason;
@@ -1683,19 +1682,26 @@ namespace
 		// synchronously cannot consume the previous custom skeleton/rest pose.
 		if (report.body != RestoreState::NotModified || report.gaze != RestoreState::NotModified)
 		{
-			for (size_t slot = 0; slot < (core.EnsembleActive() ? core.ensembleActiveSettings.slots.size() : 1); ++slot)
+			auto rebindController = [&](GakuMotion::MotionPlayer* track)
 			{
-				auto* track = core.EnsembleActive() ? core.EnsemblePlayer(slot) : slot == 0 ? &core.player : nullptr;
-				if (!track) continue;
+				if (!track) return;
 				for (const auto& entry : track->controller.bindings)
 				{
-				void* animator = HelperGetActorAnimator(entry.first);
-				if (!animator || !g_captureAnimatorUpdateMethod) { report.body = RestoreState::Unconfirmed; continue; }
-				float zero = 0.0f;
-				void* args[]{&zero}; void* exception = nullptr;
-				g_faceRuntime.invoke(g_captureAnimatorUpdateMethod, animator, args, &exception);
-				if (exception) report.body = RestoreState::Unconfirmed;
+					void* animator = HelperGetActorAnimator(entry.first);
+					if (!animator || !g_captureAnimatorUpdateMethod) { report.body = RestoreState::Unconfirmed; continue; }
+					float zero = 0.0f;
+					void* args[]{&zero}; void* exception = nullptr;
+					g_faceRuntime.invoke(g_captureAnimatorUpdateMethod, animator, args, &exception);
+					if (exception) report.body = RestoreState::Unconfirmed;
 				}
+			};
+			if (core.formation.active)
+			{
+				for (auto& kv : core.formationTracks) rebindController(kv.second.get());
+			}
+			else
+			{
+				rebindController(&core.player);
 			}
 		}
 		g_restoringNative = false;
@@ -2023,6 +2029,386 @@ namespace
 			g_hostContext.setMotionPlaying(playing);
 		}
 	}
+
+	GakuMotion::portrait::PortraitCache g_portraitCache;
+
+	std::string ResolvePluginGameRootUtf8()
+	{
+		if (g_hostContext.gameRoot && g_hostContext.gameRoot[0])
+		{
+			return WidePathToNarrow(g_hostContext.gameRoot);
+		}
+		wchar_t exePath[MAX_PATH * 4]{};
+		const DWORD length = GetModuleFileNameW(nullptr, exePath, static_cast<DWORD>(std::size(exePath)));
+		if (length > 0 && length < std::size(exePath))
+		{
+			return GakuMotion::MotionPathToUtf8(std::filesystem::path(exePath).parent_path());
+		}
+		return {};
+	}
+
+	namespace PortraitUnityExtractor
+	{
+		struct UnityRect { float x, y, width, height; };
+
+		struct PinGuard
+		{
+			std::vector<StageLoader::Handle> handles;
+			void* Keep(void* obj)
+			{
+				if (!obj || !StageLoader::newHandle) return obj;
+				if (StageLoader::Handle h = StageLoader::newHandle(obj, false)) handles.push_back(h);
+				return obj;
+			}
+			~PinGuard()
+			{
+				if (!StageLoader::freeHandle) return;
+				for (auto it = handles.rbegin(); it != handles.rend(); ++it) StageLoader::freeHandle(*it);
+			}
+		};
+
+		inline bool resolved = false;
+		inline bool attempted = false;
+		inline void* tex2dClass = nullptr;
+		inline void* tex2dTypeObj = nullptr;
+		inline void* byteClass = nullptr;
+		inline void* rtClass = nullptr;
+		inline void* bundleClass = nullptr;
+		inline void* (*il2cppObjectNew)(void*) = nullptr;
+		inline void* (*il2cppArrayNew)(void*, uintptr_t) = nullptr;
+		inline void (*il2cppStaticFieldGet)(void*, void*) = nullptr;
+		inline bool (*il2cppClassIsEnum)(void*) = nullptr;
+		inline const void* getWidth = nullptr;
+		inline const void* getHeight = nullptr;
+		inline const void* texCtor5 = nullptr;
+		inline const void* texCtor2 = nullptr;
+		inline const void* readPixels = nullptr;
+		inline const void* apply = nullptr;
+		inline const void* encodeToPng = nullptr;
+		inline const void* rtGetTemp5 = nullptr;
+		inline const void* rtGetTemp3 = nullptr;
+		inline const void* rtGetActive = nullptr;
+		inline const void* rtSetActive = nullptr;
+		inline const void* rtReleaseTemp = nullptr;
+		inline const void* graphicsBlit = nullptr;
+		inline const void* findObjectsAll = nullptr;
+		inline const void* bundleLoadMem = nullptr;
+		inline const void* bundleLoadAsset = nullptr;
+		inline const void* bundleUnload = nullptr;
+		inline const void* objectDestroy = nullptr;
+		inline int rgba32FormatVal = 4;
+		inline int rtArgb32Val = 0;
+		inline int rtSrgbVal = 2;
+		inline bool hasEnumArgs = false;
+
+		inline bool Invoke(const void* method, void* self, void** args, void*& outResult)
+		{
+			outResult = nullptr;
+			if (!method || !g_faceRuntime.invoke || !ProtectionOnUnityThread()) return false;
+			void* exception = nullptr;
+			outResult = g_faceRuntime.invoke(method, self, args, &exception);
+			return !exception;
+		}
+
+		inline bool ReadInt(const void* method, void* self, int& value)
+		{
+			void* boxed = nullptr;
+			if (!Invoke(method, self, nullptr, boxed) || !boxed || !g_safeBones.unbox) return false;
+			void* raw = g_safeBones.unbox(boxed);
+			if (!raw) return false;
+			std::memcpy(&value, raw, sizeof(value));
+			return true;
+		}
+
+		inline bool ReadEnum(void* klass, const char* name, int& outValue)
+		{
+			uint32_t alignment = 0;
+			if (!klass || !il2cppClassIsEnum || !il2cppClassIsEnum(klass) || !StageLoader::valueSize ||
+				StageLoader::valueSize(klass, &alignment) != sizeof(int) || alignment != alignof(int) ||
+				!g_faceRuntime.findField || !g_faceRuntime.fieldFlags || !g_faceRuntime.fieldType || !il2cppStaticFieldGet)
+				return false;
+			void* field = g_faceRuntime.findField(klass, name);
+			if (!field || (g_faceRuntime.fieldFlags(field) & 0x50) != 0x50 ||
+				!StageLoader::metadata.Matches(g_faceRuntime.fieldType(field), {0x11, klass}))
+				return false;
+			il2cppStaticFieldGet(field, &outValue);
+			return true;
+		}
+
+		inline bool EnsureResolved()
+		{
+			if (resolved) return true;
+			if (attempted || !g_gameAssembly || !ProtectionOnUnityThread()) return false;
+			if (!il2cpp_class_get_type || !il2cpp_type_get_object || !StageLoader::newHandle ||
+				!StageLoader::freeHandle || !StageLoader::arrayLength || !StageLoader::stringNew ||
+				!StageLoader::assignable || !StageLoader::valueSize || !StageLoader::objectName || !g_faceRuntime.objectClass)
+				return false;
+
+			attempted = true;
+			using Type = GakuMotion::ExactMethodMetadata::Type;
+			auto find = [&](void* klass, const char* name, bool stat, Type ret, std::initializer_list<Type> args) -> const void*
+			{
+				if ((ret.code == 0x12 || ret.code == 0x11 || ret.code == 0x1d) && !ret.klass) return nullptr;
+				for (Type t : args)
+					if ((t.code == 0x12 || t.code == 0x11 || t.code == 0x1d) && !t.klass) return nullptr;
+				return StageLoader::metadata.Find(klass, name, stat, ret, args);
+			};
+
+			auto core = [](const char* n) { return FindClass("UnityEngine.CoreModule.dll", "UnityEngine", n); };
+			void* texBaseClass = core("Texture");
+			tex2dClass = core("Texture2D");
+			rtClass = core("RenderTexture");
+			void* graphicsClass = core("Graphics");
+			void* resourcesClass = core("Resources");
+			void* objectClass = core("Object");
+			void* rectClass = core("Rect");
+			void* texFmtClass = core("TextureFormat");
+			void* rtFmtClass = core("RenderTextureFormat");
+			void* rtRwClass = core("RenderTextureReadWrite");
+			void* typeClass = FindClass("mscorlib.dll", "System", "Type");
+			byteClass = FindClass("mscorlib.dll", "System", "Byte");
+			bundleClass = FindClass("UnityEngine.AssetBundleModule.dll", "UnityEngine", "AssetBundle");
+			void* imgConvClass = FindClass("UnityEngine.ImageConversionModule.dll", "UnityEngine", "ImageConversion");
+			if (!imgConvClass) imgConvClass = core("ImageConversion");
+
+			il2cppObjectNew = reinterpret_cast<decltype(il2cppObjectNew)>(GetProcAddress(g_gameAssembly, "il2cpp_object_new"));
+			il2cppArrayNew = reinterpret_cast<decltype(il2cppArrayNew)>(GetProcAddress(g_gameAssembly, "il2cpp_array_new"));
+			il2cppStaticFieldGet = reinterpret_cast<decltype(il2cppStaticFieldGet)>(
+				GetProcAddress(g_gameAssembly, "il2cpp_field_static_get_value"));
+			il2cppClassIsEnum = reinterpret_cast<decltype(il2cppClassIsEnum)>(
+				GetProcAddress(g_gameAssembly, "il2cpp_class_is_enum"));
+			auto arrayClassGet = reinterpret_cast<void* (*)(void*, uint32_t)>(
+				GetProcAddress(g_gameAssembly, "il2cpp_array_class_get"));
+			if (!il2cppObjectNew || !il2cppArrayNew || !arrayClassGet || !byteClass || !objectClass || !rectClass) return false;
+
+			uint32_t align = 0;
+			if (StageLoader::valueSize(rectClass, &align) != sizeof(UnityRect)) return false;
+
+			void* byteArrayClass = arrayClassGet(byteClass, 1);
+			void* objArrayClass = arrayClassGet(objectClass, 1);
+			if (!byteArrayClass || !objArrayClass) return false;
+
+			getWidth = find(texBaseClass, "get_width", false, {0x08}, {});
+			getHeight = find(texBaseClass, "get_height", false, {0x08}, {});
+			texCtor5 = find(tex2dClass, ".ctor", false, {0x01},
+				{{0x08}, {0x08}, {0x11, texFmtClass}, {0x02}, {0x02}});
+			texCtor2 = find(tex2dClass, ".ctor", false, {0x01}, {{0x08}, {0x08}});
+			readPixels = find(tex2dClass, "ReadPixels", false, {0x01}, {{0x11, rectClass}, {0x08}, {0x08}});
+			apply = find(tex2dClass, "Apply", false, {0x01}, {});
+			encodeToPng = find(imgConvClass, "EncodeToPNG", true, {0x1d, byteArrayClass}, {{0x12, tex2dClass}});
+			rtGetTemp5 = find(rtClass, "GetTemporary", true, {0x12, rtClass},
+				{{0x08}, {0x08}, {0x08}, {0x11, rtFmtClass}, {0x11, rtRwClass}});
+			rtGetTemp3 = find(rtClass, "GetTemporary", true, {0x12, rtClass}, {{0x08}, {0x08}, {0x08}});
+			rtGetActive = find(rtClass, "get_active", true, {0x12, rtClass}, {});
+			rtSetActive = find(rtClass, "set_active", true, {0x01}, {{0x12, rtClass}});
+			rtReleaseTemp = find(rtClass, "ReleaseTemporary", true, {0x01}, {{0x12, rtClass}});
+			graphicsBlit = find(graphicsClass, "Blit", true, {0x01}, {{0x12, texBaseClass}, {0x12, rtClass}});
+			findObjectsAll = find(resourcesClass, "FindObjectsOfTypeAll", true, {0x1d, objArrayClass}, {{0x12, typeClass}});
+			bundleLoadMem = find(bundleClass, "LoadFromMemory", true, {0x12, bundleClass}, {{0x1d, byteArrayClass}});
+			bundleLoadAsset = find(bundleClass, "LoadAsset", false, {0x12, objectClass}, {{0x0e}, {0x12, typeClass}});
+			bundleUnload = find(bundleClass, "Unload", false, {0x01}, {{0x02}});
+			objectDestroy = find(objectClass, "Destroy", true, {0x01}, {{0x12, objectClass}});
+
+			hasEnumArgs = ReadEnum(texFmtClass, "RGBA32", rgba32FormatVal) &&
+				ReadEnum(rtFmtClass, "ARGB32", rtArgb32Val) &&
+				ReadEnum(rtRwClass, "sRGB", rtSrgbVal);
+
+			if (!tex2dClass || !getWidth || !getHeight || (!texCtor5 && !texCtor2) ||
+				!readPixels || !apply || !encodeToPng || (!rtGetTemp5 && !rtGetTemp3) ||
+				!rtGetActive || !rtSetActive || !rtReleaseTemp || !graphicsBlit || !findObjectsAll || !objectDestroy)
+				return false;
+
+			if (void* typePtr = il2cpp_class_get_type(tex2dClass))
+			{
+				if (void* typeObj = il2cpp_type_get_object(typePtr))
+				{
+					StageLoader::newHandle(typeObj, false); // Process-lifetime pin for System.Type.
+					tex2dTypeObj = typeObj;
+				}
+			}
+			resolved = (tex2dTypeObj != nullptr);
+			return resolved;
+		}
+
+		inline bool ReadbackTexture2DToPng(void* srcTex, std::vector<uint8_t>& outPng)
+		{
+			outPng.clear();
+			if (!srcTex || !EnsureResolved()) return false;
+			if (!StageLoader::assignable(tex2dClass, g_faceRuntime.objectClass(srcTex))) return false;
+
+			int w = 0, h = 0;
+			if (!ReadInt(getWidth, srcTex, w) || !ReadInt(getHeight, srcTex, h)) return false;
+			if (w <= 0 || h <= 0 || w > 4096 || h > 4096) return false;
+
+			PinGuard pins;
+			void* previousActive = nullptr;
+			Invoke(rtGetActive, nullptr, nullptr, previousActive);
+			if (previousActive) pins.Keep(previousActive);
+
+			void* rt = nullptr;
+			struct RtCleanup
+			{
+				void* prev{nullptr};
+				void* tempRt{nullptr};
+				void* readable{nullptr};
+				bool restoreActive{false};
+				~RtCleanup()
+				{
+					void* ignored = nullptr;
+					if (restoreActive)
+					{
+						void* a[]{prev};
+						Invoke(rtSetActive, nullptr, a, ignored);
+					}
+					if (tempRt)
+					{
+						void* a[]{tempRt};
+						Invoke(rtReleaseTemp, nullptr, a, ignored);
+					}
+					if (readable)
+					{
+						void* a[]{readable};
+						Invoke(objectDestroy, nullptr, a, ignored);
+					}
+				}
+			} guard{previousActive, nullptr, nullptr, false};
+
+			if (hasEnumArgs && rtGetTemp5)
+			{
+				int depth = 0;
+				void* args[]{&w, &h, &depth, &rtArgb32Val, &rtSrgbVal};
+				if (!Invoke(rtGetTemp5, nullptr, args, rt)) rt = nullptr;
+			}
+			if (!rt && rtGetTemp3)
+			{
+				int depth = 0;
+				void* args[]{&w, &h, &depth};
+				if (!Invoke(rtGetTemp3, nullptr, args, rt)) rt = nullptr;
+			}
+			if (!rt) return false;
+			pins.Keep(rt);
+			guard.tempRt = rt;
+
+			void* ignored = nullptr;
+			void* blitArgs[]{srcTex, rt};
+			if (!Invoke(graphicsBlit, nullptr, blitArgs, ignored)) return false;
+
+			void* setArgs[]{rt};
+			if (!Invoke(rtSetActive, nullptr, setArgs, ignored)) return false;
+			guard.restoreActive = true;
+
+			void* readable = il2cppObjectNew(tex2dClass);
+			if (!readable) return false;
+			pins.Keep(readable);
+			guard.readable = readable;
+
+			bool ctorOk = false;
+			if (hasEnumArgs && texCtor5)
+			{
+				bool mip = false, linear = false;
+				void* ctorArgs[]{&w, &h, &rgba32FormatVal, &mip, &linear};
+				ctorOk = Invoke(texCtor5, readable, ctorArgs, ignored);
+			}
+			if (!ctorOk && texCtor2)
+			{
+				void* ctorArgs[]{&w, &h};
+				ctorOk = Invoke(texCtor2, readable, ctorArgs, ignored);
+			}
+			if (!ctorOk) return false;
+
+			UnityRect rect{0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h)};
+			int destX = 0, destY = 0;
+			void* rpArgs[]{&rect, &destX, &destY};
+			if (!Invoke(readPixels, readable, rpArgs, ignored)) return false;
+			if (!Invoke(apply, readable, nullptr, ignored)) return false;
+
+			void* pngObj = nullptr;
+			void* encArgs[]{readable};
+			if (!Invoke(encodeToPng, nullptr, encArgs, pngObj) || !pngObj) return false;
+			pins.Keep(pngObj);
+
+			const uintptr_t len = StageLoader::arrayLength(pngObj);
+			if (len < 45 || len > 32ULL * 1024ULL * 1024ULL) return false;
+			const uint8_t* ptr = reinterpret_cast<const uint8_t*>(pngObj) + 32;
+			outPng.assign(ptr, ptr + len);
+			return GakuMotion::portrait::IsValidPngBytes(outPng);
+		}
+
+		inline bool ExtractResident(const std::string& assetName, std::vector<uint8_t>& outPng)
+		{
+			outPng.clear();
+			if (assetName.empty() || !EnsureResolved()) return false;
+			PinGuard pins;
+			void* allArray = nullptr;
+			void* args[]{tex2dTypeObj};
+			if (!Invoke(findObjectsAll, nullptr, args, allArray) || !allArray) return false;
+			pins.Keep(allArray);
+
+			const uintptr_t count = StageLoader::arrayLength(allArray);
+			if (count == 0 || count > 65536) return false;
+			void** items = reinterpret_cast<void**>(static_cast<char*>(allArray) + 32);
+			for (uintptr_t i = 0; i < count; ++i)
+			{
+				void* obj = items[i];
+				if (!obj || !StageLoader::assignable(tex2dClass, g_faceRuntime.objectClass(obj))) continue;
+				void* nameObj = nullptr;
+				if (!Invoke(StageLoader::objectName, obj, nullptr, nameObj) || !nameObj) continue;
+				const std::string texName = Il2CppStringToUtf8(nameObj);
+				if (texName == assetName) return ReadbackTexture2DToPng(obj, outPng);
+			}
+			return false;
+		}
+
+		inline bool ExtractFromBundle(const std::string& assetName, const std::vector<uint8_t>& bundleBytes, std::vector<uint8_t>& outPng)
+		{
+			outPng.clear();
+			if (assetName.empty() || bundleBytes.empty() || !EnsureResolved()) return false;
+			if (!bundleLoadMem || !bundleLoadAsset || !bundleUnload) return false;
+
+			PinGuard pins;
+			void* managedBytes = il2cppArrayNew(byteClass, bundleBytes.size());
+			if (!managedBytes) return false;
+			pins.Keep(managedBytes);
+			std::memcpy(static_cast<char*>(managedBytes) + 32, bundleBytes.data(), bundleBytes.size());
+
+			void* bundleObj = nullptr;
+			void* loadMemArgs[]{managedBytes};
+			if (!Invoke(bundleLoadMem, nullptr, loadMemArgs, bundleObj) || !bundleObj) return false;
+			pins.Keep(bundleObj);
+
+			struct BundleGuard
+			{
+				void* bundle{nullptr};
+				~BundleGuard()
+				{
+					if (!bundle) return;
+					bool unloadAll = true;
+					void* args[]{&unloadAll};
+					void* ignored = nullptr;
+					Invoke(bundleUnload, bundle, args, ignored);
+				}
+			} bundleGuard{bundleObj};
+
+			void* managedName = StageLoader::stringNew(assetName.c_str());
+			if (!managedName) return false;
+			pins.Keep(managedName);
+
+			void* assetObj = nullptr;
+			void* loadAssetArgs[]{managedName, tex2dTypeObj};
+			if (!Invoke(bundleLoadAsset, bundleObj, loadAssetArgs, assetObj) || !assetObj) return false;
+			pins.Keep(assetObj);
+			return ReadbackTexture2DToPng(assetObj, outPng);
+		}
+	} // namespace PortraitUnityExtractor
+
+	void TickPortraitExtractionOnMainThread()
+	{
+		if (!g_pluginInitialized || !ProtectionOnUnityThread()) return;
+		if (!PortraitUnityExtractor::EnsureResolved()) return;
+		g_portraitCache.ProcessOnePending(
+			PortraitUnityExtractor::ExtractResident,
+			PortraitUnityExtractor::ExtractFromBundle);
+	}
 } // namespace
 
 // Native activation body: config, audio, import bridges and Core initialization.
@@ -2143,7 +2529,9 @@ bool InitializeMotion()
 	{
 		GM_INFO("[GakuMotion][MouthSource] track=%s status=%s", directory, status);
 	};
+	core.SetGameRoot(ResolvePluginGameRootUtf8());
 	core.Initialize(localRoot, &selected);
+	g_portraitCache.Configure(core.configRoot, core.gameRoot);
 	HelperAudioSetVolume(player.musicVolume);
 	if (g_hostContext.logInfo) g_hostContext.logInfo("[GakuMotion][Paths] layout=%s configs=%s motions=%s",
 		selected.managed ? "gakuloader-v1" : "legacy-unmigrated", core.configRoot.c_str(), core.motionsRoot.c_str());
@@ -2780,6 +3168,7 @@ static bool RefreshSceneActors(GakuMotion::Core& core, bool force = false, void*
 			const auto presetName = GakuMotion::GakuActorsPresetName(actorName);
 			if (character.empty()) character = GakuMotion::DetectIdolCharacterCode(
 				presetName.empty() ? actorName : actorName.substr(0, actorName.find(" | GakuActors[")));
+			if (!character.empty()) g_portraitCache.EnqueueIfUncached(character);
 			observations.push_back({actor, id, std::move(character), identity.displayName,
 				GakuMotion::facial_fit::StripCloneSuffix(std::move(faceName)), presetName});
 		}
@@ -2805,37 +3194,17 @@ static bool RefreshSceneActors(GakuMotion::Core& core, bool force = false, void*
 
 static void TickPhotographyEnsemble(GakuMotion::Core& core, int nativeFrame, void* callbackActor = nullptr)
 {
-	PhotographyEnsembleProbe::SetEnabled(core.ensembleSnapshot.probeEnabled);
-	if (nativeFrame > 0) PhotographyEnsembleProbe::Tick(static_cast<uint64_t>(nativeFrame), callbackActor);
-	else if (!core.ensembleSnapshot.probeEnabled) PhotographyEnsembleProbe::Tick(0);
-	const bool wasAvailable = core.ensembleSnapshot.available, wasVerified = core.ensembleSnapshot.verified;
+	const bool probeEnabled = core.InjectionAllowed();
+	PhotographyEnsembleProbe::SetEnabled(probeEnabled);
+	if (nativeFrame > 0 && probeEnabled) PhotographyEnsembleProbe::Tick(static_cast<uint64_t>(nativeFrame), callbackActor);
+	else if (!probeEnabled) PhotographyEnsembleProbe::Tick(0);
 	const auto& observed = PhotographyEnsembleProbe::CurrentFrame();
-	core.ensembleSnapshot.available = nativeFrame > 0 && PhotographyEnsembleProbe::Eligible() &&
+	core.formation.available = nativeFrame > 0 && PhotographyEnsembleProbe::Eligible() &&
 		PhotographyEnsembleProbe::resolved && observed.available && observed.number == static_cast<uint64_t>(nativeFrame);
-	core.ensembleSnapshot.verified = core.ensembleSnapshot.available && PhotographyEnsembleProbe::ReadyForInjection();
-	if (core.EnsembleActive() && (!core.ensembleSnapshot.verified || !core.EnsembleActorsValid()))
+	core.formation.verified = core.formation.available && PhotographyEnsembleProbe::ReadyForInjection();
+	if (core.formation.active && !probeEnabled && HasEnsemblePhysics())
 	{
-		// A destroyed/rebuilt rig invalidates cached secondary transforms. In that
-		// case discard them without touching Unity; Core restores surviving rigs.
-		// A deliberate observer shutdown with fresh rigs can restore normally.
-		if (!core.ensembleSnapshot.probeEnabled && core.EnsembleActorsValid())
-		{
-			if (!RestoreSecondaryPhysics())
-			{
-				g_capturePhysicsUnconfirmed = true;
-				ProtectedCaptureFault("secondary physics restoration failed while disabling ensemble observation");
-				return;
-			}
-			ClearSecondaryPhysics();
-		}
-		else ClearSecondaryPhysics(true);
-		core.LoseEnsembleActors();
-	}
-	else if (!core.EnsembleActive() && (wasAvailable != core.ensembleSnapshot.available || wasVerified != core.ensembleSnapshot.verified))
-	{
-		core.ensembleSnapshot.notice = core.ensembleSnapshot.verified ?
-			"官方摄影槽位与跨帧角色根检查已通过；多人画面仍待实机验收" :
-			core.ensembleSnapshot.probeEnabled ? "摄影槽位观察未就绪，请保持演员与布局稳定" : "请先开启摄影槽位只读观察";
+		ClearSecondaryPhysics(true);
 	}
 }
 
@@ -2986,6 +3355,7 @@ void MotionActorTick(void*, void* activeActor, float deltaTime)
 	// callback remains. Never retain an accumulating list of seen scene actors.
 	g_lastActorCallbackFrame = unityFrame;
 	RefreshSceneActors(core, sceneChanged, activeActor);
+	if (isNewPhysicalFrame) TickPortraitExtractionOnMainThread();
 	StageLoader::BindContext(sceneHandle, activeActor);
 	// Refresh native identities before admitting a queued ensemble transaction.
 	TickPhotographyEnsemble(core, unityFrame);
@@ -3236,7 +3606,7 @@ void MotionActorTick(void*, void* activeActor, float deltaTime)
 	const auto* ensembleProbeTrack = core.PlayerForActor(activeActor);
 	const uint64_t ensembleProbePoseBefore = ensembleProbeTrack ? ensembleProbeTrack->controller.footPoseWriteStamp.serial : 0;
 	EyeGazeProbe::Before(activeActor);
-	if (player.controller.targetActor)
+	if (player.controller.targetActor || core.formation.active)
 		GakuMotion::OnLateUpdate(activeActor, anim, nullptr, dtToPass, isNewPhysicalFrame,
 		                        s_cameraFrameDelta, s_cameraPhysicalFrame);
 	EyeGazeProbe::After(activeActor);
@@ -3252,9 +3622,9 @@ void MotionActorTick(void*, void* activeActor, float deltaTime)
 			core.stageManager.RescanCandidates(activeActor); // Read-only discovery while GM stage controls are inactive.
 		core.RefreshSceneNodes();
 	}
-	if (!core.EnsembleActive() && HasEnsemblePhysics())
+	if (!core.formation.active && HasEnsemblePhysics())
 		for (size_t i = 0; i < g_ensemblePhysics.size(); ++i) ClearEnsemblePhysicsSlot(i, true);
-	if (core.EnsembleActive())
+	if (core.formation.active)
 		DispatchEnsemblePhysics(core, activeActor, unityFrame >= 0 ? unityFrame : s_fallbackFrame, realDeltaTime, bodyBegin);
 	else if (core.IsTargetActor(activeActor))
 	{
@@ -3366,13 +3736,13 @@ void MotionActorTick(void*, void* activeActor, float deltaTime)
 			}
 		}
 	}
-	if (core.burstTraceRequestedSeq > 0 && core.IsTargetActor(activeActor))
+	if (core.burstTraceRequestedSeq > 0 && (core.IsPerformanceActor(activeActor) || core.IsTargetActor(activeActor)))
 	{
 		const auto seq = core.burstTraceRequestedSeq;
 		core.burstTraceRequestedSeq = 0;
 		const std::filesystem::path directory(core.diagnosticsRoot);
 		const auto tracePath = (directory / "before_quartz_trace.json").wstring();
-		int result = core.EnsembleActive() ? g_multiBurstBridge.DumpTraces(tracePath.c_str()) : GBB_E_UNAVAILABLE;
+		int result = core.formation.active ? g_multiBurstBridge.DumpTraces(tracePath.c_str()) : GBB_E_UNAVAILABLE;
 		if (result == GBB_E_UNAVAILABLE) result = g_burstBridge.DumpTraces(tracePath.c_str());
 		LARGE_INTEGER qpc{}; QueryPerformanceCounter(&qpc);
 		char json[1024]{};
@@ -3456,9 +3826,11 @@ extern "C" GAKU_PLUGIN_EXPORT int GakuMotion_GetFaceDiagnostics(
 	void* actor, GakuFaceDiagnosticSnapshot* out, uint32_t size)
 {
 	if (!actor || !out || size != sizeof(*out)) return -1;
-	auto& player = GakuMotion::Core::Instance().player;
-	auto it = player.controller.bindings.find(actor);
-	if (it == player.controller.bindings.end() || player.state == GakuMotion::PlaybackState::Stopped) return 0;
+	auto& core = GakuMotion::Core::Instance();
+	auto* track = core.PlayerForActor(actor);
+	if (!track) track = &core.player;
+	auto it = track->controller.bindings.find(actor);
+	if (it == track->controller.bindings.end() || core.player.state == GakuMotion::PlaybackState::Stopped) return 0;
 	auto& face = it->second.face;
 	face.Observe();
 	std::memset(out, 0, sizeof(*out));
@@ -3470,7 +3842,7 @@ extern "C" GAKU_PLUGIN_EXPORT int GakuMotion_GetFaceDiagnostics(
 	out->actor = reinterpret_cast<uintptr_t>(actor);
 	out->model = reinterpret_cast<uintptr_t>(face.diagnosticModel);
 	out->clip_time = face.diagnosticTime;
-	out->playback_state = static_cast<int32_t>(player.state);
+	out->playback_state = static_cast<int32_t>(core.player.state);
 	out->unity_frame = face.diagnosticUnityFrame;
 	out->channel_count = static_cast<uint32_t>(face.diagnosticChannels.size());
 	for (size_t i = 0; i < face.diagnosticChannels.size(); ++i)
@@ -4221,6 +4593,9 @@ GakuStatus PublishActorApi()
 		hooks.probeAudio = WebPanelProbeAudio;
 		hooks.getTrackCoverDataUri = WebPanelGetTrackCoverDataUri;
 		hooks.readImagePreviewDataUri = WebPanelReadImagePreviewDataUri;
+		hooks.getActorPortraitDataUri = [](const std::string& normCharCode, std::string& outDataUri, bool& outCached) -> bool {
+			return g_portraitCache.QueryOrEnqueue(normCharCode, outDataUri, outCached);
+		};
 		hooks.getScreenshotCapabilities = WebPanelGetScreenshotCapabilities;
 		hooks.captureScreenshot = WebPanelCaptureScreenshot;
 		hooks.getAudioEffectsState = WebPanelGetAudioEffectsState;

@@ -130,16 +130,16 @@ describe('TransportBar', () => {
     await waitFor(() => expect(motionStore.getState().camera.settings.mode).toBe(2))
   })
 
-  it('disables prev/next inside precision panel while ensemble is active', async () => {
+  it('keeps prev/next enabled inside precision panel with multi-actor stage formation', async () => {
     await motionStore.selectMotion('hikari-no-saki', false)
     const user = userEvent.setup()
     renderBar()
     await user.click(screen.getByTestId('precision-control-trigger'))
 
     expect(screen.getByRole('button', { name: '上一曲' })).toBeEnabled()
-    bridge.push('ensemble.changed', { ...motionStore.getState().ensemble, active: true })
-    await waitFor(() => expect(screen.getByRole('button', { name: '上一曲' })).toBeDisabled())
-    expect(screen.getByRole('button', { name: '下一曲' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '下一曲' })).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: '下一曲' }))
+    await waitFor(() => expect(motionStore.getState().loaded.motionKey).not.toBe('hikari-no-saki'))
   })
 
   it('opens vertical volume popover and saves volume on slider commit', async () => {

@@ -17,7 +17,7 @@
 #include "GkStageStudioSettings.hpp"
 #include "GkDataLayout.hpp"
 #include "GkControlRequests.hpp"
-#include "GkEnsembleSettings.hpp"
+#include "GkStageFormation.hpp"
 #include "GakuMotionActor.h"
 #include "../include/GakuMotionClock.h"
 #include "../include/GakuMotionStageState.h"
@@ -104,12 +104,22 @@ namespace GakuMotion
 		}
 
 		MotionPlayer player;
-		ensemble::Snapshot ensembleSnapshot;
-		ensemble::Settings ensembleActiveSettings;
-		std::deque<std::unique_ptr<MotionPlayer>> ensembleTracks{ensemble::InitialSlots};
-		std::deque<BoneOverrideSet> ensembleOverrides{ensemble::InitialSlots};
-		std::deque<int> ensembleInstanceIds = std::deque<int>(ensemble::InitialSlots);
-		uint64_t ensembleLastFrame{0};
+		StageFormation formation;
+		std::unordered_map<uint64_t, std::unique_ptr<MotionPlayer>> formationTracks;
+		std::unordered_map<uint64_t, ActorCustomization> actorCustomizations;
+		FacialWeights defaultFacialWeights;
+		std::map<std::string, FacialWeights> facialWeightsByCharacter;
+		FacialWeights lastSyncedPlayerFacialWeights;
+		bool playerFacialWeightsBaselineInit{false};
+		Vector3 savedSlot0InitialOffset{0.0f, 0.0f, 0.0f};
+		void* formationAnchorActor{nullptr};
+		Vector3 formationAnchorPos{0.0f, 0.0f, 0.0f};
+		Quaternion formationAnchorRot{0.0f, 0.0f, 0.0f, 1.0f};
+		bool formationAnchorCaptured{false};
+		uint64_t formationLastFrame{0};
+		uint64_t formationCameraFrame{0};
+		std::unordered_set<void*> formationFrameWrittenActors;
+		bool formationCameraTicked{false};
 		bool (*fnEnsembleActorEligible)(void*){nullptr};
 		CameraController camera;
 		LookAtManager lookAt;
@@ -194,24 +204,48 @@ namespace GakuMotion
 			if (customAudioOwned && player.fnPauseAudio) player.fnPauseAudio();
 			if (customAudioOwned)
 			{
-				const auto audioState = player.ObserveAudio();
-				captureRestoreReport.nativeAudio = player.fnObserveAudio && audioState.confirmed && audioState.errorCode == 0 &&
-					(audioState.state == audio::PlaybackState::Paused || audioState.state == audio::PlaybackState::Stopped)
-					? capture::RestoreState::Confirmed : capture::RestoreState::Unconfirmed;
+				if (player.fnObserveAudio)
+				{
+					const auto audioState = player.ObserveAudio();
+					captureRestoreReport.nativeAudio = audioState.confirmed && audioState.errorCode == 0 &&
+						(audioState.state == audio::PlaybackState::Paused || audioState.state == audio::PlaybackState::Stopped)
+						? capture::RestoreState::Confirmed : capture::RestoreState::Unconfirmed;
+				}
+				else
+				{
+					captureRestoreReport.nativeAudio = (!enforceInjectionPolicy && player.fnPauseAudio)
+						? capture::RestoreState::Confirmed : capture::RestoreState::Unconfirmed;
+				}
 			}
 			// Disabled GUI cancels its drag; retain the sampled time, not a scrub
 			// ownership flag whose release event can no longer arrive.
 			player.scrubbing = false;
 			player.audioStarted = false;
 			player.state = PlaybackState::Stopped;
-			const auto actorRestore = player.controller.RestoreForCapture();
+			const auto actorRestore = !formation.active ? player.controller.RestoreForCapture() : BodyFaceRestoreResult{};
 			bool ensembleBody = true, ensembleFace = true, ensembleGaze = true;
 			bool ensembleBodyModified = false, ensembleFaceModified = false, ensembleGazeModified = false;
-			for (auto& track : ensembleTracks) if (track && EnsembleActive())
+			if (formation.active)
 			{
-				const auto r = track->controller.RestoreForCapture(); track->state = PlaybackState::Stopped;
-				ensembleBody &= r.bodyConfirmed; ensembleFace &= r.faceConfirmed; ensembleGaze &= r.gazeConfirmed;
-				ensembleBodyModified |= r.bodyModified; ensembleFaceModified |= r.faceModified; ensembleGazeModified |= r.gazeModified;
+				for (auto& kv : formationTracks)
+				{
+					if (!kv.second) continue;
+					const auto r = kv.second->controller.RestoreForCapture();
+					kv.second->state = PlaybackState::Stopped;
+					ensembleBody &= r.bodyConfirmed;
+					ensembleFace &= r.faceConfirmed;
+					ensembleGaze &= r.gazeConfirmed;
+					ensembleBodyModified |= r.bodyModified;
+					ensembleFaceModified |= r.faceModified;
+					ensembleGazeModified |= r.gazeModified;
+				}
+			}
+			else
+			{
+				for (auto& kv : formationTracks)
+				{
+					if (kv.second) kv.second->state = PlaybackState::Stopped;
+				}
 			}
 			auto status = [](bool modified, bool confirmed) {
 				return !confirmed ? capture::RestoreState::Unconfirmed :
@@ -243,6 +277,14 @@ namespace GakuMotion
 				player.state = PlaybackState::Paused;
 				player.Resume();
 			}
+			for (auto& kv : formationTracks)
+			{
+				if (!kv.second) continue;
+				kv.second->SyncClockState(player.currentTime);
+				kv.second->state = player.state;
+			}
+			formationFrameWrittenActors.clear();
+			formationCameraTicked = false;
 			// Preview and paused states retain their exact time and do not start audio.
 			NotifyMotionPlaying(player.state == PlaybackState::Playing);
 			const bool resumeStage = capturePerformanceWasActive && !stageStoppedByTransport &&
@@ -260,7 +302,9 @@ namespace GakuMotion
 			++injectionSession;
 			captureSuspended = false;
 			if (player.state != PlaybackState::Stopped) player.Stop();
-			RestoreEnsembleTracks();
+			for (auto& kv : formationTracks) if (kv.second && kv.second->state != PlaybackState::Stopped) kv.second->Stop();
+			formationFrameWrittenActors.clear();
+			formationCameraTicked = false;
 			camera.Release();
 			stageManager.SetInjectionEnabled(false);
 			NotifyMotionPlaying(false);
@@ -272,7 +316,9 @@ namespace GakuMotion
 			captureResumeReason = "gm_stopped";
 			stageStoppedByTransport = true;
 			player.Stop();
-			RestoreEnsembleTracks();
+			for (auto& kv : formationTracks) if (kv.second) kv.second->Stop();
+			formationFrameWrittenActors.clear();
+			formationCameraTicked = false;
 			camera.Release();
 			stageManager.SetInjectionEnabled(false);
 			NotifyMotionPlaying(false);
@@ -362,6 +408,7 @@ namespace GakuMotion
 
 		// ---- 路径 ----
 		std::string localRoot;
+		std::string gameRoot;
 		std::string motionsRoot;
 		std::string configRoot;
 		std::string logsRoot, diagnosticsRoot, transactionRoot;
@@ -427,7 +474,9 @@ namespace GakuMotion
 			StageSettings, StagePreset, ToggleStageCandidate, ScanStageCandidates,
 			MountCustomStage, UnloadCustomStage, RestoreCameraSkybox,
 			SeekFrame, StepFrame, ReloadMotion, DeleteFiles, StageLoadReplacement, SelectTarget,
-			Control, EnsembleSettings, EnsemblePreset, EnsembleProbe, StudioSettings, StudioReset
+			Control, StudioSettings, StudioReset,
+			FormationSelectSlot, FormationSwapSlots, FormationSetSlotOffset,
+			FormationResetSlotOffset, FormationSaveSlotOffset, FormationSetSlotSource
 		};
 
 		std::atomic<int> guiPhysicsBackend{2};
@@ -460,7 +509,6 @@ namespace GakuMotion
 			uint64_t actorToken{0}, actorEpoch{0};
 			control_v0::Command controlCommand{};
 			uint64_t controlTicket{0};
-			ensemble::Settings ensembleSettings{};
 		};
 
 		std::mutex guiCommandMutex;
@@ -475,9 +523,12 @@ namespace GakuMotion
 			std::lock_guard<std::mutex> lock(guiCommandMutex);
 			// Only adjacent scrub/placement updates may coalesce. Begin/end/save/
 			// transport events retain their order across physical frames.
-			if ((cmd.action == GuiAction::ScrubUpdate || cmd.action == GuiAction::InitialPosition) && !guiCommands.
-				empty() &&
-				guiCommands.back().action == cmd.action)
+			if (!guiCommands.empty() &&
+				(((cmd.action == GuiAction::ScrubUpdate || cmd.action == GuiAction::InitialPosition) &&
+				  guiCommands.back().action == cmd.action) ||
+				 (cmd.action == GuiAction::FormationSetSlotOffset &&
+				  guiCommands.back().action == GuiAction::FormationSetSlotOffset &&
+				  guiCommands.back().candidateIndex == cmd.candidateIndex)))
 				guiCommands.back() = std::move(cmd);
 			else guiCommands.push_back(std::move(cmd));
 		}
@@ -529,6 +580,52 @@ namespace GakuMotion
 		{
 			GuiCommand cmd{GuiAction::InitialPosition};
 			cmd.position = offset;
+			QueueGui(std::move(cmd));
+		}
+
+		void QueueFormationSelectSlot(int slotIndex)
+		{
+			GuiCommand cmd{GuiAction::FormationSelectSlot};
+			cmd.candidateIndex = slotIndex;
+			QueueGui(std::move(cmd));
+		}
+
+		void QueueFormationSwapSlots(int fromSlot, int toSlot)
+		{
+			GuiCommand cmd{GuiAction::FormationSwapSlots};
+			cmd.stagePresetIndex = fromSlot;
+			cmd.candidateIndex = toSlot;
+			QueueGui(std::move(cmd));
+		}
+
+		void QueueFormationSetSlotOffset(int slotIndex, const Vector3& offset, float yawDegrees)
+		{
+			GuiCommand cmd{GuiAction::FormationSetSlotOffset};
+			cmd.candidateIndex = slotIndex;
+			cmd.position = offset;
+			cmd.value = yawDegrees;
+			QueueGui(std::move(cmd));
+		}
+
+		void QueueFormationResetSlotOffset(int slotIndex)
+		{
+			GuiCommand cmd{GuiAction::FormationResetSlotOffset};
+			cmd.candidateIndex = slotIndex;
+			QueueGui(std::move(cmd));
+		}
+
+		void QueueFormationSaveSlotOffset(int slotIndex)
+		{
+			GuiCommand cmd{GuiAction::FormationSaveSlotOffset};
+			cmd.candidateIndex = slotIndex;
+			QueueGui(std::move(cmd));
+		}
+
+		void QueueFormationSetSlotSource(int slotIndex, int sourceSlotIndex)
+		{
+			GuiCommand cmd{GuiAction::FormationSetSlotSource};
+			cmd.candidateIndex = slotIndex;
+			cmd.stagePresetIndex = sourceSlotIndex;
 			QueueGui(std::move(cmd));
 		}
 
@@ -733,16 +830,6 @@ namespace GakuMotion
 			}
 			for (const auto& cmd : commands)
 			{
-				if (cmd.action == GuiAction::EnsembleProbe)
-				{ ensembleSnapshot.probeEnabled = cmd.flag; ensembleSnapshot.verified = false; continue; }
-				if (cmd.action == GuiAction::EnsemblePreset)
-				{ EnsemblePreset(cmd.flag, cmd.key, cmd.ensembleSettings); continue; }
-				if (cmd.action == GuiAction::EnsembleSettings)
-				{
-					if (cmd.sceneSession == injectionSession) ApplyEnsemble(cmd.ensembleSettings, cmd.loadedGeneration, cmd.actorEpoch);
-					else ensembleSnapshot.notice = "场景会话已变化，请重新应用";
-					continue;
-				}
 				if (cmd.action == GuiAction::Control)
 				{
 					CompleteControlCommand(cmd);
@@ -787,27 +874,45 @@ namespace GakuMotion
 					break;
 				case GuiAction::Cycle: CycleMotion(static_cast<int>(cmd.value), "gui");
 					break;
-				case GuiAction::Play: player.Play();
+				case GuiAction::Play:
+					player.Play();
+					for (auto& kv : formationTracks) if (kv.second) { kv.second->SyncClockState(player.currentTime); kv.second->state = player.state; }
 					break;
-				case GuiAction::Pause: player.Pause();
+				case GuiAction::Pause:
+					player.Pause();
+					for (auto& kv : formationTracks) if (kv.second) { kv.second->SyncClockState(player.currentTime); kv.second->state = player.state; }
 					break;
-				case GuiAction::Resume: player.Resume();
+				case GuiAction::Resume:
+					player.Resume();
+					for (auto& kv : formationTracks) if (kv.second) { kv.second->SyncClockState(player.currentTime); kv.second->state = player.state; }
 					break;
 				case GuiAction::Stop: StopPerformance();
 					break;
-				case GuiAction::Seek: player.Seek(cmd.value);
+				case GuiAction::Seek:
+					player.Seek(cmd.value);
+					for (auto& kv : formationTracks) if (kv.second) { kv.second->SyncClockState(player.currentTime); kv.second->state = player.state; }
 					break;
-				case GuiAction::SeekFrame: player.SeekFrame(cmd.frame);
+				case GuiAction::SeekFrame:
+					player.SeekFrame(cmd.frame);
+					for (auto& kv : formationTracks) if (kv.second) { kv.second->SyncClockState(player.currentTime); kv.second->state = player.state; }
 					break;
-				case GuiAction::StepFrame: player.StepFrame(static_cast<int>(cmd.value));
+				case GuiAction::StepFrame:
+					player.StepFrame(static_cast<int>(cmd.value));
+					for (auto& kv : formationTracks) if (kv.second) { kv.second->SyncClockState(player.currentTime); kv.second->state = player.state; }
 					break;
 				case GuiAction::ReloadMotion: ReloadCurrentMotion();
 					break;
-				case GuiAction::ScrubBegin: player.BeginScrub(cmd.value);
+				case GuiAction::ScrubBegin:
+					player.BeginScrub(cmd.value);
+					for (auto& kv : formationTracks) if (kv.second) { kv.second->SyncClockState(player.currentTime); kv.second->state = player.state; kv.second->scrubbing = player.scrubbing; }
 					break;
-				case GuiAction::ScrubUpdate: player.UpdateScrub(cmd.value);
+				case GuiAction::ScrubUpdate:
+					player.UpdateScrub(cmd.value);
+					for (auto& kv : formationTracks) if (kv.second) { kv.second->SyncClockState(player.currentTime); kv.second->state = player.state; kv.second->scrubbing = player.scrubbing; }
 					break;
-				case GuiAction::ScrubEnd: player.EndScrub(cmd.value);
+				case GuiAction::ScrubEnd:
+					player.EndScrub(cmd.value);
+					for (auto& kv : formationTracks) if (kv.second) { kv.second->SyncClockState(player.currentTime); kv.second->state = player.state; kv.second->scrubbing = player.scrubbing; }
 					break;
 				case GuiAction::Refresh: BeginLibraryRefresh();
 					break;
@@ -822,13 +927,12 @@ namespace GakuMotion
 				case GuiAction::LoadList:
 					if (playlist.Load(cmd.key.empty() ? playlistPath : cmd.key, playlistNotice))
 					{
-						if (!EnsembleActive()) player.loop = playlist.mode == PlaylistMode::SingleLoop;
+						player.loop = playlist.mode == PlaylistMode::SingleLoop;
 						RefreshMotionLibrary();
 						SavePlaylist();
 					}
 					break;
 				case GuiAction::Mode:
-					if (EnsembleActive()) { player.loop = static_cast<int>(cmd.value) == 1; break; }
 					playlist.mode = static_cast<PlaylistMode>(std::clamp(static_cast<int>(cmd.value), 0, 3));
 					player.loop = playlist.mode == PlaylistMode::SingleLoop;
 					playlist.shuffleRemaining.clear();
@@ -893,10 +997,23 @@ namespace GakuMotion
 				case GuiAction::PickTarget: PickBoundActorAsTarget();
 					break;
 				case GuiAction::InitialPosition:
-					if (!EnsembleActive()) player.controller.SetInitialPositionOffset(cmd.position);
+					if (formation.active && HasSlot(formation.selectedSlotIndex))
+					{
+						SetSlotOffset(formation.selectedSlotIndex, cmd.position,
+							formation.slots[static_cast<size_t>(formation.selectedSlotIndex)].yawDegrees);
+					}
+					else
+					{
+						if (player.controller.SetInitialPositionOffset(cmd.position) && !formation.slots.empty())
+						{
+							formation.slots[0].offset = cmd.position;
+							formation.slots[0].placementDirty = true;
+						}
+					}
 					break;
 				case GuiAction::SaveInitialPosition:
-					if (!EnsembleActive()) SaveInitialPosition();
+					if (HasSlot(formation.selectedSlotIndex)) SaveSlotOffset(formation.selectedSlotIndex);
+					else SaveInitialPosition();
 					break;
 				case GuiAction::SaveFacialWeights: SaveFacialWeights();
 					break;
@@ -938,6 +1055,24 @@ namespace GakuMotion
 					break;
 				case GuiAction::RestoreCameraSkybox:
 					stageManager.ForceRestoreCameraClear(nullptr);
+					break;
+				case GuiAction::FormationSelectSlot:
+					SelectSlot(cmd.candidateIndex);
+					break;
+				case GuiAction::FormationSwapSlots:
+					SwapSlots(cmd.stagePresetIndex, cmd.candidateIndex);
+					break;
+				case GuiAction::FormationSetSlotOffset:
+					SetSlotOffset(cmd.candidateIndex, cmd.position, cmd.value);
+					break;
+				case GuiAction::FormationResetSlotOffset:
+					ResetSlotOffset(cmd.candidateIndex);
+					break;
+				case GuiAction::FormationSaveSlotOffset:
+					SaveSlotOffset(cmd.candidateIndex);
+					break;
+				case GuiAction::FormationSetSlotSource:
+					SetSlotSource(cmd.candidateIndex, cmd.stagePresetIndex);
 					break;
 				}
 			}
@@ -1141,7 +1276,7 @@ namespace GakuMotion
 						}
 						lastImportedKey = importedKey;
 
-						if (isNewImport && !importedKey.empty() && !EnsembleActive() && player.state != PlaybackState::Playing)
+						if (isNewImport && !importedKey.empty() && player.state != PlaybackState::Playing)
 						{
 							const int idx = FindPlaylistIndex(motions, importedKey);
 							if (idx >= 0) SelectMotionByIndex(idx, false, /*forcePreview=*/true);
@@ -1169,6 +1304,8 @@ namespace GakuMotion
 		// =========================================================================
 		// 生命周期
 		// =========================================================================
+		void SetGameRoot(const std::string& path) { gameRoot = path; }
+
 		void Initialize(const std::string& rootPath, const DataLayout* selectedLayout = nullptr)
 		{
 			if (initialized) return;
@@ -1287,24 +1424,32 @@ namespace GakuMotion
 			// calling RestoreMute/Rebind on its destroyed Unity objects.
 			camera.Release(false);
 			player.AbandonScene();
-			ensembleSnapshot.verified = ensembleSnapshot.available = false;
-			if (EnsembleActive())
-			{
-				RetireEnsembleTracks();
-				ensembleSnapshot.active = ensembleSnapshot.settings.enabled = false;
-				++ensembleSnapshot.revision;
-				player.additionalPerformanceDuration = 0;
-				player.controller.SetPlacementYawDegrees(0);
-				player.controller.SetInitialPositionOffset({});
-				LoadInitialPosition();
-				RebuildEffectiveOverrides();
-			}
+			StopAndReleaseFormationTracks(true);
+			actorCustomizations.clear();
+			formationAnchorActor = nullptr;
+			formationAnchorCaptured = false;
+			formationAnchorPos = {};
+			formationAnchorRot = Quaternion::Identity();
+			formationLastFrame = 0;
+			formationCameraFrame = 0;
+			formationFrameWrittenActors.clear();
+			formationCameraTicked = false;
+			player.additionalPerformanceDuration = 0;
+			player.controller.ClearReferenceAnchor();
+			player.controller.SetPlacementYawDegrees(0);
+			player.controller.SetInitialPositionOffset(savedSlot0InitialOffset);
+			formation = StageFormation{};
+			formation.slotCount = 1;
+			formation.slots.resize(1);
+			formation.slots[0].slotIndex = 0;
+			formation.slots[0].offset = savedSlot0InitialOffset;
 			stageManager.AbandonScene();
 			ResetSoleObservation();
 			sceneActors.clear();
 			sceneActorRegistry.Clear();
 			currentActor = nullptr;
 			currentActorBoundBones = currentActorTotalBones = 0;
+			SyncPlayerFacialAndOverridesToSelectedSlot();
 			NotifyMotionPlaying(false);
 		}
 
@@ -1367,8 +1512,9 @@ namespace GakuMotion
 			}
 			if (player.state != PlaybackState::Stopped && !PrepareInjection()) return;
 
-			// 2. 骨骼覆盖集合始终指向最新合成结果
-			if (!EnsembleActive()) player.controller.SetBoneOverrides(&effectiveOverrides);
+			// 2. 骨骼覆盖集合始终指向最新合成结果，并刷新主锚点世界姿态
+			RefreshFormationAnchorPose();
+			if (!formation.active || formationTracks.empty()) player.controller.SetBoneOverrides(&effectiveOverrides);
 
 			// 3. 姿态灌入（仅新物理帧首个 Actor 推进全局时钟，同帧其余 Actor 仅应用姿态）
 			// Marker proves that this callback wrote each Foot's original motion.
@@ -1381,39 +1527,151 @@ namespace GakuMotion
 			actorController.eyePoseWriteStamp.actor = nullptr;
 			actorController.eyePoseWriteStamp.mask = 0;
 			actorController.eyePoseWriteStamp.transforms = {};
-			if (EnsembleActive())
+
+			if (formation.active && !formationTracks.empty())
 			{
-				if (!EnsembleActorsValid()) { LoseEnsembleActors(); return; }
-				const bool isNewEnsembleFrame = advanceClock && (!physicalFrame || ensembleLastFrame != physicalFrame);
-				if (isNewEnsembleFrame)
+				const bool isNewFrame = advanceClock && (!physicalFrame || formationLastFrame != physicalFrame);
+				if (isNewFrame)
 				{
-					ensembleLastFrame = physicalFrame;
+					formationLastFrame = physicalFrame;
+					formationCameraFrame = physicalFrame;
+					formationFrameWrittenActors.clear();
+					formationCameraTicked = false;
 					player.AdvancePerformance(deltaTime);
-					if (player.finished) { StopPerformance(); return; }
-				}
-				if (actorPlayer)
-				{
-					if (actorPlayer != &player) actorController.CopyRuntimeConfigurationFrom(player.controller);
-					actorPlayer->SampleAtPerformanceTime(player.currentTime, player.state, player.scrubbing, actor, animator, playableDirector);
-					if (isNewEnsembleFrame && player.state != PlaybackState::Stopped)
+					if (player.finished)
 					{
-						++player.evaluatedFrameSerial;
-						if (player.state == PlaybackState::Playing &&
-							player.clockConfig.runMode == performance::PlaybackRunMode::ForRecording &&
-							player.recordingLeaseId == 0 &&
-							player.clockConfig.source != performance::ClockSource::External &&
-							player.gateRecordingByRenderComplete)
-						{
-							player.waitingForRenderComplete = true;
-						}
+						player.finished = false;
+						const int next = playlist.Next(motions, currentMotionIndex);
+						if (next >= 0) SelectMotionByIndex(next, true);
+						else StopPerformance();
+						return;
 					}
 				}
+
+				const int slotIdx = SlotIndexForActor(actor);
+				if (slotIdx >= 0 && actorPlayer && actorPlayer != &player)
+				{
+					const auto& slot = formation.slots[static_cast<size_t>(slotIdx)];
+					actorController.CopyRuntimeConfigurationFrom(player.controller);
+					if (formationAnchorCaptured)
+					{
+						actorController.SetReferenceAnchor(formationAnchorPos, formationAnchorRot);
+					}
+					else
+					{
+						actorController.ClearReferenceAnchor();
+					}
+					actorController.SetInitialPositionOffset(slot.offset);
+					actorController.SetPlacementYawDegrees(slot.yawDegrees);
+					if (const auto custIt = actorCustomizations.find(slot.actorToken); custIt != actorCustomizations.end())
+					{
+						actorController.facialWeights = custIt->second.facialWeights;
+						actorController.SetBoneOverrides(&custIt->second.effectiveOverrides);
+					}
+					actorPlayer->SampleAtPerformanceTime(player.currentTime, player.state, player.scrubbing,
+					                                     actor, animator, playableDirector);
+					if (player.state != PlaybackState::Stopped)
+					{
+						formationFrameWrittenActors.insert(actor);
+					}
+					if (slotIdx == formation.selectedSlotIndex || (formation.selectedSlotIndex < 0 && slotIdx == 0))
+					{
+						currentActorBoundBones = actorController.currentBinding.boundBoneCount;
+						currentActorTotalBones = actorController.currentBinding.boneTransforms.size();
+					}
+				}
+				if (isNewFrame && player.state != PlaybackState::Stopped)
+				{
+					++player.evaluatedFrameSerial;
+					if (player.state == PlaybackState::Playing &&
+						player.clockConfig.runMode == performance::PlaybackRunMode::ForRecording &&
+						player.recordingLeaseId == 0 &&
+						player.clockConfig.source != performance::ClockSource::External &&
+						player.gateRecordingByRenderComplete)
+					{
+						player.waitingForRenderComplete = true;
+					}
+				}
+				ObserveSoles(actor);
+				WriteRequestedSolePitchSnapshot(actor);
+
+				if (player.state == PlaybackState::Stopped)
+				{
+					camera.Release();
+				}
+				else
+				{
+					std::vector<void*> allActiveActors;
+					allActiveActors.reserve(formation.slots.size());
+					for (const auto& s : formation.slots)
+					{
+						if (!s.occupied || s.actorToken == 0) continue;
+						void* resolved = sceneActorRegistry.Resolve(s.actorToken, formation.actorEpoch);
+						if (resolved &&
+							(!player.controller.fnCanDriveActor || player.controller.fnCanDriveActor(resolved)) &&
+							(!fnEnsembleActorEligible || fnEnsembleActorEligible(resolved)))
+						{
+							allActiveActors.push_back(resolved);
+						}
+					}
+					if (!formationCameraTicked && !allActiveActors.empty() &&
+						formationFrameWrittenActors.size() >= allActiveActors.size())
+					{
+						formationCameraTicked = true;
+						std::vector<void*> camTargets;
+						if (camera.settings.followSlotIndex == -1)
+						{
+							camTargets = allActiveActors;
+						}
+						else
+						{
+							void* specific = nullptr;
+							if (HasSlot(camera.settings.followSlotIndex))
+							{
+								const auto& targetSlot = formation.slots[static_cast<size_t>(camera.settings.followSlotIndex)];
+								if (targetSlot.occupied && targetSlot.actorToken != 0)
+								{
+									specific = sceneActorRegistry.Resolve(targetSlot.actorToken, formation.actorEpoch);
+								}
+							}
+							if (specific && (!camera.fnAlive || camera.fnAlive(specific)))
+							{
+								camTargets.push_back(specific);
+							}
+							else
+							{
+								for (void* fallbackActor : allActiveActors)
+								{
+									if (!camera.fnAlive || camera.fnAlive(fallbackActor))
+									{
+										camTargets.push_back(fallbackActor);
+										break;
+									}
+								}
+							}
+						}
+						camera.LoadTrack(player.currentMotionDir, player.clip);
+						player.cameraSourceDuration = camera.track.frames.empty() ? 0.0f :
+							static_cast<float>(camera.track.frames.size()) / camera.track.fps;
+						void* anchorPtr = formationAnchorActor ? formationAnchorActor
+							                                   : (!allActiveActors.empty() ? allActiveActors.front() : actor);
+						camera.TickMulti(
+							player.state == PlaybackState::Playing || player.state == PlaybackState::Paused ||
+							player.state == PlaybackState::Preview,
+							player.CameraSourceTime(),
+							cameraDeltaTime >= 0.0f ? cameraDeltaTime : deltaTime,
+							camTargets, anchorPtr, physicalFrame);
+					}
+				}
+				return;
 			}
-			else player.Tick(deltaTime, actor, animator, playableDirector, advanceClock);
+
+			player.controller.ClearReferenceAnchor();
+			player.Tick(deltaTime, actor, animator, playableDirector, advanceClock);
 			ObserveSoles(actor); // Read-only Unity queries, on the same main-thread frame.
-			if (!EnsembleActive()) ApplyExperimentalSolePitch(actor); // Opt-in demo, separate from #078 evidence.
+			ApplyExperimentalSolePitch(actor); // Opt-in demo, separate from #078 evidence.
 			WriteRequestedSolePitchSnapshot(actor);
-			if (!EnsembleActive() && advanceClock && player.finished)
+			if (advanceClock && player.finished)
 			{
 				player.finished = false;
 				const int next = playlist.Next(motions, currentMotionIndex);
@@ -1422,7 +1680,7 @@ namespace GakuMotion
 			}
 
 			// A stable target prevents multiple actors from fighting over one camera.
-			void* cameraActor = EnsembleActive() && camera.settings.mode == CameraMode::Follow ? EnsembleCameraActor() : player.controller.targetActor;
+			void* cameraActor = player.controller.targetActor;
 			if (cameraActor && camera.fnAlive && !camera.fnAlive(cameraActor)) cameraActor = nullptr;
 			if (!cameraActor)
 			{
@@ -1566,7 +1824,6 @@ namespace GakuMotion
 
 		bool ReloadCurrentMotion()
 		{
-			if (EnsembleActive()) { ensembleSnapshot.notice = "请在多人槽位中重新应用组合"; return false; }
 			if (importBusy || cameraImportBusy) { libraryNotice = "正在导入，完成后可重新加载"; return false; }
 			const auto directory = player.currentMotionDir;
 			const auto file = FindMotionFile(directory);
@@ -1587,8 +1844,23 @@ namespace GakuMotion
 			player.cameraSourceDuration = camera.track.frames.empty() ? 0.0f :
 				static_cast<float>(camera.track.frames.size()) / camera.track.fps;
 			loadedMotionEntry.timing = player.timing;
+			if (formation.active)
+			{
+				const MotionEntry* m = CurrentMotion();
+				for (const auto& s : formation.slots)
+				{
+					if (s.occupied) ConfigureFormationTrackForSlot(s, m, true);
+				}
+				UpdateFormationDuration();
+			}
 			player.Seek(time);
 			player.state = preview ? PlaybackState::Preview : PlaybackState::Paused;
+			for (auto& kv : formationTracks)
+			{
+				if (!kv.second) continue;
+				kv.second->SyncClockState(player.currentTime);
+				kv.second->state = player.state;
+			}
 			++loadedMotionGeneration;
 			loadedMotionVersion = version;
 			loadedSourceMissing = loadedSourceChanged = false;
@@ -1603,6 +1875,7 @@ namespace GakuMotion
 		void ClearCurrentMotion()
 		{
 			player.Stop();
+			StopAndReleaseFormationTracks(false);
 			camera.Release();
 			player.clip = MotionClip{};
 			player.currentMotionDir.clear();
@@ -1614,6 +1887,7 @@ namespace GakuMotion
 			++loadedMotionGeneration;
 			InvalidateClockAudioProbeCache();
 			motionOverrides = BoneOverrideSet{};
+			RebuildFormationForTrack(nullptr);
 			LoadOverrides(false);
 			NotifyMotionPlaying(false);
 		}
@@ -1628,9 +1902,6 @@ namespace GakuMotion
 
 		bool DeleteMotionFiles(const std::string& key, bool confirmed = false)
 		{
-			if (EnsembleActive() && std::any_of(ensembleActiveSettings.slots.begin(), ensembleActiveSettings.slots.end(),
-				[&](const auto& slot) { return slot.enabled && slot.motionKey == key; }))
-			{ playlistNotice = "该动作正在多人舞台中使用，请先停用多人舞台"; return false; }
 			if (!confirmed) return false;
 			if (importBusy || cameraImportBusy) { playlistNotice = "正在导入，完成后可删除曲目"; return false; }
 			const int index = FindPlaylistIndex(motions, key);
@@ -2297,6 +2568,7 @@ namespace GakuMotion
 				<< ",\n    \"mode\": " << static_cast<int>(s.mode)
 				<< ",\n    \"follow_behavior\": " << static_cast<int>(s.followBehavior)
 				<< ",\n    \"follow_target\": \"" << CameraFollowTargetName(s.followTarget) << '"'
+				<< ",\n    \"follow_slot_index\": " << s.followSlotIndex
 				<< ",\n    \"follow_actor\": " << (s.followActor ? "true" : "false")
 				<< ",\n    \"limit_to_scene\": " << (s.limitToScene ? "true" : "false") << ",\n    \"bounds_min\": ";
 			vector(s.boundsMin);
@@ -2750,37 +3022,110 @@ namespace GakuMotion
 				facialWeightsNotice = "表情幅度载入失败：配置无效";
 				return false;
 			}
-			FacialWeights weights;
-			for (const auto& entry : {std::pair<const char*, float*>{"overall", &weights.overall},
-			     {"brow", &weights.brow}, {"eye", &weights.eye}, {"mouth", &weights.mouth}})
+			auto parseWeightObject = [&](const jsonlite::Value& obj, FacialWeights& outWeights) -> bool
 			{
-				const auto* value = root.Find(entry.first);
-				if (!value || !value->IsNumber()) { facialWeightsNotice = "表情幅度载入失败：配置无效"; return false; }
-				const float number = value->AsFloat(-1.0f);
-				if (!std::isfinite(number) || number < 0.0f || number > 2.0f)
-				{ facialWeightsNotice = "表情幅度载入失败：数值应在 0 到 2 之间"; return false; }
-				*entry.second = number;
+				if (!obj.IsObject()) return false;
+				for (const auto& entry : {std::pair<const char*, float*>{"overall", &outWeights.overall},
+				     {"brow", &outWeights.brow}, {"eye", &outWeights.eye}, {"mouth", &outWeights.mouth}})
+				{
+					const auto* value = obj.Find(entry.first);
+					if (!value || !value->IsNumber())
+					{
+						facialWeightsNotice = "表情幅度载入失败：配置无效";
+						return false;
+					}
+					const float number = value->AsFloat(-1.0f);
+					if (!std::isfinite(number) || number < 0.0f || number > 2.0f)
+					{
+						facialWeightsNotice = "表情幅度载入失败：数值应在 0 到 2 之间";
+						return false;
+					}
+					*entry.second = number;
+				}
+				return true;
+			};
+
+			FacialWeights loadedDefault;
+			if (!parseWeightObject(root, loadedDefault)) return false;
+
+			std::map<std::string, FacialWeights> loadedByCharacter;
+			if (const auto* byChar = root.Find("by_character"))
+			{
+				if (!byChar->IsObject())
+				{
+					facialWeightsNotice = "表情幅度载入失败：by_character 配置无效";
+					return false;
+				}
+				for (const auto& kv : byChar->objectMembers)
+				{
+					if (kv.first.empty()) continue;
+					FacialWeights charWeights;
+					if (!parseWeightObject(kv.second, charWeights)) return false;
+					loadedByCharacter[kv.first] = charWeights;
+				}
 			}
-			player.controller.facialWeights = weights;
+
+			defaultFacialWeights = loadedDefault;
+			facialWeightsByCharacter = std::move(loadedByCharacter);
+
+			for (auto& slot : formation.slots)
+			{
+				if (!slot.occupied || slot.actorToken == 0) continue;
+				const FacialWeights resolved = ResolveSavedFacialWeightsForCharacter(slot.character);
+				slot.facialWeights = resolved;
+				auto& cust = actorCustomizations[slot.actorToken];
+				cust.facialWeights = resolved;
+				cust.facialCustomized = (!slot.character.empty() && facialWeightsByCharacter.contains(slot.character));
+				if (auto it = formationTracks.find(slot.actorToken); it != formationTracks.end() && it->second)
+				{
+					it->second->controller.facialWeights = resolved;
+				}
+			}
+			SyncPlayerFacialAndOverridesToSelectedSlot();
 			facialWeightsNotice = "已载入保存的表情幅度";
 			return true;
 		}
 
 		bool SaveFacialWeights()
 		{
-			const auto& w = player.controller.facialWeights;
+			SyncSelectedFacialWeightsFromPlayer();
+			const FacialWeights w = player.controller.facialWeights;
 			for (const float value : {w.overall, w.brow, w.eye, w.mouth})
 				if (!std::isfinite(value) || value < 0.0f || value > 2.0f)
 				{ facialWeightsNotice = "表情幅度保存失败：数值无效"; return false; }
+
+			if (const auto* sel = formation.SelectedSlot(); sel && sel->occupied && !sel->character.empty())
+			{
+				facialWeightsByCharacter[sel->character] = w;
+			}
+			else
+			{
+				defaultFacialWeights = w;
+			}
+
 			std::error_code ec;
 			std::filesystem::create_directories(MotionPathFromUtf8(configRoot), ec);
 			if (ec) { facialWeightsNotice = "表情幅度保存失败: " + ec.message(); return false; }
 			const auto path = configRoot + "/facial_weights.json", temporary = path + ".tmp";
 			std::ofstream out(MotionPathFromUtf8(temporary), std::ios::binary | std::ios::trunc);
-			out << "{\n  \"version\": 1,\n  \"overall\": " << jsonlite::FormatNumber(w.overall, 6)
-				<< ",\n  \"brow\": " << jsonlite::FormatNumber(w.brow, 6)
-				<< ",\n  \"eye\": " << jsonlite::FormatNumber(w.eye, 6)
-				<< ",\n  \"mouth\": " << jsonlite::FormatNumber(w.mouth, 6) << "\n}\n";
+			out << "{\n  \"version\": 1,\n  \"overall\": " << jsonlite::FormatNumber(defaultFacialWeights.overall, 6)
+				<< ",\n  \"brow\": " << jsonlite::FormatNumber(defaultFacialWeights.brow, 6)
+				<< ",\n  \"eye\": " << jsonlite::FormatNumber(defaultFacialWeights.eye, 6)
+				<< ",\n  \"mouth\": " << jsonlite::FormatNumber(defaultFacialWeights.mouth, 6)
+				<< ",\n  \"by_character\": {";
+			bool firstChar = true;
+			for (const auto& kv : facialWeightsByCharacter)
+			{
+				if (kv.first.empty()) continue;
+				if (!firstChar) out << ",";
+				firstChar = false;
+				out << "\n    \"" << jsonlite::EscapeString(kv.first) << "\": {\"overall\": "
+					<< jsonlite::FormatNumber(kv.second.overall, 6)
+					<< ", \"brow\": " << jsonlite::FormatNumber(kv.second.brow, 6)
+					<< ", \"eye\": " << jsonlite::FormatNumber(kv.second.eye, 6)
+					<< ", \"mouth\": " << jsonlite::FormatNumber(kv.second.mouth, 6) << "}";
+			}
+			out << (firstChar ? "}\n}\n" : "\n  }\n}\n");
 			out.close();
 			if (!out) { facialWeightsNotice = "表情幅度保存失败：无法写入文件"; return false; }
 			std::filesystem::copy_file(MotionPathFromUtf8(temporary), MotionPathFromUtf8(path),
@@ -2803,14 +3148,33 @@ namespace GakuMotion
 				return false;
 			}
 			const auto* values = root.Find("offset_m");
+			Vector3 parsed{};
+			if (values && values->IsArray() && values->Size() == 3 &&
+				values->At(0)->IsNumber() && values->At(1)->IsNumber() && values->At(2)->IsNumber())
+			{
+				parsed = Vector3(values->At(0)->AsFloat(0), values->At(1)->AsFloat(0), values->At(2)->AsFloat(0));
+			}
 			if (root.IntPath("version", 0) != 1 || root.StringPath("space", "") != "world" ||
 				!values || !values->IsArray() || values->Size() != 3 ||
 				!values->At(0)->IsNumber() || !values->At(1)->IsNumber() || !values->At(2)->IsNumber() ||
-				!player.controller.SetInitialPositionOffset(
-					Vector3(values->At(0)->AsFloat(0), values->At(1)->AsFloat(0), values->At(2)->AsFloat(0))))
+				!player.controller.SetInitialPositionOffset(parsed))
 			{
 				initialPositionNotice = "初始位置文件无效：需要 world 坐标下的三个有限数值";
 				return false;
+			}
+			savedSlot0InitialOffset = parsed;
+			if (!formation.slots.empty())
+			{
+				formation.slots[0].offset = parsed;
+				formation.slots[0].placementDirty = false;
+				if (formation.active && formation.slots[0].occupied && formation.slots[0].actorToken != 0)
+				{
+					if (auto it = formationTracks.find(formation.slots[0].actorToken);
+						it != formationTracks.end() && it->second)
+					{
+						it->second->controller.SetInitialPositionOffset(parsed);
+					}
+				}
 			}
 			initialPositionNotice = "已载入保存的初始位置";
 			return true;
@@ -2866,7 +3230,6 @@ namespace GakuMotion
 
 		bool SelectMotionByIndex(int index, bool autoPlay = false, bool forcePreview = false)
 		{
-			if (EnsembleActive()) { ensembleSnapshot.notice = "多人舞台运行中，请通过槽位分配动作或先关闭多人舞台"; return false; }
 			if (index < 0 || index >= static_cast<int>(motions.size()))
 			{
 				LogWarn(detail::FormatMsg("[GakuMotion][Config] motion index out of range: %d", index));
@@ -2883,6 +3246,16 @@ namespace GakuMotion
 			if (player.state != PlaybackState::Stopped)
 			{
 				player.Stop();
+			}
+			for (auto& kv : formationTracks)
+			{
+				if (kv.second && kv.second->state != PlaybackState::Stopped)
+				{
+					kv.second->Stop();
+				}
+			}
+			if (player.state != PlaybackState::Stopped || wasPlaying || wasPaused)
+			{
 				NotifyMotionPlaying(false);
 			}
 
@@ -2901,6 +3274,7 @@ namespace GakuMotion
 			camera.LoadTrack(player.currentMotionDir, player.clip);
 			player.cameraSourceDuration = camera.track.frames.empty() ? 0.0f :
 				static_cast<float>(camera.track.frames.size()) / camera.track.fps;
+			RebuildFormationForTrack(&entry);
 			LoadOverrides(false); // 曲目级覆盖随曲目切换
 
 			// 若本曲目目录自带辅助骨官方真值（aux_replay.json）则顺带挂载，供 mode=3 直接对照
@@ -2927,6 +3301,12 @@ namespace GakuMotion
 				// Preview：已载入、静止保持第 0 帧姿态，不播音频。
 				LogInfo(detail::FormatMsg(
 					"[GakuMotion][Config] preview frame 0 of '%s' (loaded, not playing)", entry.name.c_str()));
+			}
+			for (auto& kv : formationTracks)
+			{
+				if (!kv.second) continue;
+				kv.second->SyncClockState(player.currentTime);
+				kv.second->state = player.state;
 			}
 			return true;
 		}
@@ -3203,14 +3583,14 @@ namespace GakuMotion
 		void ConsumeConfigCommands()
 		{
 			if (!config.HasPendingCommands()) return;
-			if (!InjectionAllowed() || ((config.cmdPlay || config.cmdSeek || (config.cmdSolePitchCheck && !EnsembleActive())) &&
+			if (!InjectionAllowed() || ((config.cmdPlay || config.cmdSeek || (config.cmdSolePitchCheck && !formation.active)) &&
 				!PrepareInjection())) { config.ClearCommands(); return; }
 			if (config.cmdBurstTrace) burstTraceRequestedSeq = config.appliedCommandSeq;
 
-			if (config.cmdSolePitchCheck && EnsembleActive())
-				LogWarn("[GakuMotion][SolePitchCheck] unavailable during ensemble playback; configure placement through actor slots");
+			if (config.cmdSolePitchCheck && formation.active)
+				LogWarn("[GakuMotion][SolePitchCheck] unavailable during multi-actor playback; configure placement through actor slots");
 
-			if (config.cmdSolePitchCheck && !EnsembleActive())
+			if (config.cmdSolePitchCheck && !formation.active)
 			{
 				const auto& command = config.cmdSolePitchSettings;
 				auto offset = player.controller.initialPositionOffset;
@@ -3247,12 +3627,14 @@ namespace GakuMotion
 			{
 				stageStoppedByTransport = false;
 				player.Play();
+				for (auto& kv : formationTracks) if (kv.second) { kv.second->SyncClockState(player.currentTime); kv.second->state = player.state; }
 				NotifyMotionPlaying(true);
 				LogInfo("[GakuMotion][Config] command: play");
 			}
 			if (config.cmdPause)
 			{
 				player.Pause();
+				for (auto& kv : formationTracks) if (kv.second) { kv.second->SyncClockState(player.currentTime); kv.second->state = player.state; }
 				NotifyMotionPlaying(false);
 				LogInfo("[GakuMotion][Config] command: pause");
 			}
@@ -3265,6 +3647,7 @@ namespace GakuMotion
 			if (config.cmdSeek)
 			{
 				player.Seek(config.cmdSeekSeconds);
+				for (auto& kv : formationTracks) if (kv.second) { kv.second->SyncClockState(player.currentTime); kv.second->state = player.state; }
 				LogInfo(detail::FormatMsg("[GakuMotion][Config] command: seek %.2fs", config.cmdSeekSeconds));
 			}
 			if (config.cmdReloadOverrides)
@@ -3289,9 +3672,15 @@ namespace GakuMotion
 			{
 				return ResolvePath(config.overrideMotionFile, std::string());
 			}
+			int slot1Based = 1;
+			if (const auto* sel = formation.SelectedSlot())
+			{
+				slot1Based = sel->sourceSlotIndex + 1;
+			}
 			const MotionEntry* m = CurrentMotion();
-			if (m) return m->dir + "/bone_overrides.json";
-			if (!player.currentMotionDir.empty()) return player.currentMotionDir + "/bone_overrides.json";
+			if (m) return m->SlotDirectory(slot1Based) + "/bone_overrides.json";
+			if (!player.currentMotionDir.empty())
+				return ResolveMotionSlotDirectory(player.currentMotionDir, slot1Based) + "/bone_overrides.json";
 			return std::string();
 		}
 
@@ -3308,7 +3697,7 @@ namespace GakuMotion
 				LogWarn("[GakuMotion][Overrides] " + w);
 			}
 
-			// 曲目级
+			// 曲目级（当前选中槽位对应位置文件）
 			motionOverrides.Clear();
 			const std::string motionPath = CurrentMotionOverridePath();
 			if (!motionPath.empty() && std::filesystem::exists(MotionPathFromUtf8(motionPath)))
@@ -3322,6 +3711,28 @@ namespace GakuMotion
 				{
 					LogWarn("[GakuMotion][Overrides] " + w);
 				}
+			}
+
+			const MotionEntry* m = CurrentMotion();
+			for (auto& slot : formation.slots)
+			{
+				if (!slot.occupied || slot.actorToken == 0) continue;
+				const std::string slotDir = m
+					                            ? m->SlotDirectory(slot.sourceSlotIndex + 1)
+					                            : (!player.currentMotionDir.empty()
+						                               ? ResolveMotionSlotDirectory(player.currentMotionDir, slot.sourceSlotIndex + 1)
+						                               : std::string());
+				auto& cust = actorCustomizations[slot.actorToken];
+				cust.actorMotionOverrides.Clear();
+				if (!slotDir.empty())
+				{
+					const std::string slotPath = slotDir + "/bone_overrides.json";
+					if (std::filesystem::exists(MotionPathFromUtf8(slotPath)))
+					{
+						cust.actorMotionOverrides.LoadFromFile(slotPath);
+					}
+				}
+				slot.hasActorBoneOverrides = !cust.actorMotionOverrides.Empty();
 			}
 
 			RebuildEffectiveOverrides();
@@ -3338,19 +3749,17 @@ namespace GakuMotion
 
 		void RebuildEffectiveOverrides()
 		{
-			if (EnsembleActive())
+			for (auto& slot : formation.slots)
 			{
-				for (size_t i = 0; i < ensembleActiveSettings.slots.size(); ++i) if (auto* track = EnsemblePlayer(i))
-				{
-					BoneOverrideSet local; local.LoadFromFile(track->currentMotionDir + "/bone_overrides.json");
-					BoneOverrideSet::BuildEffective(globalOverrides, local, masterOverridesEnabled, ensembleOverrides[i]);
-					track->controller.SetBoneOverrides(&ensembleOverrides[i]);
-				}
-				return;
+				if (!slot.occupied || slot.actorToken == 0) continue;
+				RebuildSlotActorOverrides(slot);
 			}
 			BoneOverrideSet::BuildEffective(globalOverrides, motionOverrides,
 			                                masterOverridesEnabled, effectiveOverrides);
-			player.controller.SetBoneOverrides(&effectiveOverrides);
+			if (!formation.active)
+			{
+				player.controller.SetBoneOverrides(&effectiveOverrides);
+			}
 		}
 
 		bool ToggleOverrides()
@@ -3370,14 +3779,16 @@ namespace GakuMotion
 		// Missing actors are abandoned without touching possibly destroyed objects.
 		bool PublishSceneActors(const std::vector<SceneActorObservation>& observations)
 		{
-			const auto* old = sceneActorRegistry.Find(player.controller.targetActor);
+			void* oldTarget = player.controller.targetActor;
+			const auto* old = sceneActorRegistry.Find(oldTarget);
 			const uint64_t oldToken = old ? old->token : 0;
 			sceneActorRegistry.Publish(observations);
-			if (EnsembleActive() && !EnsembleActorsValid()) LoseEnsembleActors();
 			sceneActors.clear();
 			for (const auto& item : sceneActorRegistry.Entries()) sceneActors.push_back(item.actor);
-			const auto* selected = sceneActorRegistry.Find(player.controller.targetActor);
-			const bool lost = player.controller.targetActor && (!selected || selected->token != oldToken);
+			const auto* selectedAfterPublish = oldTarget ? sceneActorRegistry.Find(oldTarget) : nullptr;
+			const bool targetLostInRegistry = oldTarget && (!selectedAfterPublish || selectedAfterPublish->token != oldToken);
+			SyncFormationWithRoster();
+			const bool lost = !formation.active && targetLostInRegistry;
 			if (lost)
 			{
 				++injectionSession;
@@ -3387,7 +3798,7 @@ namespace GakuMotion
 				ResetSoleObservation();
 				NotifyMotionPlaying(false);
 			}
-			if (!lost && !player.controller.targetActor && !sceneActors.empty())
+			if (!formation.active && !lost && !player.controller.targetActor && !sceneActors.empty())
 			{
 				void* bound = player.controller.currentBinding.actor;
 				SetTargetActor(sceneActorRegistry.Find(bound) ? bound : sceneActors.front());
@@ -3410,7 +3821,6 @@ namespace GakuMotion
 
 		void SetTargetActor(void* a)
 		{
-			if (EnsembleActive()) return;
 			if (!a || !sceneActorRegistry.Find(a) || player.controller.targetActor == a) return;
 			if (fnBeforeTargetChange && !fnBeforeTargetChange())
 			{
@@ -3561,6 +3971,15 @@ namespace GakuMotion
 			motionOverrides.enabled = true;
 			motionOverrides.RebuildIndex();
 			masterOverridesEnabled = true;
+
+			if (auto* sel = formation.SelectedSlot(); sel && sel->occupied && sel->actorToken != 0)
+			{
+				auto& cust = actorCustomizations[sel->actorToken];
+				cust.actorMotionOverrides = motionOverrides;
+				cust.actorMotionOverrides.enabled = true;
+				cust.actorMotionOverrides.RebuildIndex();
+				RebuildSlotActorOverrides(*sel);
+			}
 		}
 
 		void ResetLiveBoneOverride(int hid, const char* name, bool symmetrical)
@@ -3581,6 +4000,14 @@ namespace GakuMotion
 			}
 			effectiveOverrides.RebuildIndex();
 			motionOverrides.RebuildIndex();
+
+			if (auto* sel = formation.SelectedSlot(); sel && sel->occupied && sel->actorToken != 0)
+			{
+				auto& cust = actorCustomizations[sel->actorToken];
+				cust.actorMotionOverrides = motionOverrides;
+				cust.actorMotionOverrides.RebuildIndex();
+				RebuildSlotActorOverrides(*sel);
+			}
 		}
 
 		void ResetAllLiveOverrides()
@@ -3589,6 +4016,14 @@ namespace GakuMotion
 			motionOverrides.offsets.clear();
 			effectiveOverrides.RebuildIndex();
 			motionOverrides.RebuildIndex();
+
+			if (auto* sel = formation.SelectedSlot(); sel && sel->occupied && sel->actorToken != 0)
+			{
+				auto& cust = actorCustomizations[sel->actorToken];
+				cust.actorMotionOverrides.offsets.clear();
+				cust.actorMotionOverrides.RebuildIndex();
+				RebuildSlotActorOverrides(*sel);
+			}
 		}
 
 		bool SaveLiveOverridesToMotion()
@@ -3597,11 +4032,16 @@ namespace GakuMotion
 			if (targetFile.empty())
 			{
 				const MotionEntry* m = CurrentMotion();
-				if (m) targetFile = m->dir + "/bone_overrides.json";
-				else if (!player.currentMotionDir.empty()) targetFile = player.currentMotionDir +
-					"/bone_overrides.json";
+				int slot1Based = 1;
+				if (const auto* sel = formation.SelectedSlot()) slot1Based = sel->sourceSlotIndex + 1;
+				if (m) targetFile = m->SlotDirectory(slot1Based) + "/bone_overrides.json";
+				else if (!player.currentMotionDir.empty())
+					targetFile = ResolveMotionSlotDirectory(player.currentMotionDir, slot1Based) + "/bone_overrides.json";
 			}
 			if (targetFile.empty()) return false;
+			std::error_code ec;
+			const auto parentDir = MotionPathFromUtf8(targetFile).parent_path();
+			if (!parentDir.empty()) std::filesystem::create_directories(parentDir, ec);
 			bool ok = effectiveOverrides.SaveToFile(targetFile);
 			if (ok)
 			{
@@ -3709,7 +4149,8 @@ namespace GakuMotion
 			for (const auto& item : sceneActorRegistry.Entries())
 			{
 				ctx.sceneActors.push_back({item.token, FormatSceneActorLabel(item, ctx.sceneActors.size() + 1),
-					item.actor == player.controller.targetActor});
+					item.actor == player.controller.targetActor, item.character,
+					ResolveSceneActorDisplayName(item), ResolveSceneActorShortName(item)});
 			}
 			auto actorLabel = [&](void* actor)
 			{
@@ -3719,14 +4160,8 @@ namespace GakuMotion
 			};
 			ctx.boundActorLabel = actorLabel(player.controller.currentBinding.actor);
 			ctx.targetActorLabel = actorLabel(player.controller.targetActor);
-			ensembleSnapshot.actorEpoch = sceneActorRegistry.Epoch();
-			ctx.ensembleSnapshot = ensembleSnapshot;
-			ctx.fnSetEnsemble = [](void* self, const ensemble::Settings& value, uint64_t revision, uint64_t epoch)
-			{ static_cast<Core*>(self)->QueueEnsemble(value, revision, epoch); };
-			ctx.fnEnsemblePreset = [](void* self, bool save, const char* name, const ensemble::Settings& value)
-			{ static_cast<Core*>(self)->QueueEnsemblePreset(save, name, value); };
-			ctx.fnEnsembleProbe = [](void* self, bool enabled)
-			{ GuiCommand cmd{GuiAction::EnsembleProbe}; cmd.flag = enabled; static_cast<Core*>(self)->QueueGui(std::move(cmd)); };
+			ctx.formation = formation;
+			ctx.formation.actorEpoch = sceneActorRegistry.Epoch();
 			ctx.fnSelectTargetActor = [](void* self, uint64_t token, uint64_t epoch)
 			{
 				GuiCommand command{GuiAction::SelectTarget};
@@ -3750,7 +4185,7 @@ namespace GakuMotion
 			{
 				static_cast<Core*>(self)->QueueMuteNativeSoundEffects(enabled);
 			};
-			ctx.playlistMode = EnsembleActive() ? (player.loop ? 1 : 0) : static_cast<int>(playlist.mode);
+			ctx.playlistMode = static_cast<int>(playlist.mode);
 			ctx.importBusy = importBusy;
 			guiImportProgressSnapshot = importProgress;
 			ctx.importProgress = &guiImportProgressSnapshot;

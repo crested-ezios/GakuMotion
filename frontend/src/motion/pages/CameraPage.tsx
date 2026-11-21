@@ -45,8 +45,11 @@ export function CameraPage() {
   const camera = useMotionStore((state) => state.camera)
   const draft = useMotionStore((state) => state.cameraDraft)
   const pending = useMotionStore((state) => state.cameraPending)
+  const formationSlotCount = useMotionStore((state) => state.formation.slotCount)
+  const actorCount = useMotionStore((state) => state.actors.actors.length)
   const supported = useMotionStore((state) => state.capabilities.includes('camera.set'))
   const saveSupported = useMotionStore((state) => state.capabilities.includes('camera.save'))
+  const slotCount = Math.max(formationSlotCount, actorCount)
 
   const selection = cameraControlModeIndex(draft)
   const userMode = selection - 1
@@ -248,24 +251,50 @@ export function CameraPage() {
               }
             >
               {draft.mode === 2 && (
-                <PropertyRow label="跟随部位" description="决定自动跟踪的角色骨骼焦点">
-                  <Select
-                    value={String(draft.followTarget)}
-                    disabled={disabled}
-                    onValueChange={(value) => patch({ followTarget: Number(value) })}
-                  >
-                    <SelectTrigger className="h-8 w-[140px] text-xs" aria-label="跟随部位">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {CAMERA_FOLLOW_TARGETS.map((label, index) => (
-                        <SelectItem key={label} value={String(index)}>
-                          {label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </PropertyRow>
+                <>
+                  <PropertyRow label="跟随槽位" description="追踪全员舞台几何中心或指定编号槽位">
+                    <Select
+                      value={String(draft.followSlotIndex ?? -1)}
+                      disabled={disabled}
+                      onValueChange={(value) => patch({ followSlotIndex: Number(value) })}
+                    >
+                      <SelectTrigger className="h-8 w-[140px] text-xs" aria-label="跟随槽位">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="-1">全部</SelectItem>
+                        {Array.from({ length: slotCount }, (_, idx) => (
+                          <SelectItem key={idx} value={String(idx)}>
+                            {idx + 1}号位
+                          </SelectItem>
+                        ))}
+                        {(draft.followSlotIndex ?? -1) >= slotCount && (
+                          <SelectItem value={String(draft.followSlotIndex)}>
+                            {(draft.followSlotIndex ?? 0) + 1}号位
+                          </SelectItem>
+                        )}
+                      </SelectContent>
+                    </Select>
+                  </PropertyRow>
+                  <PropertyRow label="跟随部位" description="决定自动跟踪的角色骨骼焦点">
+                    <Select
+                      value={String(draft.followTarget)}
+                      disabled={disabled}
+                      onValueChange={(value) => patch({ followTarget: Number(value) })}
+                    >
+                      <SelectTrigger className="h-8 w-[140px] text-xs" aria-label="跟随部位">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {CAMERA_FOLLOW_TARGETS.map((label, index) => (
+                          <SelectItem key={label} value={String(index)}>
+                            {label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </PropertyRow>
+                </>
               )}
 
               <div className="px-3.5 py-2.5">

@@ -2,6 +2,23 @@ namespace GakuMotion.VmdImporter.Native;
 
 using System.Text.Json;
 
+internal sealed class PositionRequest
+{
+    public int Slot { get; init; }
+    public int SourceSlot { get; init; }
+    public string MotionVmd { get; init; } = string.Empty;
+    public string MorphVmd { get; init; } = string.Empty;
+    public bool DisableMorph { get; init; }
+    public bool ClearMorph { get; init; }
+    public float SourceFps { get; init; }
+    public bool RebakeOutput { get; init; }
+    public bool PreserveExisting { get; init; }
+    public float X { get; init; }
+    public float Y { get; init; }
+    public float Z { get; init; }
+    public float YawDegrees { get; init; }
+}
+
 /// <summary>
 /// One in-game import job, serialized as UTF-8 JSON across the native boundary.
 /// Field names mirror the Python CLI (tools/import_motion.py) so both backends
@@ -33,6 +50,7 @@ internal sealed class ImportRequest
     public string TimingJsonl { get; init; } = string.Empty;
     public string TransactionRoot { get; init; } = string.Empty;
     public PerformanceTimingSettings? TrackTiming { get; init; }
+    public IReadOnlyList<PositionRequest>? Positions { get; init; }
 
     public static ImportRequest Parse(ReadOnlySpan<byte> utf8Json)
     {
@@ -41,62 +59,151 @@ internal sealed class ImportRequest
         if (root.ValueKind != JsonValueKind.Object)
             throw new InvalidDataException("import request must be a JSON object");
 
-        string Require(string name)
+        static string RequireFrom(JsonElement obj, string name)
         {
-            if (!root.TryGetProperty(name, out JsonElement value) || value.ValueKind != JsonValueKind.String)
+            if (!obj.TryGetProperty(name, out JsonElement value) || value.ValueKind != JsonValueKind.String)
                 throw new InvalidDataException($"import request is missing string field '{name}'");
             return value.GetString() ?? string.Empty;
         }
 
-        string Optional(string name)
+        static string OptionalFrom(JsonElement obj, string name)
         {
-            return root.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.String
-                ? value.GetString() ?? string.Empty
-                : string.Empty;
+            if (!obj.TryGetProperty(name, out JsonElement value) ||
+                value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+                return string.Empty;
+            if (value.ValueKind != JsonValueKind.String)
+                throw new InvalidDataException($"import request field '{name}' must be a string");
+            return value.GetString() ?? string.Empty;
         }
 
-        bool OptionalBool(string name)
+        static bool OptionalBoolFrom(JsonElement obj, string name)
         {
-            return root.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.True;
+            if (!obj.TryGetProperty(name, out JsonElement value) ||
+                value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+                return false;
+            if (value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                throw new InvalidDataException($"import request field '{name}' must be a boolean");
+            return value.ValueKind == JsonValueKind.True;
         }
 
-        float OptionalFloat(string name)
+        static float OptionalFloatFrom(JsonElement obj, string name)
         {
-            return root.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.Number
-                ? value.GetSingle()
-                : 0.0f;
+            if (!obj.TryGetProperty(name, out JsonElement value) ||
+                value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+                return 0.0f;
+            if (value.ValueKind != JsonValueKind.Number)
+                throw new InvalidDataException($"import request field '{name}' must be a number");
+            float parsed = value.GetSingle();
+            if (!float.IsFinite(parsed))
+                throw new InvalidDataException($"import request field '{name}' must be finite");
+            return parsed;
+        }
+
+        static int OptionalIntFrom(JsonElement obj, string name, int fallback)
+        {
+            if (!obj.TryGetProperty(name, out JsonElement value) ||
+                value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+                return fallback;
+            if (value.ValueKind != JsonValueKind.Number || !value.TryGetInt32(out int parsed))
+                throw new InvalidDataException($"import request field '{name}' must be an integer");
+            return parsed;
+        }
+
+        List<PositionRequest>? positions = null;
+        if (root.TryGetProperty("positions", out JsonElement positionsVal) &&
+            positionsVal.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined))
+        {
+            if (positionsVal.ValueKind != JsonValueKind.Array)
+                throw new InvalidDataException("import request field 'positions' must be an array");
+            int count = positionsVal.GetArrayLength();
+            if (count == 0)
+                throw new InvalidDataException("positions 不能为空");
+            positions = new List<PositionRequest>(count);
+            int index = 0;
+            foreach (JsonElement item in positionsVal.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object)
+                    throw new InvalidDataException("positions 中的每一项都必须是 JSON 对象");
+                int slot = OptionalIntFrom(item, "slot", index + 1);
+                if (slot < 1)
+                    throw new InvalidDataException("positions 槽位序号必须 >= 1");
+                int sourceSlot = OptionalIntFrom(item, "source_slot", 0);
+                if (sourceSlot < 0)
+                    throw new InvalidDataException("positions source_slot 必须 >= 0");
+                float slotSourceFps = OptionalFloatFrom(item, "source_fps");
+                if (slotSourceFps < 0.0f)
+                    throw new InvalidDataException("positions source_fps 必须 >= 0");
+                positions.Add(new PositionRequest
+                {
+                    Slot = slot,
+                    SourceSlot = sourceSlot,
+                    MotionVmd = OptionalFrom(item, "motion_vmd"),
+                    MorphVmd = OptionalFrom(item, "morph_vmd"),
+                    DisableMorph = OptionalBoolFrom(item, "disable_morph"),
+                    ClearMorph = OptionalBoolFrom(item, "clear_morph"),
+                    SourceFps = slotSourceFps,
+                    RebakeOutput = OptionalBoolFrom(item, "rebake_output"),
+                    PreserveExisting = OptionalBoolFrom(item, "preserve_existing"),
+                    X = OptionalFloatFrom(item, "x"),
+                    Y = OptionalFloatFrom(item, "y"),
+                    Z = OptionalFloatFrom(item, "z"),
+                    YawDegrees = OptionalFloatFrom(item, "yaw_degrees")
+                });
+                index++;
+            }
         }
 
         bool hasSubtitle = root.TryGetProperty("subtitle", out JsonElement subtitleVal) &&
                            subtitleVal.ValueKind == JsonValueKind.String;
 
-        string editDir = Optional("edit_dir");
+        string editDir = OptionalFrom(root, "edit_dir");
+        string motionVmd;
+        if (editDir.Length == 0)
+        {
+            if (positions is null)
+            {
+                motionVmd = RequireFrom(root, "motion_vmd");
+            }
+            else
+            {
+                motionVmd = OptionalFrom(root, "motion_vmd");
+                bool hasSlot1 = positions.Any(p => p.Slot == 1 && !string.IsNullOrEmpty(p.MotionVmd));
+                if (!hasSlot1 && string.IsNullOrEmpty(motionVmd))
+                    throw new InvalidDataException("缺少 1 号位动作 VMD 文件");
+            }
+        }
+        else
+        {
+            motionVmd = OptionalFrom(root, "motion_vmd");
+        }
+
         return new ImportRequest
         {
-            MotionVmd = editDir.Length == 0 ? Require("motion_vmd") : Optional("motion_vmd"),
+            MotionVmd = motionVmd,
             EditDir = editDir,
-            MorphVmd = Optional("morph_vmd"),
-            DisableMorph = OptionalBool("disable_morph"),
-            MotionsRoot = editDir.Length == 0 ? Require("motions_root") : Optional("motions_root"),
-            Title = Optional("title"),
+            MorphVmd = OptionalFrom(root, "morph_vmd"),
+            DisableMorph = OptionalBoolFrom(root, "disable_morph"),
+            MotionsRoot = editDir.Length == 0 ? RequireFrom(root, "motions_root") : OptionalFrom(root, "motions_root"),
+            Title = OptionalFrom(root, "title"),
             Subtitle = hasSubtitle ? (subtitleVal.GetString() ?? string.Empty) : string.Empty,
             HasSubtitle = hasSubtitle,
-            Fps = OptionalFloat("fps"),
-            SourceFps = OptionalFloat("source_fps"),
-            RebakeOutput = OptionalBool("rebake_output"),
-            Audio = Optional("audio"),
-            ClearAudio = OptionalBool("clear_audio"),
-            AudioDurationHint = OptionalFloat("audio_duration_hint"),
-            CameraVmd = Optional("camera_vmd"),
-            ClearCamera = OptionalBool("clear_camera"),
-            CameraFps = OptionalFloat("camera_fps"),
-            CameraScale = OptionalFloat("camera_scale"),
-            CameraRootRegistration = Optional("camera_root_registration"),
-            ToothChannel = Optional("tooth_channel"),
-            LogPath = Optional("log_path"),
-            TimingJsonl = Optional("timing_jsonl"),
-            TransactionRoot = Optional("transaction_root"),
-            TrackTiming = PerformanceTimingSettings.ParseOptional(root)
+            Fps = OptionalFloatFrom(root, "fps"),
+            SourceFps = OptionalFloatFrom(root, "source_fps"),
+            RebakeOutput = OptionalBoolFrom(root, "rebake_output"),
+            Audio = OptionalFrom(root, "audio"),
+            ClearAudio = OptionalBoolFrom(root, "clear_audio"),
+            AudioDurationHint = OptionalFloatFrom(root, "audio_duration_hint"),
+            CameraVmd = OptionalFrom(root, "camera_vmd"),
+            ClearCamera = OptionalBoolFrom(root, "clear_camera"),
+            CameraFps = OptionalFloatFrom(root, "camera_fps"),
+            CameraScale = OptionalFloatFrom(root, "camera_scale"),
+            CameraRootRegistration = OptionalFrom(root, "camera_root_registration"),
+            ToothChannel = OptionalFrom(root, "tooth_channel"),
+            LogPath = OptionalFrom(root, "log_path"),
+            TimingJsonl = OptionalFrom(root, "timing_jsonl"),
+            TransactionRoot = OptionalFrom(root, "transaction_root"),
+            TrackTiming = PerformanceTimingSettings.ParseOptional(root),
+            Positions = positions
         };
     }
 }

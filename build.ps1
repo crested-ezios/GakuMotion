@@ -104,7 +104,7 @@ if ($Target -eq 'Runtime' -or $Target -eq 'All') {
             '/DWIN32', '/DNDEBUG', '/D_WINDOWS', '/D_USRDLL',
             "/I$(Join-Path $repo 'include')", "/I$(Join-Path $repo 'src')",
             "/I$(Join-Path $repo 'deps/KineTexture/src')") + $imguiArgs + @(
-            "/Fo$nativeObjects\") + $sources + @('winmm.lib', 'user32.lib', 'comdlg32.lib', 'windowscodecs.lib', 'ole32.lib',
+            "/Fo$nativeObjects\") + $sources + @('winmm.lib', 'user32.lib', 'comdlg32.lib', 'windowscodecs.lib', 'ole32.lib', 'bcrypt.lib',
             '/link', "/OUT:$(Join-Path $nativeOutput 'GakuMotion.dll')", '/SUBSYSTEM:WINDOWS', '/OPT:REF', '/OPT:ICF')
         & $compiler @args
         if ($LASTEXITCODE -ne 0) { throw ('Portable runtime build failed: ' + $LASTEXITCODE) }

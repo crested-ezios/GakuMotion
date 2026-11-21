@@ -114,6 +114,19 @@ static void TestLibrarySafety(const std::string& repoRoot)
 	core.RefreshMotionLibrary();
 	Core restarted; restarted.Initialize(MotionPathToUtf8(root));
 	Check(core.motions.empty() && restarted.motions.empty(), "deleted track does not reappear after refresh or restart");
+
+	// Group-song permanent deletion removes nested positions/slot_{k}/ completely
+	const auto grp = root / "motions" / "GroupTrack";
+	LibraryDeleteFixture::WriteClip(grp / "motion.gkclip");
+	LibraryDeleteFixture::WriteClip(grp / "positions" / "slot_2" / "motion.gkclip");
+	WriteTextFile(grp / "positions" / "slot_2" / "bone_overrides.json", "{}");
+	LibraryDeleteFixture::WriteClip(grp / "positions" / "slot_3" / "motion.gkclip");
+	core.RefreshMotionLibrary();
+	Check(core.motions.size() == 1 && core.motions[0].isGroup && core.motions[0].positionCount == 3,
+		"group song discovered before deletion");
+	Check(core.DeleteMotionFiles("GroupTrack", true) && !fs::exists(grp) && core.motions.empty(),
+		"confirmed delete removes group song and nested positions/slot_{k}/ completely");
+
 	core.player.Stop(); legacy.player.Stop(); restarted.player.Stop();
 	fs::remove_all(root); // Unique synthetic fixture created by this test only.
 }

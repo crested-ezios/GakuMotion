@@ -175,9 +175,6 @@ static void TestWireFraming()
 	const auto* id = unknown.Find("id");
 	Check(id && id->numberValue == 7, "response id correlates with request");
 
-	const auto missingEnsembleParams = f.ReqJson("ensemble.set");
-	Check(f.ErrorCode(f.Req("ensemble.set")) == "invalid_params",
-		"implemented domain validates params instead of returning not_implemented");
 	Check(f.ErrorCode(f.Req("gaze.setMode")) == "invalid_params",
 		"gaze domain validates params instead of returning not_implemented");
 
@@ -210,8 +207,11 @@ static void TestHelloCapabilities()
 		hasMethod("camera.set") && hasMethod("stage.set"), "core methods advertised");
 	Check(hasMethod("dialog.pickFile") && hasMethod("dialog.poll") && hasMethod("drop.setTarget") &&
 		hasMethod("drop.poll") && hasMethod("drop.peek") && hasMethod("library.import") &&
-		hasMethod("library.probeFiles") && hasMethod("library.startEdit") && hasMethod("ensemble.set") &&
-		hasMethod("ensemble.presetSave") && hasMethod("ensemble.presetLoad") && hasMethod("ensemble.probe") &&
+		hasMethod("library.probeFiles") && hasMethod("library.startEdit") &&
+		hasMethod("actors.getPortrait") && hasMethod("formation.selectSlot") &&
+		hasMethod("formation.swapSlots") && hasMethod("formation.setSlotOffset") &&
+		hasMethod("formation.resetSlotOffset") && hasMethod("formation.saveSlotOffset") &&
+		hasMethod("formation.setSlotSource") &&
 		hasMethod("stage.scan") && hasMethod("stage.toggleNode") && hasMethod("stage.setLoadReplacement") &&
 		hasMethod("bone.get") && hasMethod("bone.set") && hasMethod("bone.reset") &&
 		hasMethod("bone.resetAll") && hasMethod("bone.setMaster") && hasMethod("bone.reload") &&
@@ -222,6 +222,9 @@ static void TestHelloCapabilities()
 		hasMethod("studio.get") && hasMethod("studio.set") && hasMethod("studio.reset") &&
 		hasMethod("experiments.get") && hasMethod("experiments.set") && hasMethod("telemetry.get"),
 		"phase-2 protocol methods advertised");
+	Check(!hasMethod("ensemble.set") && !hasMethod("ensemble.probe") &&
+		!hasMethod("ensemble.presetSave") && !hasMethod("ensemble.presetLoad"),
+		"legacy ensemble methods removed");
 	const auto* events = motionHello.Find("result")->Find("supportedEvents");
 	const auto hasEvent = [&](const char* name) {
 		for (size_t i = 0; i < events->Size(); ++i)
@@ -229,7 +232,7 @@ static void TestHelloCapabilities()
 		return false;
 	};
 	Check(hasEvent("player.stateChanged") && hasEvent("bridge.closed") && hasEvent("library.changed") &&
-		hasEvent("stage.nodesChanged"),
+		hasEvent("stage.nodesChanged") && hasEvent("formation.changed") && !hasEvent("ensemble.changed"),
 		"events advertised");
 	Check(motionHello.Find("result")->Find("pluginVersion")->stringValue == "0.1.1-test",
 		"pluginVersion forwarded from hooks");
@@ -243,8 +246,8 @@ static void TestStateSnapshot()
 	const auto snapshot = f.ReqJson("state.get");
 	Check(f.Ok(f.Req("state.get")), "state.get ok");
 	const auto* result = snapshot.Find("result");
-	for (const char* key : {"permission", "player", "library", "loaded", "playlist", "actors", "camera",
-		"stage", "facial", "position", "ensemble", "physicsBackend", "musicVolumeSupport",
+	for (const char* key : {"permission", "player", "library", "loaded", "playlist", "actors", "formation", "camera",
+		"stage", "facial", "position", "physicsBackend", "musicVolumeSupport",
 		"musicVolumeNotice", "importProgress", "motionsRoot", "gaze", "bone", "sole", "solePitch",
 		"studio", "experiments"})
 		Check(result && result->Find(key), std::string("snapshot carries ") + key);
@@ -761,19 +764,6 @@ static void WriteSyntheticVmd(const std::filesystem::path& path, uint32_t bodyFr
 	}
 }
 
-static std::string EnsembleSettingsJson(bool enabled)
-{
-	std::string slots;
-	for (int i = 0; i < 3; ++i)
-	{
-		if (i) slots += ",";
-		slots += "{\"enabled\":false,\"actorToken\":0,\"actorHint\":\"\",\"motionKey\":\"\","
-			"\"offset\":{\"x\":0,\"y\":0,\"z\":0},\"yawDegrees\":0}";
-	}
-	return std::string("{\"enabled\":") + (enabled ? "true" : "false") +
-		",\"masterSlot\":0,\"cameraSlot\":0,\"slots\":[" + slots + "]}";
-}
-
 static void TestLibraryImportProbe()
 {
 	BeginTest("library_import_probe");
@@ -877,65 +867,6 @@ static void TestLibraryImportProbe()
 	Check(fpsCommand && fpsCommand->import.sourceFps == 60.0f && fpsCommand->import.fps == 30.0f &&
 		fpsCommand->import.rebakeOutput,
 		"sourceFps, output fps and edit rebakeOutput forwarded");
-
-	std::error_code ec;
-	fs::remove_all(root, ec);
-}
-
-static void TestEnsembleContracts()
-{
-	BeginTest("ensemble_contracts");
-	namespace fs = std::filesystem;
-	const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-	const fs::path root = fs::temp_directory_path() / ("gaku_webpanel_ensemble_" + std::to_string(stamp));
-	fs::create_directories(root);
-
-	Fixture f;
-	f.core.configRoot = MotionPathToUtf8(root);
-	f.core.ensembleSnapshot.revision = 4;
-	const uint64_t epoch = f.core.sceneActorRegistry.Epoch();
-	const std::string settings = EnsembleSettingsJson(false);
-	const std::string params = "{\"settings\":" + settings + ",\"revision\":4,\"actorEpoch\":" +
-		std::to_string(epoch) + "}";
-	Check(f.Ok(f.Req("ensemble.set", params)), "ensemble.set accepted");
-	const auto* command = f.FindCommand(Core::GuiAction::EnsembleSettings);
-	Check(command && command->loadedGeneration == 4 && command->actorEpoch == epoch,
-		"ensemble revision and epoch queued");
-	Check(f.ErrorCode(f.Req("ensemble.set", "{\"settings\":" + settings + ",\"revision\":5,\"actorEpoch\":" +
-		std::to_string(epoch) + "}")) == "stale_revision", "ensemble stale revision");
-	Check(f.ErrorCode(f.Req("ensemble.set", "{\"settings\":" + settings + ",\"revision\":4,\"actorEpoch\":99}")) ==
-		"stale_token", "ensemble stale epoch");
-	f.core.ensembleSnapshot.active = true;
-	f.core.player.state = PlaybackState::Playing;
-	Check(f.ErrorCode(f.Req("ensemble.set", params)) == "protected", "ensemble editing while playing protected");
-	f.core.player.state = PlaybackState::Stopped;
-
-	const std::string preset = "{\"name\":\"synthetic\",\"settings\":" + settings + "}";
-	Check(f.Ok(f.Req("ensemble.presetSave", preset)), "ensemble.presetSave accepted");
-	Check(fs::exists(root / "ensembles" / "synthetic.json"), "preset JSON written under configRoot/ensembles");
-	const auto loadedPreset = f.ReqJson("ensemble.presetLoad", "{\"name\":\"synthetic\"}");
-	Check(loadedPreset.Find("ok") && loadedPreset.Find("ok")->boolValue, "ensemble.presetLoad accepted");
-	const auto* loadedSettings = loadedPreset.Find("result")->Find("settings");
-	Check(loadedSettings && loadedSettings->Find("slots") &&
-		loadedSettings->Find("slots")->At(0)->Find("actorToken")->numberValue == 0,
-		"presetLoad returns settings with cleared actorToken");
-
-	const std::string fiveSlotSettings = "{\"enabled\":false,\"masterSlot\":0,\"cameraSlot\":4,\"slots\":["
-		"{\"enabled\":false,\"actorToken\":0,\"actorHint\":\"\",\"motionKey\":\"\",\"offset\":{\"x\":0,\"y\":0,\"z\":0},\"yawDegrees\":0},"
-		"{\"enabled\":false,\"actorToken\":0,\"actorHint\":\"\",\"motionKey\":\"\",\"offset\":{\"x\":0,\"y\":0,\"z\":0},\"yawDegrees\":0},"
-		"{\"enabled\":false,\"actorToken\":0,\"actorHint\":\"\",\"motionKey\":\"\",\"offset\":{\"x\":0,\"y\":0,\"z\":0},\"yawDegrees\":0},"
-		"{\"enabled\":false,\"actorToken\":0,\"actorHint\":\"\",\"motionKey\":\"\",\"offset\":{\"x\":0,\"y\":0,\"z\":0},\"yawDegrees\":0},"
-		"{\"enabled\":false,\"actorToken\":0,\"actorHint\":\"\",\"motionKey\":\"\",\"offset\":{\"x\":128,\"y\":0,\"z\":-256},\"yawDegrees\":45}]}";
-	Check(f.Ok(f.Req("ensemble.set", "{\"settings\":" + fiveSlotSettings + ",\"revision\":4,\"actorEpoch\":" +
-		std::to_string(epoch) + "}")), "ensemble.set accepts more than three slots");
-	Check(f.ErrorCode(f.Req("ensemble.set", "{\"settings\":{\"enabled\":false,\"masterSlot\":0,\"cameraSlot\":0,\"slots\":[]},\"revision\":4,\"actorEpoch\":" +
-		std::to_string(epoch) + "}")) == "invalid_params", "empty ensemble slots rejected");
-	Check(f.ErrorCode(f.Req("ensemble.presetSave", "{\"name\":\"../bad\",\"settings\":" + settings + "}")) ==
-		"invalid_params", "preset name validated");
-	f.ClearCommands();
-	Check(f.Ok(f.Req("ensemble.probe", "{\"enabled\":true}")), "ensemble.probe accepted");
-	const auto* probe = f.FindCommand(Core::GuiAction::EnsembleProbe);
-	Check(probe && probe->flag, "probe flag queued");
 
 	std::error_code ec;
 	fs::remove_all(root, ec);
@@ -1636,6 +1567,72 @@ static void TestCoverEditingScreenshotAndDuplicateTitleImport()
 	fs::remove_all(root, ec);
 }
 
+static void TestM4PortraitsAndFormation()
+{
+	BeginTest("m4_portraits_and_formation");
+	Fixture f;
+	int a1 = 1, a2 = 2;
+	f.core.PublishSceneActors({
+		{&a1, 101, "hski", "花海咲季", "chr_hski_face", ""},
+		{&a2, 102, "ttmr", "月村手毬", "chr_ttmr_face", ""},
+	});
+	MotionEntry group;
+	group.name = "grp";
+	group.title = "Group";
+	group.dir = "synthetic/motions/grp";
+	group.durationSeconds = 5.0f;
+	group.totalFrames = 150;
+	group.isGroup = true;
+	group.positionCount = 2;
+	group.positions = {
+		{1, 0.0f, 0.0f, 0.0f, 0.0f, true, true},
+		{2, 0.5f, 0.0f, -0.25f, 15.0f, true, false},
+	};
+	f.core.motions = {group};
+
+	const auto snap = f.ReqJson("state.get");
+	Check(f.Ok(f.Req("state.get")), "m4 state.get ok");
+	const auto* res = snap.Find("result");
+	const auto* actorsArr = res && res->Find("actors") ? res->Find("actors")->Find("actors") : nullptr;
+	Check(actorsArr && actorsArr->IsArray() && actorsArr->Size() == 2 &&
+		actorsArr->At(0)->Find("character")->stringValue == "hski" &&
+		actorsArr->At(0)->Find("shortName")->stringValue == "咲季",
+		"SceneActor character/shortName serialized");
+	const auto* entriesArr = res && res->Find("library") ? res->Find("library")->Find("entries") : nullptr;
+	Check(entriesArr && entriesArr->IsArray() && entriesArr->Size() == 1 &&
+		entriesArr->At(0)->Find("isGroup")->boolValue &&
+		entriesArr->At(0)->Find("positions")->Size() == 2,
+		"LibraryEntry group positions serialized");
+	const auto* camSettings = res && res->Find("camera") ? res->Find("camera")->Find("settings") : nullptr;
+	Check(camSettings && camSettings->Find("followSlotIndex") &&
+		camSettings->Find("followSlotIndex")->numberValue == -1.0,
+		"CameraSettings.followSlotIndex defaults to -1");
+	Check(!f.Ok(f.Req("camera.set", "{\"settings\":{\"followSlotIndex\":-2}}")),
+		"camera.set rejects followSlotIndex < -1");
+	Check(!f.Ok(f.Req("actors.getPortrait", "{\"character\":\"../evil\"}")),
+		"actors.getPortrait rejects traversal");
+	const auto npcPortrait = f.ReqJson("actors.getPortrait", "{\"character\":\"uncached_npc\"}");
+	Check(npcPortrait.Find("ok")->boolValue && !npcPortrait.Find("result")->Find("cached")->boolValue,
+		"actors.getPortrait misses cleanly when uncached");
+
+	const auto* fm = res ? res->Find("formation") : nullptr;
+	Check(fm && fm->Find("slotCount")->numberValue == 2.0, "formation snapshot present with 2 slots");
+	Check(f.Ok(f.Req("formation.selectSlot", "{\"slotIndex\":1}")), "formation.selectSlot ok");
+	Check(f.Ok(f.Req("formation.setSlotOffset", "{\"slotIndex\":1,\"x\":0.75,\"y\":0,\"z\":-0.5,\"yawDegrees\":30}")),
+		"formation.setSlotOffset ok");
+	f.core.ProcessPendingGuiCommands();
+	f.bridge->OnUiTick();
+	bool sawFormationEvent = false;
+	for (const auto& evText : f.events)
+	{
+		const auto ev = ParseJson(evText);
+		if (ev.Find("name") && ev.Find("name")->stringValue == "formation.changed") sawFormationEvent = true;
+	}
+	Check(sawFormationEvent, "formation.changed emitted on tick");
+	Check(!f.Ok(f.Req("formation.swapSlots", "{\"fromSlotIndex\":0,\"toSlotIndex\":99}")),
+		"formation.swapSlots rejects out-of-range index");
+}
+
 int main()
 {
 	std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -1655,7 +1652,6 @@ int main()
 	TestScrubResetOnPermissionLoss();
 	TestGetAssetsCandidates();
 	TestLibraryImportProbe();
-	TestEnsembleContracts();
 	TestStageNodes();
 	TestBoneOverrides();
 	TestGazeSettings();
@@ -1666,6 +1662,7 @@ int main()
 	TestAudioPluginClientQueryCopiesStruct();
 	TestPlayingTickThrottlingAndClockEvents();
 	TestCoverEditingScreenshotAndDuplicateTitleImport();
+	TestM4PortraitsAndFormation();
 	std::printf("\nweb-panel bridge contracts: %d passed, %d failed\n", g_pass, g_fail);
 	return g_fail == 0 ? 0 : 1;
 }

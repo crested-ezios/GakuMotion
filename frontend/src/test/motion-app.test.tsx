@@ -34,7 +34,8 @@ describe('MotionApp shell', () => {
       expect(screen.getByRole('button', { name: label })).toBeInTheDocument()
     }
     expect(screen.queryByRole('button', { name: '[开发]' })).not.toBeInTheDocument()
-    expect(screen.getByText(/驱动: 咲季/)).toBeInTheDocument()
+    expect(screen.getByTestId('motion-status-bar')).toHaveTextContent('曲目: 未加载曲目')
+    expect(screen.getByTestId('motion-status-bar')).toHaveTextContent('摄影棚 A')
   })
 
   it('navigates between pages while keeping player bar and pinned precision panel intact', async () => {

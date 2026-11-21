@@ -3,6 +3,7 @@
 #include "GakuMotion.hpp"
 #include <array>
 #include <algorithm>
+#include <fstream>
 
 namespace EnsembleRuntimeTest
 {
@@ -118,7 +119,7 @@ namespace EnsembleRuntimeTest
         for (uint32_t frame = 0; frame < frames; ++frame)
         {
             const Vector3 root{static_cast<float>(frame) / fps, 0, 0};
-            const auto rotation = Quaternion::FromEulerDegreesXYZ(0, turn * frame / (frames - 1), 0);
+            const auto rotation = Quaternion::FromEulerDegreesXYZ(0, turn * frame / (frames > 1 ? frames - 1 : 1), 0);
             write(root); write(rotation);
         }
         const uint8_t camera = 0; const uint32_t morphs = 0; write(camera); write(morphs);
@@ -128,9 +129,8 @@ namespace EnsembleRuntimeTest
         std::filesystem::path root;
         Core core;
         std::array<Actor, 4> actors;
-        ensemble::Settings settings;
         std::array<Vector3, 4> initialHips;
-        Fixture(const std::string& repoRoot)
+        explicit Fixture(const std::string& repoRoot)
         {
             root = std::filesystem::path(repoRoot) / "build/tests" / ("ensemble-runtime-" +
                 std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -150,23 +150,16 @@ namespace EnsembleRuntimeTest
                 roster.push_back({&actor, static_cast<int>(700 + i), "hski"});
             }
             core.PublishSceneActors(roster); core.currentActor = &actors[0];
-            settings.slots.resize(3);
-            const std::array<float, 3> rates{30, 60, 24};
-            const std::array<uint32_t, 3> frames{30, 240, 12};
-            for (size_t i = 0; i < size_t{3}; ++i)
+            const auto groupDir = root / "motions" / "group-0";
+            WriteClip(groupDir / "motion.gkclip", 30.0f, 30, 30.0f);
+            WriteClip(groupDir / "positions/slot_2/motion.gkclip", 60.0f, 240, 45.0f);
+            WriteClip(groupDir / "positions/slot_3/motion.gkclip", 24.0f, 12, 60.0f);
+            WriteClip(groupDir / "positions/slot_4/motion.gkclip", 30.0f, 30, 75.0f);
             {
-                const std::string key = "motion-" + std::to_string(i);
-                const auto directory = root / "motions" / key;
-                WriteClip(directory / "motion.gkclip", rates[i], frames[i], 30 + i * 15.0f);
-                MotionEntry entry;
-                entry.name = key; entry.dir = MotionPathToUtf8(directory); entry.title = key;
-                core.motions.push_back(entry);
-                auto& slot = settings.slots[i]; slot.enabled = true; slot.motionKey = key;
-                slot.actorToken = core.sceneActorRegistry.Find(&actors[i])->token; slot.actorHint = "actor " + std::to_string(i);
-                slot.offset = {static_cast<float>(i) - 1, 0, .2f}; slot.yawDegrees = static_cast<float>(i) * 15;
+                std::ofstream info(groupDir / "info.json", std::ios::binary | std::ios::trunc);
+                info << R"({"version":1,"title":"Group Test","subtitle":"Tester","is_group":true,"position_count":4,"positions":[{"slot":1,"x":0,"y":0,"z":0,"yaw_degrees":0},{"slot":2,"x":-1,"y":0,"z":0.2,"yaw_degrees":15},{"slot":3,"x":1,"y":0,"z":0.2,"yaw_degrees":30},{"slot":4,"x":25,"y":0,"z":-13,"yaw_degrees":45}]})";
             }
-            settings.enabled = true; settings.masterSlot = 0; settings.cameraSlot = 1;
-            core.ensembleSnapshot.available = core.ensembleSnapshot.verified = true;
+            core.RefreshMotionLibrary();
             core.player.fnPlayAudio = [](const std::string& path) { ++audioPlays; audioPath = path; };
             core.player.fnPauseAudio = [] { ++audioPauses; };
             core.player.fnStopAudio = [] { ++audioStops; };
@@ -180,7 +173,7 @@ namespace EnsembleRuntimeTest
             core.AbandonScene();
             std::error_code ignored; std::filesystem::remove_all(root, ignored);
         }
-        bool Apply() { return core.ApplyEnsemble(settings, core.ensembleSnapshot.revision, core.sceneActorRegistry.Epoch()); }
+        bool SelectGroup(bool autoPlay = false) { return core.SelectMotionByIndex(0, autoPlay, !autoPlay); }
         void Frame(uint64_t frame, float elapsed, const std::array<size_t, 4>& order = {3, 2, 0, 1})
         {
             for (size_t call = 0; call < order.size(); ++call)
@@ -204,282 +197,138 @@ namespace EnsembleRuntimeTest
 static void TestEnsembleRuntime(const std::string& repoRoot)
 {
     using namespace EnsembleRuntimeTest;
-    BeginTest("a fourth ensemble actor has an independent track and position");
+    BeginTest("a fourth formation actor has an independent track and position");
     {
         Fixture fixture(repoRoot); auto& core = fixture.core;
-        fixture.settings.slots.emplace_back();
-        auto& fourth = fixture.settings.slots.back();
-        fourth.enabled = true; fourth.motionKey = fixture.settings.slots[0].motionKey;
-        fourth.actorToken = core.sceneActorRegistry.Find(&fixture.actors[3])->token;
-        fourth.offset = {25.0f, 0.0f, -13.0f};
-        Check(fixture.Apply(), "four bound actors apply with independent slots");
-        Check(core.EnsemblePlayer(3) && core.EnsemblePlayer(3) != core.EnsemblePlayer(0) &&
-            core.EnsemblePlayer(3)->controller.targetActor == &fixture.actors[3],
-            "fourth slot owns its own target and track");
+        Check(fixture.SelectGroup(false) && core.formation.active, "four actors activate unified formation");
+        Check(core.TrackForSlot(3) && core.TrackForSlot(3) != core.TrackForSlot(0) &&
+            core.TrackForSlot(3)->controller.targetActor == &fixture.actors[3] &&
+            EnsembleNear(core.formation.slots[3].offset, {25.0f, 0.0f, -13.0f}),
+            "fourth slot owns its own target, track, and placement");
         fixture.Frame(1, 0.0f);
-        Check(core.EnsembleActorsValid(), "four actor identities stay valid after a frame");
-    }
-    BeginTest("ensemble looping belongs to the session, not the single-motion playlist");
-    {
-        Fixture fixture(repoRoot); auto& core = fixture.core;
-        Check(fixture.Apply(), "looping fixture starts an ensemble");
-        const auto originalMode = core.playlist.mode;
-        core.QueueGui({Core::GuiAction::Mode, 0}); core.ProcessPendingGuiCommands();
-        Check(!core.player.loop && core.playlist.mode == originalMode,
-            "play-once changes the complete performance without changing the library playlist");
-        core.QueueGui({Core::GuiAction::Mode, 1}); core.ProcessPendingGuiCommands();
-        Check(core.player.loop && core.playlist.mode == originalMode,
-            "whole-performance loop retains single-motion playlist preferences");
-        Check(!core.DeleteMotionFiles("motion-1", true) && core.EnsembleActive() &&
-            std::filesystem::exists(fixture.root / "motions" / "motion-1" / "motion.gkclip"),
-            "deleting a referenced ensemble source is refused without altering the active performance");
-    }
-    BeginTest("ensemble preflight preserves an existing performance and validates actor identities");
-    {
-        Fixture fixture(repoRoot); auto& core = fixture.core;
-        Check(fixture.Apply() && core.EnsembleActive() && core.player.state == PlaybackState::Preview,
-            "three valid actor and motion slots commit as a silent preview");
-        fixture.Frame(1, 0);
-        const auto settings = core.ensembleActiveSettings;
-        const auto generation = core.loadedMotionGeneration;
-        auto* secondary = core.EnsemblePlayer(1);
-        const auto binding = secondary->controller.currentBinding.actor;
-        const auto reject = [&](const ensemble::Settings& candidate, const char* message, uint64_t epoch = 0) {
-            Check(!core.ApplyEnsemble(candidate, core.ensembleSnapshot.revision,
-                    epoch ? epoch : core.sceneActorRegistry.Epoch()) && core.EnsembleActive() &&
-                core.ensembleActiveSettings == settings && core.loadedMotionGeneration == generation &&
-                core.EnsemblePlayer(1) == secondary && secondary->controller.currentBinding.actor == binding, message);
-        };
-        auto invalid = settings; invalid.slots[1].actorToken = invalid.slots[0].actorToken;
-        reject(invalid, "duplicate actors fail before replacing clips or ownership");
-        invalid = settings; invalid.slots[1].actorToken = UINT64_MAX;
-        reject(invalid, "an unknown actor token cannot replace the current ensemble");
-        reject(settings, "an old roster epoch cannot rebind the ensemble", core.sceneActorRegistry.Epoch() + 1);
-        Check(!core.ApplyEnsemble(settings, core.ensembleSnapshot.revision + 1, core.sceneActorRegistry.Epoch()) &&
-            core.EnsembleActive() && core.ensembleActiveSettings == settings && core.EnsemblePlayer(1) == secondary,
-            "an outdated GUI revision cannot replace the current ensemble");
-        invalid = settings; invalid.slots[0].enabled = false;
-        reject(invalid, "a disabled master slot is rejected before changing the ensemble");
-        invalid = settings; invalid.cameraSlot = 2; invalid.slots[2].enabled = false;
-        reject(invalid, "a disabled camera follow slot is rejected before changing the ensemble");
-        invalid = settings; invalid.slots[1].motionKey = "missing-motion";
-        reject(invalid, "a missing motion key preserves the running clip instances");
-        const auto file = fixture.root / "motions/motion-1/motion.gkclip";
-        std::ofstream(file, std::ios::binary | std::ios::trunc) << "incomplete";
-        reject(settings, "an unreadable secondary clip preserves the original bound ensemble");
-        core.fnBeforeTargetChange = [] { return false; };
-        WriteClip(file, 60, 240, 45);
-        reject(settings, "unconfirmed old physics restoration keeps the existing ensemble");
-        core.fnBeforeTargetChange = nullptr;
+        Check(core.formation.slots.size() == 4 && fixture.actors[3].writes > 0, "four actor identities are driven simultaneously");
     }
 
-    BeginTest("ensemble uses one frame clock with independent source timing and silent secondary tracks");
+    BeginTest("unified formation shares one frame clock, single audio owner, and restores on stop");
     {
         Fixture fixture(repoRoot); auto& core = fixture.core;
-        core.motions[1].timing.motion = {.5f, .25f};
-        core.motions[1].timing.facial = {2, -.1f};
-        Check(fixture.Apply(), "different FPS and duration sources apply together");
-        Check(EnsembleNear(core.player.TimelineDuration(), 8.25f) && core.EnsemblePlayer(1)->clip.fps == 60 &&
-            core.EnsemblePlayer(2)->clip.fps == 24, "performance duration includes the delayed slower secondary source");
-        for (size_t i = 1; i < size_t{3}; ++i)
+        Check(fixture.SelectGroup(false) && core.player.state == PlaybackState::Preview,
+            "selecting group track enters silent preview");
+        Check(EnsembleNear(core.player.TimelineDuration(), 4.0f) && core.TrackForSlot(1)->clip.fps == 60 &&
+            core.TrackForSlot(2)->clip.fps == 24, "performance duration includes longer secondary slot");
+        for (int i = 0; i < 4; ++i)
         {
-            auto* track = core.EnsemblePlayer(i);
-            Check(!track->fnPlayAudio && !track->fnPauseAudio && !track->fnStopAudio && !track->fnResumeAudio &&
+            auto* track = core.TrackForSlot(i);
+            Check(track && !track->fnPlayAudio && !track->fnPauseAudio && !track->fnStopAudio && !track->fnResumeAudio &&
                 !track->fnSeekAudio && !track->fnGetAudioTime && track->audioSourceDuration == 0,
-                "a secondary track owns no audio callbacks or audio duration");
+                "secondary formation sampler tracks own no audio callbacks or audio duration");
         }
         const int beforePlay = audioPlays;
         core.player.Play(); fixture.Frame(10, .5f);
-        Check(EnsembleNear(core.player.currentTime, .5f) && EnsembleNear(core.EnsemblePlayer(1)->currentTime, .5f) &&
-            EnsembleNear(core.EnsemblePlayer(2)->currentTime, .5f) && audioPlays == beforePlay + 1 &&
-            audioPath == core.motions[0].dir + "/song.wav", "an unselected first actor advances once and only the master starts audio");
-        Check(EnsembleNear(core.EnsemblePlayer(1)->MotionSourceTime(), .125f) &&
-            EnsembleNear(core.EnsemblePlayer(1)->FacialSourceTime(), 1.2f), "body and facial source times independently map the shared performance seconds");
+        Check(EnsembleNear(core.player.currentTime, .5f) && EnsembleNear(core.TrackForSlot(1)->currentTime, .5f) &&
+            EnsembleNear(core.TrackForSlot(2)->currentTime, .5f) && audioPlays == beforePlay + 1 &&
+            audioPath == core.motions[0].dir + "/song.wav", "any first actor advances once and master player owns audio");
         std::array<size_t, 4> order{0, 1, 2, 3}; uint64_t frame = 11;
         do
         {
             const float previous = core.player.currentTime;
             fixture.Frame(frame++, .01f, order);
-            Check(EnsembleNear(core.player.currentTime, previous + .01f) && EnsembleNear(core.EnsemblePlayer(1)->currentTime, core.player.currentTime) &&
-                EnsembleNear(core.EnsemblePlayer(2)->currentTime, core.player.currentTime), "all actor callback orders sample one shared frame time");
+            Check(EnsembleNear(core.player.currentTime, previous + .01f) &&
+                EnsembleNear(core.TrackForSlot(1)->currentTime, core.player.currentTime) &&
+                EnsembleNear(core.TrackForSlot(2)->currentTime, core.player.currentTime),
+                "all actor callback orders sample one shared frame time");
         } while (std::next_permutation(order.begin(), order.end()));
         const float beforeDuplicate = core.player.currentTime;
         auto& first = fixture.actors[0];
         core.OnLateUpdate(&first, &first.animator, nullptr, .3f, true, .3f, frame - 1);
-        Check(EnsembleNear(core.player.currentTime, beforeDuplicate), "duplicate clock-eligible callbacks with the same physical frame cannot advance twice");
+        Check(EnsembleNear(core.player.currentTime, beforeDuplicate), "duplicate callbacks in same physical frame cannot advance twice");
         core.player.Pause(); core.player.Seek(2.0f); fixture.Frame(frame++, .4f);
-        Check(EnsembleNear(core.player.currentTime, 2.0f) && EnsembleNear(core.EnsemblePlayer(1)->currentTime, 2.0f) &&
-            EnsembleNear(core.EnsemblePlayer(2)->currentTime, 2.0f) && core.player.state == PlaybackState::Paused,
-            "paused seek updates every actor without advancing the performance clock");
-        auto* shortTrack = core.EnsemblePlayer(2);
-        Vector3 root; std::vector<Quaternion> rotations;
-        shortTrack->clip.Sample(shortTrack->MotionSourceTime(), root, rotations);
-        Check(EnsembleNear(root.x, 11.0f / 24.0f) && shortTrack->state == PlaybackState::Paused,
-            "a shorter source holds its last frame while the longer performance continues");
-        const auto heldPose = Rotation(&fixture.actors[2].hips);
-        core.player.Seek(3.0f); fixture.Frame(frame++, 0);
-        Check(std::fabs(Quaternion::Dot(heldPose, Rotation(&fixture.actors[2].hips))) > 1.0f - 1e-4f,
-            "the shorter actor's actual written pose remains held across later performance times");
-        core.player.Seek(.2f); fixture.Frame(frame++, 0);
-        Check(EnsembleNear(core.EnsemblePlayer(1)->MotionSourceTime(), 0) && EnsembleNear(core.EnsemblePlayer(2)->currentTime, .2f),
-            "a backwards paused seek reconstructs each source without retained short-track progress");
+        Check(EnsembleNear(core.player.currentTime, 2.0f) && EnsembleNear(core.TrackForSlot(2)->currentTime, 2.0f) &&
+            core.player.state == PlaybackState::Paused, "paused seek updates every actor cleanly");
+        auto* shortTrack = core.TrackForSlot(2);
+        Vector3 rPos; std::vector<Quaternion> rotations;
+        shortTrack->clip.Sample(shortTrack->MotionSourceTime(), rPos, rotations);
+        Check(EnsembleNear(rPos.x, 11.0f / 24.0f), "shorter slot holds last frame past its clip duration");
         core.StopPerformance();
         bool restored = true;
-        for (size_t i = 0; i < size_t{3}; ++i)
-            restored &= fixture.actors[i].animator.enabled && fixture.actors[i].animator.controller == reinterpret_cast<void*>(uintptr_t{0x100} + i) &&
-                EnsembleNear(Position(&fixture.actors[i].hips), fixture.initialHips[i]) && core.EnsemblePlayer(i)->state == PlaybackState::Stopped;
-        Check(restored && core.player.currentTime == 0, "Stop restores all three saved poses and original Animator ownership");
+        for (size_t i = 0; i < size_t{4}; ++i)
+            restored &= fixture.actors[i].animator.enabled &&
+                fixture.actors[i].animator.controller == reinterpret_cast<void*>(uintptr_t{0x100} + i) &&
+                EnsembleNear(Position(&fixture.actors[i].hips), fixture.initialHips[i]);
+        Check(restored && core.player.currentTime == 0 && core.player.state == PlaybackState::Stopped,
+            "Stop restores all four saved poses and original Animator ownership");
     }
 
-    BeginTest("ensemble master selection and screenshot suspension preserve one transport owner");
+    BeginTest("capture suspend/resume and per-slot overrides stay isolated across slots");
     {
         Fixture fixture(repoRoot); auto& core = fixture.core;
-        fixture.settings.masterSlot = 1; fixture.settings.cameraSlot = 2;
-        fixture.settings.slots[0].enabled = false;
-        Check(fixture.Apply() && core.EnsemblePlayer(1) == &core.player && core.EnsemblePlayer(0) == nullptr &&
-            core.player.controller.targetActor == &fixture.actors[1] && core.EnsembleCameraActor() == &fixture.actors[2],
-            "a nonzero master slot and independent follow slot bind correctly with a disabled first slot");
-        fixture.Frame(1, 0); core.player.Play(); fixture.Frame(2, .2f);
-        Check(audioPath == core.motions[1].dir + "/song.wav" && core.loadedMotionKey == "motion-1",
-            "only the explicitly chosen nonzero master owns the loaded key and audio source");
+        WriteTextFile(fixture.root / "motions/group-0/bone_overrides.json", "{\"overrides\":[{\"humanoid_id\":0,\"euler_deg\":[0,10,0]}]}");
+        WriteTextFile(fixture.root / "motions/group-0/positions/slot_2/bone_overrides.json", "{\"overrides\":[{\"humanoid_id\":0,\"euler_deg\":[0,20,0]}]}");
+        WriteTextFile(fixture.root / "motions/group-0/positions/slot_3/bone_overrides.json", "{\"overrides\":[{\"humanoid_id\":0,\"euler_deg\":[0,30,0]}]}");
+        Check(fixture.SelectGroup(false), "group track with per-slot overrides loads");
+        for (int i = 0; i < 3; ++i)
+        {
+            const auto* track = core.TrackForSlot(i);
+            const auto* ov = track && track->controller.boneOverrides ? track->controller.boneOverrides->Find(0, "") : nullptr;
+            Check(ov && EnsembleNear(ov->eulerDeg.y, static_cast<float>(10 + i * 10)), "each slot binds its own override collection");
+        }
+        core.ToggleOverrides();
+        for (int i = 0; i < 3; ++i)
+        {
+            const auto* track = core.TrackForSlot(i);
+            Check(track && track->controller.boneOverrides && !track->controller.boneOverrides->enabled,
+                "master override toggle disables every slot cleanly");
+        }
+        core.player.Play(); fixture.Frame(2, .2f);
         core.player.Pause();
         core.player.fnObserveAudio = [] { return audio::Observation{audio::PlaybackState::Paused, true, true, 1, 0}; };
         Check(core.SuspendForCapture() && core.captureSuspended && core.player.state == PlaybackState::Stopped &&
-            core.EnsemblePlayer(2)->state == PlaybackState::Stopped && fixture.actors[1].animator.enabled && fixture.actors[2].animator.enabled,
-            "screenshot suspension confirms restore for every active actor and stops secondary sampling");
+            fixture.actors[1].animator.enabled && fixture.actors[2].animator.enabled,
+            "capture suspend confirms restore across all active actors");
         Check(core.ResumeAfterCapture() && core.player.state == PlaybackState::Paused && EnsembleNear(core.player.currentTime, .2f),
-            "screenshot resume restores the paused shared position without starting another audio owner");
-        fixture.Frame(3, 0);
-        core.EnsemblePlayer(2)->controller.captureRestoreUnconfirmed = true;
+            "capture resume restores shared paused position");
+        core.TrackForSlot(2)->controller.captureRestoreUnconfirmed = true;
         Check(!core.SuspendForCapture() && core.captureRestoreReport.body == capture::RestoreState::Unconfirmed &&
-            !core.ResumeAfterCapture() && core.player.state == PlaybackState::Stopped,
-            "one unconfirmed secondary restore blocks resuming the complete capture session");
+            !core.ResumeAfterCapture(), "unconfirmed secondary restore blocks resuming capture session");
     }
 
-    BeginTest("ensemble override reload keeps independent per-motion collections");
-    {
-        Fixture fixture(repoRoot); auto& core = fixture.core;
-        for (size_t i = 0; i < size_t{3}; ++i)
-        {
-            const auto path = fixture.root / "motions" / ("motion-" + std::to_string(i)) / "bone_overrides.json";
-            WriteTextFile(path, "{\"overrides\":[{\"humanoid_id\":0,\"euler_deg\":[0," + std::to_string(10 + i * 10) + ",0]}]}");
-        }
-        Check(fixture.Apply(), "each actor loads its own motion override fixture");
-        core.LoadOverrides(false);
-        bool independent = true;
-        for (size_t i = 0; i < size_t{3}; ++i)
-        {
-            const auto* track = core.EnsemblePlayer(i);
-            const auto* override = track->controller.boneOverrides ? track->controller.boneOverrides->Find(0, "") : nullptr;
-            independent &= track->controller.boneOverrides == &core.ensembleOverrides[i] && override &&
-                EnsembleNear(override->eulerDeg.y, static_cast<float>(10 + i * 10));
-        }
-        Check(independent, "global reload never redirects all actors to the master's effective override set");
-        core.ToggleOverrides();
-        bool disabled = true;
-        for (size_t i = 0; i < size_t{3}; ++i)
-            disabled &= core.EnsemblePlayer(i)->controller.boneOverrides == &core.ensembleOverrides[i] && !core.ensembleOverrides[i].enabled;
-        Check(disabled, "the global override toggle disables each actor while preserving its collection identity");
-    }
-
-    BeginTest("ensemble actor loss restores survivors without touching removed or reused identities");
+    BeginTest("actor loss and pointer reuse never touch departed actors");
     for (bool reuseAddress : {false, true})
     {
         Fixture fixture(repoRoot); auto& core = fixture.core;
-        Check(fixture.Apply(), "actor-lifetime fixture starts an ensemble"); fixture.Frame(1, 0);
+        Check(fixture.SelectGroup(true), "actor-lifetime fixture starts performance"); fixture.Frame(1, 0);
         auto& missing = fixture.actors[1]; missing.alive = false;
         const auto missingTouches = missing.invalidTouches;
         std::vector<SceneActorObservation> roster{{&fixture.actors[0], 700, "hski"}, {&fixture.actors[2], 702, "hski"}};
         if (reuseAddress) roster.push_back({&missing, 900, "ttmr"});
         core.PublishSceneActors(roster);
-        Check(!core.EnsembleActive() && !core.ensembleSnapshot.verified && core.player.state == PlaybackState::Stopped &&
-            missing.invalidTouches == missingTouches, "roster removal or pointer reuse stops the ensemble without accessing the lost identity");
-        Check(fixture.actors[0].animator.enabled && fixture.actors[0].animator.controller == reinterpret_cast<void*>(uintptr_t{0x100}) &&
-            fixture.actors[2].animator.enabled && fixture.actors[2].animator.controller == reinterpret_cast<void*>(uintptr_t{0x102}) &&
-            EnsembleNear(Position(&fixture.actors[0].hips), fixture.initialHips[0]) && EnsembleNear(Position(&fixture.actors[2].hips), fixture.initialHips[2]),
-            "surviving actors restore their own pose and Animator after a different slot disappears");
-    }
-
-    BeginTest("ensemble blocks legacy single-actor placement and sole-check mutations");
-    {
-        Fixture fixture(repoRoot); auto& core = fixture.core;
-        core.initialPositionPath = MotionPathToUtf8(fixture.root / "config/initial_position.json");
-        const std::string initialBytes = "single actor preference sentinel\n";
-        WriteTextFile(MotionPathFromUtf8(core.initialPositionPath), initialBytes);
-        Check(fixture.Apply(), "legacy placement compatibility fixture starts an ensemble");
-        const auto placement = core.player.controller.initialPositionOffset;
-        const auto activeSettings = core.ensembleActiveSettings;
-        core.QueueInitialPosition({9, 8, 7});
-        core.QueueGui({Core::GuiAction::SaveInitialPosition});
-        core.ProcessPendingGuiCommands();
-        std::ifstream initialFile(MotionPathFromUtf8(core.initialPositionPath), std::ios::binary);
-        const std::string afterBytes(std::istreambuf_iterator<char>(initialFile), {});
-        Check(EnsembleNear(core.player.controller.initialPositionOffset, placement) && core.ensembleActiveSettings == activeSettings &&
-            afterBytes == initialBytes && !std::filesystem::exists(MotionPathFromUtf8(core.initialPositionPath + ".tmp")),
-            "old queued InitialPosition and SaveInitialPosition cannot change master placement or the single-actor preference file");
-        const auto measurement = core.soleSettings;
-        const auto experiment = core.experimentalSolePitchSettings;
-        core.experimentalSolePitchSnapshot.actor = &fixture.actors[3];
-        core.experimentalSolePitchSnapshot.poseSerial = 77;
-        core.config.cmdSolePitchCheck = true;
-        core.config.cmdSolePitchSettings = {3, .5f, 35, true, true, true};
-        core.ConsumeConfigCommands();
-        Check(EnsembleNear(core.player.controller.initialPositionOffset, placement) && core.soleSettings == measurement &&
-            core.experimentalSolePitchSettings.experimentalSolePitchCorrection == experiment.experimentalSolePitchCorrection &&
-            core.experimentalSolePitchSettings.maxPitchDegrees == experiment.maxPitchDegrees &&
-            core.experimentalSolePitchSettings.useMeshEnvelope == experiment.useMeshEnvelope &&
-            core.experimentalSolePitchSnapshot.actor == &fixture.actors[3] && core.experimentalSolePitchSnapshot.poseSerial == 77 &&
-            !core.config.cmdSolePitchCheck,
-            "a legacy sole pitch command cannot mutate ensemble placement, measurement settings or experiment state");
-    }
-
-    BeginTest("inactive ensemble tracks never retain actor restoration pointers");
-    for (bool disableExplicitly : {true, false})
-    {
-        Fixture fixture(repoRoot); auto& core = fixture.core;
-        Check(fixture.Apply(), "inactive restoration lifecycle fixture starts an ensemble"); fixture.Frame(1, 0);
-        if (disableExplicitly)
-        {
-            auto disabled = core.ensembleActiveSettings; disabled.enabled = false;
-            Check(core.ApplyEnsemble(disabled, core.ensembleSnapshot.revision, core.sceneActorRegistry.Epoch()),
-                "explicit disabling restores the ensemble before returning to single-actor mode");
-        }
-        else
-        {
-            fixture.actors[1].alive = false;
-            core.PublishSceneActors({{&fixture.actors[0], 700, "hski"}, {&fixture.actors[2], 702, "hski"}});
-        }
-        auto& departed = fixture.actors[2]; departed.alive = false;
+        Check(missing.invalidTouches == missingTouches && !core.formation.slots[1].occupied &&
+            core.formation.slots[0].occupied && core.formation.slots[2].occupied,
+            "roster removal or pointer reuse clears slot cleanly without accessing dead actor");
+        fixture.actors[2].alive = false;
         core.PublishSceneActors({{&fixture.actors[0], 700, "hski"}});
-        const int previousInvalidTouches = departed.invalidTouches;
+        const int departedTouches = fixture.actors[2].invalidTouches;
         core.StopPerformance();
-        Check(!core.EnsembleActive() && departed.invalidTouches == previousInvalidTouches,
-            "a later Stop after disabling or actor loss never restores a secondary actor that subsequently departed");
+        Check(!core.formation.active && fixture.actors[2].invalidTouches == departedTouches,
+            "shrinking to 1 actor and calling Stop never touches departed secondary actors");
     }
 
-    BeginTest("legacy Control v0 cannot mutate ensemble motion selection or placement");
+    BeginTest("Control v0 compatibility during active multi-actor formation");
     {
         Fixture fixture(repoRoot); auto& core = fixture.core;
-        Check(fixture.Apply(), "Control compatibility fixture starts an ensemble");
+        Check(fixture.SelectGroup(false) && core.formation.active, "Control compatibility fixture active");
         namespace api = GakuMotion::control::v0;
         api::Capabilities caps;
         Check(core.ReadControlCapabilities(sizeof(caps), &caps) == api::Error::Ok &&
             !(caps.availableMask & api::Mask(api::CommandKind::Load)) && !(caps.availableMask & api::Mask(api::CommandKind::Offset)),
-            "Control v0 capability snapshot withholds ambiguous ensemble Load and Offset commands");
+            "Control v0 withholds ambiguous Load and Offset while multi-actor formation is active");
         uint64_t ticket = 999;
-        auto command = fixture.Command(api::CommandKind::Load);
-        std::snprintf(command.motionKey, sizeof(command.motionKey), "motion-1");
-        Check(core.SubmitControl(&command, &ticket) == api::Error::Unsupported && ticket == 0,
-            "legacy Load reports Unsupported instead of silently replacing the ensemble master");
-        command = fixture.Command(api::CommandKind::Offset); command.offset = {1, 2, 3}; ticket = 999;
-        Check(core.SubmitControl(&command, &ticket) == api::Error::Unsupported && ticket == 0,
-            "legacy spatial Offset reports Unsupported instead of changing one ensemble actor");
-        command = fixture.Command(api::CommandKind::Seek); command.value = .25f;
+        auto command = fixture.Command(api::CommandKind::Seek); command.value = .25f;
         Check(core.SubmitControl(&command, &ticket) == api::Error::Pending && ticket != 0,
-            "existing global Seek remains available through Control v0");
+            "global Seek remains available through Control v0");
         core.ProcessPendingGuiCommands(); api::Result result;
         Check(core.PollControl(ticket, sizeof(result), &result) == api::Error::Ok && result.status == api::Error::Ok &&
-            EnsembleNear(core.player.currentTime, .25f), "global Seek reaches the existing transport command drain");
+            EnsembleNear(core.player.currentTime, .25f), "global Seek advances shared performance clock");
         core.ReleaseControl(ticket);
     }
 }

@@ -2178,24 +2178,27 @@ namespace GakuMotion
 			guiMikuFitSnapshot.store(static_cast<unsigned>(b.face.mikuFitDecision) | (fittedRole << 8) |
 				(eyeDecision << 16), std::memory_order_relaxed);
 
-			// 1. Current Actor World Transform
-			Vector3 curActorPos = b.restActorPos;
-			Quaternion curActorRot = b.restActorRot;
+			// 1. Current Actor World Transform (and optional multi-actor reference anchor)
+			Vector3 ownActorPos = b.restActorPos;
+			Quaternion ownActorRot = b.restActorRot;
 			if (b.actorTransform && fnGetWorldPosition && fnGetWorldRotation)
 			{
 				float aPos[3]{0.0f, 0.0f, 0.0f};
 				float aRot[4]{0.0f, 0.0f, 0.0f, 1.0f};
 				fnGetWorldPosition(b.actorTransform, aPos);
 				fnGetWorldRotation(b.actorTransform, aRot);
-				curActorPos = Vector3(aPos[0], aPos[1], aPos[2]);
-				curActorRot = Quaternion(aRot[0], aRot[1], aRot[2], aRot[3]);
+				ownActorPos = Vector3(aPos[0], aPos[1], aPos[2]);
+				ownActorRot = Quaternion(aRot[0], aRot[1], aRot[2], aRot[3]);
 			}
+			const Vector3 curActorPos = referenceAnchorActive ? referenceAnchorPos : ownActorPos;
+			const Quaternion curActorRot = referenceAnchorActive ? referenceAnchorRot : ownActorRot;
+			const Vector3 worldOffset = referenceAnchorActive ? curActorRot.Rotate(initialPositionOffset) : initialPositionOffset;
 
 			// Anchor supported v2+ clips to the actor pivot using one clip-wide
 			// FK floor offset. Bind-time hips height never enters that path.
-			// Other clips retain the legacy baseline. The user's initial placement
-			// is a constant WORLD-space translation added after actor rotation;
-			// it never enters the captured rest pose or clip's movement stream.
+			// Other clips retain the legacy baseline. In solo mode the initial
+			// placement is WORLD-space; when referenceAnchorActive is true it is
+			// expressed in slot-1 local coordinates and rotated by curActorRot.
 			if (b.rootTransform)
 			{
 				Vector3 localTarget(
@@ -2204,14 +2207,14 @@ namespace GakuMotion
 					(rootHeightCalibrationEnabled ? b.calibratedRootHeight : 0.0f),
 					b.restRootPos.z + vmdRootPos.z
 				);
-				Vector3 worldTarget = curActorPos + curActorRot.Rotate(localTarget) + initialPositionOffset;
+				Vector3 worldTarget = curActorPos + curActorRot.Rotate(localTarget) + worldOffset;
 				if (fnSetWorldPosition)
 				{
 					fnSetWorldPosition(b.rootTransform, worldTarget.x, worldTarget.y, worldTarget.z);
 				}
 				else if (fnSetLocalPosition)
 				{
-					localTarget = localTarget + curActorRot.Inverse().Rotate(initialPositionOffset);
+					localTarget = localTarget + curActorRot.Inverse().Rotate(worldOffset);
 					fnSetLocalPosition(b.rootTransform, localTarget.x, localTarget.y, localTarget.z);
 				}
 			}
@@ -2755,14 +2758,36 @@ namespace GakuMotion
 				{
 					if (fnSetLocalRotation)
 					{
-						fnSetLocalRotation(trans, gkLocalOut.x, gkLocalOut.y, gkLocalOut.z, gkLocalOut.w);
+						Quaternion writeLocal = gkLocalOut;
+						if (referenceAnchorActive && trans == b.rootTransform)
+						{
+							Quaternion ownParentRot = ownActorRot;
+							if (fnGetTransformParent && fnGetWorldRotation)
+							{
+								if (void* parent = fnGetTransformParent(trans))
+								{
+									float pq[4]{0.0f, 0.0f, 0.0f, 1.0f};
+									fnGetWorldRotation(parent, pq);
+									ownParentRot = Quaternion(pq[0], pq[1], pq[2], pq[3]).Normalized();
+								}
+								else
+								{
+									ownParentRot = Quaternion::Identity();
+								}
+							}
+							writeLocal = (ownParentRot.Inverse() * curActorRot * gkLocalOut).Normalized();
+						}
+						fnSetLocalRotation(trans, writeLocal.x, writeLocal.y, writeLocal.z, writeLocal.w);
 						mainRotationWritten = true;
 					}
 					else if (fnSetWorldRotation)
 					{
 						// Degraded path: no local setter available, so fall back to
 						// the world write using the already-composed rTarget.
-						fnSetWorldRotation(trans, rTarget.x, rTarget.y, rTarget.z, rTarget.w);
+						const Quaternion writeWorld = (referenceAnchorActive && trans == b.rootTransform)
+							                              ? (curActorRot * rTarget).Normalized()
+							                              : rTarget;
+						fnSetWorldRotation(trans, writeWorld.x, writeWorld.y, writeWorld.z, writeWorld.w);
 						mainRotationWritten = true;
 					}
 				}
@@ -3111,7 +3136,7 @@ namespace GakuMotion
 				float p[3]{}, r[4]{0, 0, 0, 1};
 				fnGetWorldPosition(b.rootTransform, p); fnGetWorldRotation(b.rootTransform, r);
 				const auto yaw = Quaternion::FromEulerDegreesXYZ(0, placementYawDegrees, 0);
-				const auto pivot = curActorPos + initialPositionOffset;
+				const auto pivot = curActorPos + worldOffset;
 				const auto target = pivot + yaw.Rotate(Vector3(p[0], p[1], p[2]) - pivot);
 				const auto rotation = (yaw * Quaternion(r[0], r[1], r[2], r[3])).Normalized();
 				if (fnSetLocalRotation && fnGetTransformParent)
@@ -3550,6 +3575,37 @@ namespace GakuMotion
 			initialPositionOffset = offset;
 			return true;
 		}
+
+		bool referenceAnchorActive{false};
+		Vector3 referenceAnchorPos{0.0f, 0.0f, 0.0f};
+		Quaternion referenceAnchorRot{0.0f, 0.0f, 0.0f, 1.0f};
+
+		// Set an explicit slot-1 reference anchor so dependent slots interpret
+		// initialPositionOffset and placementYawDegrees in slot-1 local space.
+		bool SetReferenceAnchor(const Vector3& pos, const Quaternion& rot) noexcept
+		{
+			if (!std::isfinite(pos.x) || !std::isfinite(pos.y) || !std::isfinite(pos.z)) return false;
+			const float n2 = rot.x * rot.x + rot.y * rot.y + rot.z * rot.z + rot.w * rot.w;
+			if (!std::isfinite(n2) || n2 < 1e-8f) return false;
+			referenceAnchorPos = pos;
+			referenceAnchorRot = rot.Normalized();
+			referenceAnchorActive = true;
+			return true;
+		}
+
+		void ClearReferenceAnchor() noexcept
+		{
+			referenceAnchorActive = false;
+			referenceAnchorPos = {0.0f, 0.0f, 0.0f};
+			referenceAnchorRot = Quaternion::Identity();
+		}
+
+		bool SetAnchorOverride(const Vector3& pos, const Quaternion& rot) noexcept
+		{
+			return SetReferenceAnchor(pos, rot);
+		}
+
+		void ClearAnchorOverride() noexcept { ClearReferenceAnchor(); }
 
 		float placementYawDegrees{0.0f};
 

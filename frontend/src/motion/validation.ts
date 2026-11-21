@@ -1,91 +1,15 @@
 // Pure validation/classification ports of the ImGui reference semantics
-// (GkEnsembleSettings.hpp, GkStageStudioSettings.hpp, GkSoleMeasurement.hpp,
+// (GkStageStudioSettings.hpp, GkSoleMeasurement.hpp,
 // GuiLibraryPage.hpp, GuiOverlayCommon.hpp). Shared by the store, the dev mock
 // and the tests; the native service re-validates independently.
 
 import {
   isSlotPlaceholder,
-  type EnsembleSettings,
   type ImportClassification,
   type SoleSettings,
   type StudioSettings,
   type VmdProbe,
 } from './protocol'
-
-export function validateEnsemble(settings: EnsembleSettings): string | null {
-  if (
-    settings.slots.length === 0 ||
-    settings.masterSlot < 0 ||
-    settings.masterSlot >= settings.slots.length ||
-    settings.cameraSlot < 0 ||
-    settings.cameraSlot >= settings.slots.length
-  ) {
-    return 'Ensemble slot selection is out of range'
-  }
-  const tokens = new Set<number>()
-  let active = 0
-  for (const slot of settings.slots) {
-    if (
-      !Number.isFinite(slot.offset.x) ||
-      !Number.isFinite(slot.offset.y) ||
-      !Number.isFinite(slot.offset.z) ||
-      !Number.isFinite(slot.yawDegrees)
-    ) {
-      return 'Ensemble placement must use finite numbers'
-    }
-    if (
-      slot.actorHint.length > 1024 ||
-      slot.actorHint.includes('\0') ||
-      slot.motionKey.length > 512 ||
-      slot.motionKey.includes('\0') ||
-      /[/\\]/.test(slot.motionKey) ||
-      slot.motionKey === '.' ||
-      slot.motionKey === '..'
-    ) {
-      return 'Invalid ensemble actor hint or motion library key'
-    }
-    if (slot.actorToken !== 0) {
-      if (tokens.has(slot.actorToken)) return 'An actor cannot occupy two ensemble slots'
-      tokens.add(slot.actorToken)
-    }
-    if (slot.enabled) {
-      active += 1
-      if (settings.enabled && slot.motionKey === '') return 'Choose a motion for every enabled ensemble slot'
-    }
-  }
-  if (settings.enabled && active === 0) return 'Enable at least one ensemble slot'
-  return null
-}
-
-// Returns a copy where slots missing a bound actor or motion are skipped on submit.
-export function resolveSubmittableEnsemble(settings: EnsembleSettings): EnsembleSettings {
-  return {
-    ...settings,
-    slots: settings.slots.map((slot) =>
-      slot.actorToken !== 0 && slot.motionKey !== '' ? slot : { ...slot, enabled: false },
-    ),
-  }
-}
-
-// Extra UI gating from DrawEnsembleControls (beyond ensemble::Validate).
-export function ensembleUiError(
-  settings: EnsembleSettings,
-  sceneActorTokens: ReadonlySet<number>,
-): string | null {
-  const base = validateEnsemble(settings)
-  if (base) return base
-  if (settings.enabled) {
-    if (!settings.slots[settings.masterSlot]?.enabled || !settings.slots[settings.cameraSlot]?.enabled) {
-      return '主槽与镜头跟随槽必须启用。'
-    }
-    for (const slot of settings.slots) {
-      if (slot.enabled && !sceneActorTokens.has(slot.actorToken)) {
-        return '请为每个启用槽绑定当前摄影角色。'
-      }
-    }
-  }
-  return null
-}
 
 function finiteInRange(value: number, low: number, high: number): boolean {
   return Number.isFinite(value) && value >= low && value <= high
@@ -196,6 +120,12 @@ export function canUseAsCamera(probe: VmdProbe): boolean {
   return probe.valid && probe.cameraFrames > 0
 }
 
+export interface ImportPositionPicks {
+  motion: string
+  facial: string
+  preserveExisting?: boolean
+}
+
 export interface ImportFormPicks {
   isEditMode: boolean
   motion: string
@@ -203,6 +133,7 @@ export interface ImportFormPicks {
   camera: string
   audio: string
   title: string
+  positions?: ImportPositionPicks[]
 }
 
 // Fool-proof validation from DrawAddEditModal, in the same priority order.
@@ -215,20 +146,27 @@ export function validateImportForm(
   if (importBusy) return '正在导入，请等待完成后保存'
   if (picks.isEditMode && editTargetMissing) return '原曲目已不在曲库中；表单已保留，请刷新后重试'
 
-  if (!picks.isEditMode) {
-    if (isSlotPlaceholder(picks.motion)) return '请选择有效的身体动作 (.vmd) 文件'
-    const probe = probeOf(picks.motion)
-    if (!probe || !canUseAsMotion(probe)) {
-      return '所选动作文件不包含身体骨骼动作关键帧（不能用纯镜头或纯表情文件作为动作）'
-    }
-  } else if (!isSlotPlaceholder(picks.motion)) {
-    const probe = probeOf(picks.motion)
-    if (!probe || !canUseAsMotion(probe)) return '所选动作文件不包含身体骨骼动作关键帧'
-  }
+  const positions = picks.positions && picks.positions.length > 0
+    ? picks.positions
+    : [{ motion: picks.motion, facial: picks.facial, preserveExisting: picks.isEditMode && isSlotPlaceholder(picks.motion) }]
 
-  if (!isSlotPlaceholder(picks.facial)) {
-    const probe = probeOf(picks.facial)
-    if (!probe || !canUseAsFacial(probe)) return '所选表情文件不包含表情或眼神关键帧'
+  for (const pos of positions) {
+    const requireMotion = !picks.isEditMode || !pos.preserveExisting
+    if (requireMotion) {
+      if (isSlotPlaceholder(pos.motion)) return '请选择有效的身体动作 (.vmd) 文件'
+      const probe = probeOf(pos.motion)
+      if (!probe || !canUseAsMotion(probe)) {
+        return '所选动作文件不包含身体骨骼动作关键帧（不能用纯镜头或纯表情文件作为动作）'
+      }
+    } else if (!isSlotPlaceholder(pos.motion)) {
+      const probe = probeOf(pos.motion)
+      if (!probe || !canUseAsMotion(probe)) return '所选动作文件不包含身体骨骼动作关键帧'
+    }
+
+    if (!isSlotPlaceholder(pos.facial)) {
+      const probe = probeOf(pos.facial)
+      if (!probe || !canUseAsFacial(probe)) return '所选表情文件不包含表情或眼神关键帧'
+    }
   }
   if (!isSlotPlaceholder(picks.camera)) {
     const probe = probeOf(picks.camera)
@@ -329,6 +267,7 @@ export function classifyImportFiles(paths: string[], probes: VmdProbe[]): Import
   const result: ImportClassification = {
     suggestedTitle: '',
     motionCandidate: '',
+    motionCandidates: [],
     facialCandidate: '',
     cameraCandidate: '',
     audioCandidate: '',
@@ -363,10 +302,27 @@ export function classifyImportFiles(paths: string[], probes: VmdProbe[]): Import
   if (facialOnlyList.length > 0) result.facialCandidate = pickBest(facialOnlyList, hasFaceKeyword)
 
   const motionPool = [...motionOnlyList, ...motionAndFacialList]
+  const fallbackMotionPool =
+    motionPool.length > 0
+      ? motionPool
+      : vmdAndCam.filter((item) => canUseAsMotion(item.probe)).map((item) => item.path)
+  const uniqueMotionPaths = Array.from(new Set(fallbackMotionPool))
+  const baseName = (p: string) => p.split(/[\\/]/).pop() ?? p
+  uniqueMotionPaths.sort((a, b) => {
+    const ba = baseName(a)
+    const bb = baseName(b)
+    const la = ba.toLowerCase()
+    const lb = bb.toLowerCase()
+    if (la < lb) return -1
+    if (la > lb) return 1
+    return ba < bb ? -1 : ba > bb ? 1 : a < b ? -1 : a > b ? 1 : 0
+  })
+  result.motionCandidates = uniqueMotionPaths
+
   if (motionPool.length > 0) {
     result.motionCandidate = pickBest(motionPool, hasMotionKeyword)
   } else {
-    result.motionCandidate = vmdAndCam.find((item) => canUseAsMotion(item.probe))?.path ?? ''
+    result.motionCandidate = result.motionCandidates[0] ?? ''
   }
 
   if (result.facialCandidate === '' && result.motionCandidate !== '') {

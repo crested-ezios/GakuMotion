@@ -77,7 +77,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
-      <AdditionalDependencies>winmm.lib;user32.lib;comdlg32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>winmm.lib;user32.lib;comdlg32.lib;windowscodecs.lib;ole32.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <!-- ======================================================================
@@ -96,7 +96,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
-      <AdditionalDependencies>winmm.lib;user32.lib;comdlg32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>winmm.lib;user32.lib;comdlg32.lib;windowscodecs.lib;ole32.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
   </ItemDefinitionGroup>
@@ -116,7 +116,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
-      <AdditionalDependencies>winmm.lib;user32.lib;comdlg32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>winmm.lib;user32.lib;comdlg32.lib;windowscodecs.lib;ole32.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <!-- ======================================================================
@@ -135,7 +135,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
-      <AdditionalDependencies>winmm.lib;user32.lib;comdlg32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>winmm.lib;user32.lib;comdlg32.lib;windowscodecs.lib;ole32.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
   </ItemDefinitionGroup>
@@ -192,6 +192,7 @@
     <ClInclude Include="tests\test_miku_facial_fit.hpp" />
     <ClInclude Include="tests\test_photography_ensemble_probe.hpp" />
     <ClInclude Include="tests\test_playback_timing.hpp" />
+    <ClInclude Include="tests\test_portrait_cache.hpp" />
     <ClInclude Include="tests\test_responsive_layout.hpp" />
     <ClInclude Include="tests\test_rinha_facial_fit.hpp" />
     <ClInclude Include="tests\test_scene_actor_selection.hpp" />

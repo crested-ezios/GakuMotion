@@ -86,7 +86,7 @@
 			if (ControlReady())
 			{
 				caps.availableMask = AllCommandsMask;
-				if (EnsembleActive()) caps.availableMask &= ~(Mask(CommandKind::Load) | Mask(CommandKind::Offset));
+				if (formation.active) caps.availableMask &= ~(Mask(CommandKind::Load) | Mask(CommandKind::Offset));
 				if (!player.clip.total_frames)
 					caps.availableMask &= ~(Mask(CommandKind::Play) | Mask(CommandKind::Pause) |
 						Mask(CommandKind::Seek) | Mask(CommandKind::Speed));
@@ -123,7 +123,7 @@
 			using namespace control_v0;
 			SyncControlSession();
 			if (!controlActive) return Error::Unavailable;
-			if (EnsembleActive() && (command.kind == CommandKind::Load || command.kind == CommandKind::Offset)) return Error::Unsupported;
+			if (formation.active && (command.kind == CommandKind::Load || command.kind == CommandKind::Offset)) return Error::Unsupported;
 			if (command.session != controlSession) return Error::StaleSession;
 			if (command.motionGeneration != loadedMotionGeneration) return Error::StaleMotion;
 			if (captureSuspended || !InjectionAllowed()) return Error::Protected;

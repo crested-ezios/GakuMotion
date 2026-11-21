@@ -8,10 +8,14 @@
 // 不启动解释器，也不覆盖已有动作。单一工作线程使用 @PROGRESS 协议。
 // =============================================================================
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <mutex>
 #include <string>
@@ -350,7 +354,7 @@ namespace GakuMotion::csharp_import
 		json += ",\"root_registration\":\"auto\",\"log_path\":";
 		detail::AppendJsonString(json, logPath);
 		json += "}";
-		job.response.assign(16384, '\0');
+		job.response.assign(65536, '\0');
 		job.code = 2;
 		job.done = false;
 		job.logPath = logPath;
@@ -399,6 +403,51 @@ namespace GakuMotion::csharp_import
 		return succeeded ? 1 : -1;
 	}
 
+	namespace detail
+	{
+		inline bool ValidatePositions(const MotionImportRequest& request, std::string& reason)
+		{
+			if (request.positionsExplicit && request.positions.empty())
+			{
+				reason = "团曲位置列表不能为空";
+				return false;
+			}
+			for (const auto& pos : request.positions)
+			{
+				if (pos.slot < 1 || pos.sourceSlot < 0)
+				{
+					reason = "团曲槽位序号无效";
+					return false;
+				}
+				if (!std::isfinite(pos.x) || !std::isfinite(pos.y) || !std::isfinite(pos.z) ||
+				    !std::isfinite(pos.yawDegrees) || !std::isfinite(pos.sourceFps) || pos.sourceFps < 0.0f)
+				{
+					reason = "团曲位置参数或源帧率必须为有限数值";
+					return false;
+				}
+			}
+			return true;
+		}
+
+		inline std::string ResolvePrimaryVmd(const MotionImportRequest& request)
+		{
+			if (!request.vmd.empty()) return request.vmd;
+			for (const auto& pos : request.positions)
+			{
+				if (pos.slot == 1 && !pos.motionVmd.empty()) return pos.motionVmd;
+			}
+			return std::string();
+		}
+
+		inline std::string FormatFiniteFloat(float value)
+		{
+			const float clean = (value == 0.0f || std::fabs(value) < 1e-7f) ? 0.0f : value;
+			std::string s = jsonlite::FormatNumber(static_cast<double>(clean), 6);
+			if (s == "-0") s = "0";
+			return s;
+		}
+	}
+
 	/// <summary>
 	/// Requests admitted by the native product pipeline. Unsupported target
 	/// geometry is an explicit error; existing clips remain playable.
@@ -410,7 +459,11 @@ namespace GakuMotion::csharp_import
 			reason = "播放速度必须为不小于 0 的有限数值，初始偏移量必须为有限数值";
 			return false;
 		}
-		if (request.vmd.empty() && request.editDir.empty())
+		if (!detail::ValidatePositions(request, reason))
+		{
+			return false;
+		}
+		if (detail::ResolvePrimaryVmd(request).empty() && request.editDir.empty())
 		{
 			reason = "未指定 VMD 或待编辑曲目";
 			return false;
@@ -426,6 +479,10 @@ namespace GakuMotion::csharp_import
 		if (!ValidPerformanceTiming(request.timing))
 		{
 			message = "播放速度必须为不小于 0 的有限数值，初始偏移量必须为有限数值";
+			return false;
+		}
+		if (!detail::ValidatePositions(request, message))
+		{
 			return false;
 		}
 		std::lock_guard<std::mutex> lock(detail::Mutex());
@@ -446,9 +503,13 @@ namespace GakuMotion::csharp_import
 			return false;
 		}
 
+		const std::string primaryVmd = request.editDir.empty()
+			? detail::ResolvePrimaryVmd(request)
+			: request.vmd;
+
 		std::string json = "{";
 		json += "\"motion_vmd\":";
-		detail::AppendJsonString(json, request.vmd);
+		detail::AppendJsonString(json, primaryVmd);
 		json += ",\"edit_dir\":";
 		detail::AppendJsonString(json, request.editDir);
 		json += ",\"morph_vmd\":";
@@ -494,6 +555,46 @@ namespace GakuMotion::csharp_import
 		json += cameraScaleBuffer;
 		json += ",\"camera_root_registration\":";
 		detail::AppendJsonString(json, request.cameraRootRegistration);
+		if (!request.positions.empty() || request.positionsExplicit)
+		{
+			json += ",\"positions\":[";
+			for (size_t i = 0; i < request.positions.size(); ++i)
+			{
+				if (i > 0) json.push_back(',');
+				const auto& pos = request.positions[i];
+				json += "{\"slot\":";
+				json += std::to_string(pos.slot);
+				if (pos.sourceSlot > 0)
+				{
+					json += ",\"source_slot\":";
+					json += std::to_string(pos.sourceSlot);
+				}
+				json += ",\"motion_vmd\":";
+				detail::AppendJsonString(json, pos.motionVmd);
+				json += ",\"morph_vmd\":";
+				detail::AppendJsonString(json, pos.morphVmd);
+				json += ",\"disable_morph\":";
+				json += pos.disableMorph ? "true" : "false";
+				json += ",\"clear_morph\":";
+				json += pos.clearMorph ? "true" : "false";
+				json += ",\"source_fps\":";
+				json += detail::FormatFiniteFloat(pos.sourceFps > 0.0f ? pos.sourceFps : 0.0f);
+				json += ",\"rebake_output\":";
+				json += pos.rebakeOutput ? "true" : "false";
+				json += ",\"preserve_existing\":";
+				json += pos.preserveExisting ? "true" : "false";
+				json += ",\"x\":";
+				json += detail::FormatFiniteFloat(pos.x);
+				json += ",\"y\":";
+				json += detail::FormatFiniteFloat(pos.y);
+				json += ",\"z\":";
+				json += detail::FormatFiniteFloat(pos.z);
+				json += ",\"yaw_degrees\":";
+				json += detail::FormatFiniteFloat(pos.yawDegrees);
+				json.push_back('}');
+			}
+			json.push_back(']');
+		}
 		json += ",\"log_path\":";
 		detail::AppendJsonString(json, request.log);
 		json += ",\"timing_jsonl\":";
@@ -507,7 +608,7 @@ namespace GakuMotion::csharp_import
 		}
 		json += "}";
 
-		job.response.assign(16384, '\0');
+		job.response.assign(65536, '\0');
 		job.code = 2;
 		job.done = false;
 		job.active = true;
@@ -592,8 +693,13 @@ namespace GakuMotion::csharp_import
 		}
 
 		std::string detail = stringField("error");
-		if (detail.empty()) detail = parsed ? "C# 导入后端返回失败" : "C# 导入后端响应无法解析";
-		const std::string code = stringField("code");
+		if (detail.empty())
+		{
+			if (!parsed && job.code == 3) detail = "C# 导入后端响应缓冲区不足";
+			else detail = parsed ? "C# 导入后端返回失败" : "C# 导入后端响应无法解析";
+		}
+		std::string code = stringField("code");
+		if (code.empty() && !parsed && job.code == 3) code = "buffer_too_small";
 		message = "导入失败: " + detail;
 		if (!job.logPath.empty()) message += "（日志: " + job.logPath + "）";
 		if (progress)

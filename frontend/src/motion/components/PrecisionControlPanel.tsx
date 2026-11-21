@@ -28,7 +28,6 @@ export function PrecisionControlPanel({ onClose }: { onClose: () => void }) {
   const player = useMotionStore((state) => state.player)
   const clock = useMotionStore((state) => state.clock)
   const loaded = useMotionStore((state) => state.loaded)
-  const ensembleActive = useMotionStore((state) => state.ensemble.active)
   const libraryEmpty = useMotionStore((state) => state.library.entries.length === 0)
   const navigationError = useMotionStore((state) => state.navigationError)
   const seekStepSeconds = useMotionStore((state) => state.seekStepSeconds)
@@ -483,9 +482,6 @@ export function PrecisionControlPanel({ onClose }: { onClose: () => void }) {
       <div className="space-y-2 border-t border-border/60 pt-3">
         <div className="flex items-center justify-between gap-2">
           <span className="font-medium text-foreground">曲目切换与重载</span>
-          {ensembleActive && (
-            <span className="text-micro text-warning">多人舞台激活时禁用上下曲</span>
-          )}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <Button
@@ -494,7 +490,7 @@ export function PrecisionControlPanel({ onClose }: { onClose: () => void }) {
             size="sm"
             className="h-8 gap-1 px-2.5 text-xs"
             aria-label="上一曲"
-            disabled={ensembleActive || libraryEmpty || !supports('player.cycle')}
+            disabled={libraryEmpty || !supports('player.cycle')}
             onClick={() => void motionStore.cycle(-1)}
           >
             <RiSkipBackFill className="size-3.5" />
@@ -506,7 +502,7 @@ export function PrecisionControlPanel({ onClose }: { onClose: () => void }) {
             size="sm"
             className="h-8 gap-1 px-2.5 text-xs"
             aria-label="下一曲"
-            disabled={ensembleActive || libraryEmpty || !supports('player.cycle')}
+            disabled={libraryEmpty || !supports('player.cycle')}
             onClick={() => void motionStore.cycle(1)}
           >
             <RiSkipForwardFill className="size-3.5" />

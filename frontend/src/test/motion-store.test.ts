@@ -25,14 +25,17 @@ describe('MotionStore startup', () => {
     expect(state.permission.injectionAllowed).toBe(true)
     expect(store.supports('player.play')).toBe(true)
     expect(store.supports('library.import')).toBe(true)
-    expect(store.supports('ensemble.set')).toBe(true)
+    expect(store.supports('actors.getPortrait')).toBe(true)
+    expect(store.supports('formation.selectSlot')).toBe(true)
+    expect(store.supports('formation.swapSlots')).toBe(true)
     bridge.close()
 
     const phase1 = await startedStore('phase1')
     expect(phase1.store.supports('player.play')).toBe(true)
     expect(phase1.store.supports('library.import')).toBe(false)
     expect(phase1.store.supports('dialog.pickFile')).toBe(false)
-    expect(phase1.store.supports('ensemble.set')).toBe(false)
+    expect(phase1.store.supports('actors.getPortrait')).toBe(false)
+    expect(phase1.store.supports('formation.selectSlot')).toBe(false)
     phase1.bridge.close()
   })
 })
@@ -237,7 +240,7 @@ describe('MotionStore camera and stage', () => {
   it('selects actors with token+epoch and reports stale rosters', async () => {
     const { bridge, store } = await startedStore()
     await store.selectActor(102)
-    expect(store.getState().actors.targetLabel).toBe('凛')
+    expect(store.getState().actors.targetLabel).toBe('月村手毬 (ttmr) · 2')
     vi.spyOn(bridge, 'request').mockImplementationOnce(async () => {
       throw new BridgeError('stale_token', '角色名单已变化')
     })

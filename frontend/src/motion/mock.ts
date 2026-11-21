@@ -15,12 +15,14 @@ import {
   DEFAULT_GAZE_SETTINGS,
   DEFAULT_PLAYER_STATE,
   DEFAULT_SOLE_PITCH_SETTINGS,
+  DEFAULT_STAGE_FORMATION,
   DEFAULT_STAGE_SETTINGS,
   boneNameByHid,
   defaultPerformanceTiming,
   defaultSoleSettings,
   defaultStudioSettings,
   symmetricalHid,
+  type ActorPortraitResult,
   type AudioEffectState,
   type AudioProbeInfo,
   type BoneState,
@@ -30,12 +32,11 @@ import {
   type ClockState,
   type DropPeek,
   type EditEntryInfo,
-  type EnsembleSettings,
-  type EnsembleSnapshot,
   type ExperimentsState,
   type GazeState,
   type ImportRequest,
   type LibraryEntry,
+  type LibraryPositionEntry,
   type MotionBridgeClient,
   type MotionEventName,
   type MotionEvents,
@@ -45,9 +46,12 @@ import {
   type PerformanceTiming,
   type PlayerState,
   type RequestOptions,
+  type SceneActor,
   type SolePitchState,
   type SoleState,
+  type StageFormation,
   type StageNode,
+  type StageSlotOffset,
   type StudioSettings,
   type StudioState,
   type TelemetrySnapshot,
@@ -55,7 +59,7 @@ import {
 } from './protocol'
 import { steppedFrame } from './time'
 import { clamp } from './utils'
-import { classifyImportFiles, validateEnsemble, validateSole, validateStudio } from './validation'
+import { classifyImportFiles, validateSole, validateStudio } from './validation'
 
 export type MockCapabilityProfile = 'full' | 'phase1'
 
@@ -89,8 +93,6 @@ const PHASE1_METHODS: MotionMethodName[] = [
   'facial.save',
   'position.set',
   'position.save',
-  'camera.set',
-  'camera.save',
   'stage.set',
   'settings.setPhysics',
   'shell.setTextInputActive',
@@ -98,6 +100,8 @@ const PHASE1_METHODS: MotionMethodName[] = [
 ]
 
 const PHASE2_METHODS: MotionMethodName[] = [
+  'camera.set',
+  'camera.save',
   'library.import',
   'library.probeFiles',
   'library.startEdit',
@@ -115,10 +119,13 @@ const PHASE2_METHODS: MotionMethodName[] = [
   'drop.setTarget',
   'drop.poll',
   'drop.peek',
-  'ensemble.set',
-  'ensemble.presetSave',
-  'ensemble.presetLoad',
-  'ensemble.probe',
+  'actors.getPortrait',
+  'formation.selectSlot',
+  'formation.swapSlots',
+  'formation.setSlotOffset',
+  'formation.resetSlotOffset',
+  'formation.saveSlotOffset',
+  'formation.setSlotSource',
   'bone.get',
   'bone.set',
   'bone.reset',
@@ -153,12 +160,12 @@ const SUPPORTED_EVENTS: MotionEventName[] = [
   'loaded.changed',
   'playlist.changed',
   'actors.changed',
+  'formation.changed',
   'camera.changed',
   'stage.changed',
   'stage.nodesChanged',
   'facial.changed',
   'position.changed',
-  'ensemble.changed',
   'settings.changed',
   'import.progress',
   'appearance.changed',
@@ -187,6 +194,11 @@ const MOCK_AUDIO_EFFECT_PRESETS = [
   { id: 'pure_acg', name: '纯净ACG', category: 'eq', description: '二次元流行乐高频通透调音' },
 ]
 
+const MOCK_KNOWN_IDOL_CODES = new Set([
+  'hski', 'ttmr', 'fktn', 'amao', 'kllj', 'ssmk', 'hume', 'kcna',
+  'jsna', 'shro', 'hrnm', 'atbm', 'hmsz', 'hkne', 'krnh', 'nasr',
+])
+
 function seedEntries(): LibraryEntry[] {
   return [
     {
@@ -202,6 +214,9 @@ function seedEntries(): LibraryEntry[] {
       hasAudio: true,
       audioFile: 'song.flac',
       hasCover: true,
+      isGroup: false,
+      positionCount: 1,
+      positions: [],
     },
     {
       id: 'starlight-step',
@@ -214,6 +229,13 @@ function seedEntries(): LibraryEntry[] {
       hasFacial: false,
       hasCamera: true,
       hasAudio: true,
+      isGroup: true,
+      positionCount: 3,
+      positions: [
+        { slot: 1, x: 0, y: 0, z: 0, yawDegrees: 0, hasMotion: true, hasFacial: true },
+        { slot: 2, x: -0.6, y: 0, z: -0.2, yawDegrees: 10, hasMotion: true, hasFacial: false },
+        { slot: 3, x: 0.6, y: 0, z: -0.2, yawDegrees: -10, hasMotion: true, hasFacial: false },
+      ],
     },
     {
       id: 'aoi-haru',
@@ -226,6 +248,9 @@ function seedEntries(): LibraryEntry[] {
       hasFacial: true,
       hasCamera: false,
       hasAudio: true,
+      isGroup: false,
+      positionCount: 1,
+      positions: [],
     },
     {
       id: 'practice-room',
@@ -237,6 +262,9 @@ function seedEntries(): LibraryEntry[] {
       hasFacial: false,
       hasCamera: false,
       hasAudio: false,
+      isGroup: false,
+      positionCount: 1,
+      positions: [],
     },
     {
       id: 'encore-demo',
@@ -248,33 +276,71 @@ function seedEntries(): LibraryEntry[] {
       hasFacial: true,
       hasCamera: true,
       hasAudio: false,
+      isGroup: false,
+      positionCount: 1,
+      positions: [],
     },
   ]
 }
 
-function seedEnsemble(available: boolean): EnsembleSnapshot {
+function buildMockFormation(
+  actors: SceneActor[],
+  actorEpoch: number,
+  loadedEntry: LibraryEntry | undefined,
+  available: boolean,
+  revision = 1,
+  selectedSlotIndex = 0,
+): StageFormation {
+  const isGroupSong = Boolean(loadedEntry?.isGroup && (loadedEntry.positionCount ?? 1) >= 2)
+  const trackPositionCount = isGroupSong ? Math.max(2, loadedEntry!.positionCount ?? 1) : 1
+  const slotCount = Math.max(1, actors.length, trackPositionCount)
+  const slots: StageFormation['slots'] = []
+  for (let i = 0; i < slotCount; i += 1) {
+    const actor = actors[i]
+    const isOverflow = Boolean(loadedEntry) && i >= trackPositionCount
+    const hasTrackMotion = Boolean(loadedEntry) && !isOverflow
+    let offset: StageSlotOffset = { x: 0, y: 0, z: 0, yawDegrees: 0 }
+    if (i > 0) {
+      const posMeta = isGroupSong && i < trackPositionCount
+        ? loadedEntry?.positions?.find((p) => p.slot === i + 1)
+        : undefined
+      if (posMeta) {
+        offset = { x: posMeta.x, y: posMeta.y, z: posMeta.z, yawDegrees: posMeta.yawDegrees }
+      } else {
+        const prev = slots[i - 1]?.offset ?? { x: 0, y: 0, z: 0, yawDegrees: 0 }
+        offset = { x: prev.x + 0.5, y: prev.y, z: prev.z, yawDegrees: 0 }
+      }
+    }
+    slots.push({
+      slotIndex: i,
+      occupied: Boolean(actor),
+      actorToken: actor?.token ?? 0,
+      actorInstanceId: actor ? 1000 + i : 0,
+      character: actor?.character ?? '',
+      shortName: actor?.shortName ?? '',
+      displayName: actor?.displayName ?? '',
+      isOverflow,
+      hasTrackMotion,
+      sourceSlotIndex: isOverflow ? 0 : i,
+      placementDirty: false,
+      hasActorBoneOverrides: false,
+      physicsBackend: actor ? '原生' : '',
+      offset,
+      facialWeights: { ...DEFAULT_FACIAL_WEIGHTS },
+    })
+  }
   return {
-    settings: {
-      enabled: false,
-      masterSlot: 0,
-      cameraSlot: 0,
-      slots: [0, 1, 2].map(() => ({
-        enabled: false,
-        actorToken: 0,
-        actorHint: '',
-        motionKey: '',
-        offset: { x: 0, y: 0, z: 0 },
-        yawDegrees: 0,
-      })),
-    },
-    revision: 1,
-    actorEpoch: 1,
+    active: actors.length >= 2,
     available,
     verified: available,
-    probeEnabled: false,
-    active: false,
+    isGroupSong,
+    trackPositionCount,
+    slotCount,
+    selectedSlotIndex: Math.min(Math.max(0, selectedSlotIndex), slotCount - 1),
+    revision,
+    actorEpoch,
     notice: '',
-    physics: ['原生', '原生', '原生'],
+    slots,
   }
 }
 
@@ -427,12 +493,12 @@ export class MotionMockBridgeClient implements MotionBridgeClient {
   private actors = {
     epoch: 1,
     actors: [
-      { token: 101, label: '咲季', selected: true },
-      { token: 102, label: '凛', selected: false },
-      { token: 103, label: '手毬', selected: false },
+      { token: 101, label: '花海咲季 (hski) · 1', character: 'hski', displayName: '花海咲季', shortName: '咲季', selected: true },
+      { token: 102, label: '月村手毬 (ttmr) · 2', character: 'ttmr', displayName: '月村手毬', shortName: '手毬', selected: false },
+      { token: 103, label: '藤田琴音 (fktn) · 3', character: 'fktn', displayName: '藤田琴音', shortName: '琴音', selected: false },
     ],
-    targetLabel: '咲季',
-    boundLabel: '咲季',
+    targetLabel: '花海咲季 (hski) · 1',
+    boundLabel: '花海咲季 (hski) · 1',
   }
   private camera = {
     settings: { ...DEFAULT_CAMERA_SETTINGS },
@@ -447,8 +513,7 @@ export class MotionMockBridgeClient implements MotionBridgeClient {
   private stageNodes: StageNode[] = seedStageNodes()
   private facial = { weights: { ...DEFAULT_FACIAL_WEIGHTS }, notice: '' }
   private position = { offset: { x: 0, y: 0, z: 0 }, notice: '' }
-  private ensemble: EnsembleSnapshot
-  private ensemblePresets = new Map<string, EnsembleSettings>()
+  private formation: StageFormation = { ...DEFAULT_STAGE_FORMATION }
   private physicsBackend = 2
   private volumeSaved = 1
 
@@ -537,7 +602,12 @@ export class MotionMockBridgeClient implements MotionBridgeClient {
 
   constructor(options?: { capabilityProfile?: MockCapabilityProfile }) {
     this.capabilityProfile = options?.capabilityProfile ?? 'full'
-    this.ensemble = seedEnsemble(this.capabilityProfile === 'full')
+    this.formation = buildMockFormation(
+      this.actors.actors,
+      this.actors.epoch,
+      undefined,
+      this.capabilityProfile === 'full',
+    )
   }
 
   getCapabilityProfile(): MockCapabilityProfile {
@@ -546,8 +616,8 @@ export class MotionMockBridgeClient implements MotionBridgeClient {
 
   setCapabilityProfile(profile: MockCapabilityProfile): void {
     this.capabilityProfile = profile
-    this.ensemble = {
-      ...this.ensemble,
+    this.formation = {
+      ...this.formation,
       available: profile === 'full',
       verified: profile === 'full',
     }
@@ -575,6 +645,62 @@ export class MotionMockBridgeClient implements MotionBridgeClient {
   }
 
   push<E extends MotionEventName>(event: E, payload: MotionEvents[E]): void {
+    const obj = payload as unknown as Record<string, unknown>
+    if (event === 'library.changed' && obj) {
+      if (typeof obj.revision === 'number') this.libraryRevision = obj.revision
+      if (Array.isArray(obj.entries)) {
+        this.entries = (obj.entries as LibraryEntry[]).map((entry) => ({
+          ...entry,
+          isGroup: Boolean(entry.isGroup),
+          positionCount: entry.positionCount ?? (entry.isGroup ? 2 : 1),
+          positions: Array.isArray(entry.positions) ? entry.positions.map((pos) => ({ ...pos })) : [],
+        }))
+      }
+      if (typeof obj.notice === 'string') this.libraryNotice = obj.notice
+      if (typeof obj.refreshing === 'boolean') this.refreshing = obj.refreshing
+    } else if (event === 'actors.changed' && obj) {
+      this.actors = {
+        ...this.actors,
+        ...(obj as Partial<typeof this.actors>),
+        actors: Array.isArray(obj.actors)
+          ? (obj.actors as SceneActor[]).map((actor) => ({ ...actor }))
+          : this.actors.actors,
+      }
+    } else if (event === 'formation.changed' && obj) {
+      const f = obj as unknown as Partial<StageFormation>
+      const rawSlots = Array.isArray(f.slots) ? f.slots : this.formation.slots
+      const slots = rawSlots.map((slot, idx) => ({
+        slotIndex: slot.slotIndex ?? idx,
+        occupied: Boolean(slot.occupied),
+        actorToken: slot.actorToken ?? 0,
+        actorInstanceId: slot.actorInstanceId ?? 0,
+        character: slot.character ?? '',
+        shortName: slot.shortName ?? '',
+        displayName: slot.displayName ?? '',
+        isOverflow: Boolean(slot.isOverflow),
+        hasTrackMotion: Boolean(slot.hasTrackMotion),
+        sourceSlotIndex: slot.sourceSlotIndex ?? idx,
+        placementDirty: Boolean(slot.placementDirty),
+        hasActorBoneOverrides: Boolean(slot.hasActorBoneOverrides),
+        physicsBackend: slot.physicsBackend ?? '',
+        offset: slot.offset ? { ...slot.offset } : { x: 0, y: 0, z: 0, yawDegrees: 0 },
+        facialWeights: slot.facialWeights ? { ...slot.facialWeights } : { ...DEFAULT_FACIAL_WEIGHTS },
+      }))
+      this.formation = {
+        ...this.formation,
+        ...f,
+        slots,
+      }
+    } else if (event === 'camera.changed' && obj) {
+      const c = obj as Partial<typeof this.camera>
+      this.camera = {
+        ...this.camera,
+        ...c,
+        settings: c.settings ? { ...this.camera.settings, ...c.settings } : this.camera.settings,
+      }
+    } else if (event === 'loaded.changed' && obj) {
+      this.loaded = { ...this.loaded, ...(obj as Partial<typeof this.loaded>) }
+    }
     this.emit(event, payload)
   }
 
@@ -585,10 +711,28 @@ export class MotionMockBridgeClient implements MotionBridgeClient {
   private emitLibrary(): void {
     this.emit('library.changed', {
       revision: this.libraryRevision,
-      entries: this.entries.map((entry) => ({ ...entry })),
+      entries: this.entries.map((entry) => ({
+        ...entry,
+        positions: entry.positions.map((pos) => ({ ...pos })),
+      })),
       refreshing: this.refreshing,
       notice: this.libraryNotice,
     })
+  }
+
+  private cloneFormation(): StageFormation {
+    return {
+      ...this.formation,
+      slots: this.formation.slots.map((slot) => ({
+        ...slot,
+        offset: { ...slot.offset },
+        facialWeights: { ...slot.facialWeights },
+      })),
+    }
+  }
+
+  private emitFormation(): void {
+    this.emit('formation.changed', this.cloneFormation())
   }
 
   private startTick(): void {
@@ -630,7 +774,16 @@ export class MotionMockBridgeClient implements MotionBridgeClient {
       fps: entry.totalFrames > 0 && entry.durationSeconds > 0 ? entry.totalFrames / entry.durationSeconds : 60,
     }
     this.camera = { ...this.camera, hasTrack: entry.hasCamera }
+    this.formation = buildMockFormation(
+      this.actors.actors,
+      this.actors.epoch,
+      entry,
+      this.capabilityProfile === 'full',
+      this.formation.revision + 1,
+      this.formation.selectedSlotIndex,
+    )
     this.emit('loaded.changed', { ...this.loaded })
+    this.emit('formation.changed', this.cloneFormation())
     this.emit('camera.changed', { ...this.camera, settings: { ...this.camera.settings } })
     this.emitPlayer()
     if (autoplay) this.startTick()
@@ -713,7 +866,6 @@ export class MotionMockBridgeClient implements MotionBridgeClient {
         return {} as MotionMethods[M]['result']
       case 'player.cycle': {
         this.requireAllowed()
-        if (this.ensemble.active) throw new BridgeError('protected', '多人舞台激活时不能切换曲目')
         this.cycle(Number(p.delta) >= 0 ? 1 : -1)
         return {} as MotionMethods[M]['result']
       }
@@ -850,16 +1002,255 @@ export class MotionMockBridgeClient implements MotionBridgeClient {
         this.emit('actors.changed', { ...this.actors, actors: this.actors.actors.map((a) => ({ ...a })) })
         return {} as MotionMethods[M]['result']
       }
+      case 'actors.getPortrait': {
+        this.requireCapability('actors.getPortrait')
+        let normCode = ''
+        if ('character' in p) {
+          if (typeof p.character !== 'string' || !/^[a-zA-Z0-9_-]{1,32}$/.test(p.character)) {
+            throw new BridgeError('invalid_params', 'character code is invalid')
+          }
+          normCode = p.character.toLowerCase()
+        } else if ('token' in p) {
+          const tok = p.token
+          if (typeof tok !== 'number' || !Number.isInteger(tok) || tok <= 0) {
+            throw new BridgeError('invalid_params', 'token must be a positive integer')
+          }
+          const actor = this.actors.actors.find((a) => a.token === tok)
+          normCode = actor && /^[a-zA-Z0-9_-]{1,32}$/.test(actor.character) ? actor.character.toLowerCase() : ''
+          if (!normCode) {
+            return { ok: true, character: '', cached: false, dataUri: null } satisfies ActorPortraitResult as MotionMethods[M]['result']
+          }
+        } else {
+          throw new BridgeError('invalid_params', 'character or token is required')
+        }
+        const hit = MOCK_KNOWN_IDOL_CODES.has(normCode)
+        return {
+          ok: true,
+          character: normCode,
+          cached: hit,
+          dataUri: hit ? MOCK_COVER_PNG : null,
+        } satisfies ActorPortraitResult as MotionMethods[M]['result']
+      }
+      case 'formation.selectSlot': {
+        this.requireCapability('formation.selectSlot')
+        const idx = p.slotIndex
+        if (typeof idx !== 'number' || !Number.isInteger(idx) || idx < 0 || idx >= this.formation.slots.length) {
+          throw new BridgeError('invalid_params', 'slotIndex is out of range')
+        }
+        this.requireAllowed()
+        this.formation = {
+          ...this.formation,
+          selectedSlotIndex: idx,
+          revision: this.formation.revision + 1,
+        }
+        const selSlot = this.formation.slots[idx]
+        if (selSlot) {
+          this.facial = { ...this.facial, weights: { ...selSlot.facialWeights } }
+          this.position = {
+            ...this.position,
+            offset: { x: selSlot.offset.x, y: selSlot.offset.y, z: selSlot.offset.z },
+          }
+          this.emit('facial.changed', { weights: { ...this.facial.weights }, notice: this.facial.notice })
+          this.emit('position.changed', { offset: { ...this.position.offset }, notice: this.position.notice })
+        }
+        this.emitFormation()
+        return {} as MotionMethods[M]['result']
+      }
+      case 'formation.swapSlots': {
+        this.requireCapability('formation.swapSlots')
+        const from = p.fromSlotIndex
+        const to = p.toSlotIndex
+        if (
+          typeof from !== 'number' ||
+          typeof to !== 'number' ||
+          !Number.isInteger(from) ||
+          !Number.isInteger(to) ||
+          from < 0 ||
+          to < 0 ||
+          from === to ||
+          from >= this.formation.slots.length ||
+          to >= this.formation.slots.length
+        ) {
+          throw new BridgeError('invalid_params', 'fromSlotIndex and toSlotIndex must be distinct valid indices')
+        }
+        this.requireAllowed()
+        const slots = this.formation.slots.map((s) => ({
+          ...s,
+          offset: { ...s.offset },
+          facialWeights: { ...s.facialWeights },
+        }))
+        const a = slots[from]
+        const b = slots[to]
+        slots[from] = {
+          ...a,
+          occupied: b.occupied,
+          actorToken: b.actorToken,
+          actorInstanceId: b.actorInstanceId,
+          character: b.character,
+          shortName: b.shortName,
+          displayName: b.displayName,
+          facialWeights: { ...b.facialWeights },
+          hasActorBoneOverrides: b.hasActorBoneOverrides,
+          physicsBackend: b.physicsBackend,
+        }
+        slots[to] = {
+          ...b,
+          occupied: a.occupied,
+          actorToken: a.actorToken,
+          actorInstanceId: a.actorInstanceId,
+          character: a.character,
+          shortName: a.shortName,
+          displayName: a.displayName,
+          facialWeights: { ...a.facialWeights },
+          hasActorBoneOverrides: a.hasActorBoneOverrides,
+          physicsBackend: a.physicsBackend,
+        }
+        this.formation = {
+          ...this.formation,
+          slots,
+          revision: this.formation.revision + 1,
+        }
+        this.emitFormation()
+        return {} as MotionMethods[M]['result']
+      }
+      case 'formation.setSlotOffset': {
+        this.requireCapability('formation.setSlotOffset')
+        const idx = p.slotIndex
+        const x = p.x
+        const y = p.y
+        const z = p.z
+        const yaw = 'yawDegrees' in p ? p.yawDegrees : 0
+        if (
+          typeof idx !== 'number' ||
+          !Number.isInteger(idx) ||
+          idx < 0 ||
+          idx >= this.formation.slots.length ||
+          typeof x !== 'number' ||
+          !Number.isFinite(x) ||
+          x < -10 ||
+          x > 10 ||
+          typeof y !== 'number' ||
+          !Number.isFinite(y) ||
+          y < -10 ||
+          y > 10 ||
+          typeof z !== 'number' ||
+          !Number.isFinite(z) ||
+          z < -10 ||
+          z > 10 ||
+          typeof yaw !== 'number' ||
+          !Number.isFinite(yaw) ||
+          yaw < -360 ||
+          yaw > 360
+        ) {
+          throw new BridgeError('invalid_params', 'Invalid formation slot offset parameters')
+        }
+        this.requireAllowed()
+        const slots = this.formation.slots.map((s, i) =>
+          i === idx
+            ? {
+                ...s,
+                offset: { x, y, z, yawDegrees: yaw },
+                placementDirty: true,
+              }
+            : s,
+        )
+        this.formation = { ...this.formation, slots, revision: this.formation.revision + 1 }
+        if (idx === this.formation.selectedSlotIndex) {
+          this.position = { ...this.position, offset: { x, y, z } }
+          this.emit('position.changed', { ...this.position, offset: { ...this.position.offset } })
+        }
+        this.emitFormation()
+        return {} as MotionMethods[M]['result']
+      }
+      case 'formation.resetSlotOffset': {
+        this.requireCapability('formation.resetSlotOffset')
+        const idx = p.slotIndex
+        if (typeof idx !== 'number' || !Number.isInteger(idx) || idx < 0 || idx >= this.formation.slots.length) {
+          throw new BridgeError('invalid_params', 'slotIndex is out of range')
+        }
+        this.requireAllowed()
+        const loadedEntry = this.entries.find((e) => e.id === this.loaded.motionKey)
+        const defaults = buildMockFormation(this.actors.actors, this.actors.epoch, loadedEntry, true)
+        const defOff = defaults.slots[idx]?.offset ?? { x: 0, y: 0, z: 0, yawDegrees: 0 }
+        const slots = this.formation.slots.map((s, i) =>
+          i === idx ? { ...s, offset: { ...defOff }, placementDirty: false } : s,
+        )
+        this.formation = { ...this.formation, slots, revision: this.formation.revision + 1 }
+        this.emitFormation()
+        return {} as MotionMethods[M]['result']
+      }
+      case 'formation.saveSlotOffset': {
+        this.requireCapability('formation.saveSlotOffset')
+        const idx = p.slotIndex
+        if (typeof idx !== 'number' || !Number.isInteger(idx) || idx < 0 || idx >= this.formation.slots.length) {
+          throw new BridgeError('invalid_params', 'slotIndex is out of range')
+        }
+        this.requireAllowed()
+        const slot = this.formation.slots[idx]
+        if (idx >= 1 && this.formation.isGroupSong && idx < this.formation.trackPositionCount) {
+          const loadedEntry = this.entries.find((e) => e.id === this.loaded.motionKey)
+          if (loadedEntry) {
+            const pos = loadedEntry.positions.find((entryPos) => entryPos.slot === idx + 1)
+            if (pos && slot) {
+              pos.x = slot.offset.x
+              pos.y = slot.offset.y
+              pos.z = slot.offset.z
+              pos.yawDegrees = slot.offset.yawDegrees
+            }
+          }
+        }
+        const slots = this.formation.slots.map((s, i) => (i === idx ? { ...s, placementDirty: false } : s))
+        this.formation = {
+          ...this.formation,
+          slots,
+          revision: this.formation.revision + 1,
+          notice: '已保存槽位初始位置',
+        }
+        this.emitFormation()
+        return {} as MotionMethods[M]['result']
+      }
+      case 'formation.setSlotSource': {
+        this.requireCapability('formation.setSlotSource')
+        const idx = p.slotIndex
+        const src = p.sourceSlotIndex
+        const maxSource = Math.max(1, this.formation.trackPositionCount)
+        if (
+          typeof idx !== 'number' ||
+          !Number.isInteger(idx) ||
+          idx < 0 ||
+          idx >= this.formation.slots.length ||
+          typeof src !== 'number' ||
+          !Number.isInteger(src) ||
+          src < 0 ||
+          src >= maxSource
+        ) {
+          throw new BridgeError('invalid_params', 'slotIndex or sourceSlotIndex is out of range')
+        }
+        this.requireAllowed()
+        const slots = this.formation.slots.map((s, i) => (i === idx ? { ...s, sourceSlotIndex: src } : s))
+        this.formation = { ...this.formation, slots, revision: this.formation.revision + 1 }
+        this.emitFormation()
+        return {} as MotionMethods[M]['result']
+      }
       case 'facial.setWeights': {
         this.requireAllowed()
+        const nextWeights = {
+          overall: clamp(Number(p.overall), 0, 2),
+          brow: clamp(Number(p.brow), 0, 2),
+          eye: clamp(Number(p.eye), 0, 2),
+          mouth: clamp(Number(p.mouth), 0, 2),
+        }
         this.facial = {
-          weights: {
-            overall: clamp(Number(p.overall), 0, 2),
-            brow: clamp(Number(p.brow), 0, 2),
-            eye: clamp(Number(p.eye), 0, 2),
-            mouth: clamp(Number(p.mouth), 0, 2),
-          },
+          weights: nextWeights,
           notice: '',
+        }
+        const selIdx = this.formation.selectedSlotIndex
+        if (selIdx >= 0 && selIdx < this.formation.slots.length) {
+          const slots = this.formation.slots.map((s, i) =>
+            i === selIdx ? { ...s, facialWeights: { ...nextWeights } } : s,
+          )
+          this.formation = { ...this.formation, slots, revision: this.formation.revision + 1 }
+          this.emitFormation()
         }
         this.emit('facial.changed', { weights: { ...this.facial.weights }, notice: '' })
         return {} as MotionMethods[M]['result']
@@ -883,10 +1274,20 @@ export class MotionMockBridgeClient implements MotionBridgeClient {
         return {} as MotionMethods[M]['result']
       case 'camera.set': {
         this.requireAllowed()
+        const nextCam = p.settings as CameraSettings
+        if (
+          nextCam &&
+          'followSlotIndex' in nextCam &&
+          (typeof nextCam.followSlotIndex !== 'number' ||
+            !Number.isInteger(nextCam.followSlotIndex) ||
+            nextCam.followSlotIndex < -1)
+        ) {
+          throw new BridgeError('invalid_params', 'followSlotIndex must be an integer >= -1')
+        }
         this.camera = {
           ...this.camera,
-          settings: { ...(p.settings as CameraSettings) },
-          owned: (p.settings as CameraSettings).enabled,
+          settings: { ...nextCam },
+          owned: nextCam.enabled,
         }
         this.emit('camera.changed', { ...this.camera, settings: { ...this.camera.settings } })
         return {} as MotionMethods[M]['result']
@@ -971,6 +1372,9 @@ export class MotionMockBridgeClient implements MotionBridgeClient {
           hasAudio: entry.hasAudio,
           audioFile: entry.audioFile,
           hasCover: entry.hasCover,
+          isGroup: entry.isGroup,
+          positionCount: entry.positionCount,
+          positions: entry.positions.map((pos) => ({ ...pos })),
           timing: this.timings.get(entry.id) ?? defaultPerformanceTiming(),
         }
         return result as MotionMethods[M]['result']
@@ -1099,14 +1503,29 @@ export class MotionMockBridgeClient implements MotionBridgeClient {
         }
         const applyImport = () => {
           if (this.closed) return
-          const isEdit = req.editKey !== ''
+          const isEdit = (req.editKey ?? '') !== ''
           const id = isEdit
             ? req.editKey
             : `${req.title.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'custom'}-${Date.now().toString(36)}`
           const existingIndex = this.entries.findIndex((item) => item.id === id)
-          const hasAudioTrack = !req.clearAudio && req.audioFile !== ''
+          const audioFile = req.audioFile ?? ''
+          const facialFile = req.facialFile ?? ''
+          const cameraFile = req.cameraFile ?? ''
+          const hasAudioTrack = !req.clearAudio && audioFile !== ''
           const customCover = req.coverDataUri && !req.clearCover ? req.coverDataUri : ''
-          const audioEmbeddedCover = hasAudioTrack && !req.audioFile.toLowerCase().endsWith('.wav')
+          const audioEmbeddedCover = hasAudioTrack && !audioFile.toLowerCase().endsWith('.wav')
+          const rawPositions = Array.isArray(req.positions) ? req.positions : []
+          const builtPositions: LibraryPositionEntry[] = rawPositions.map((pos, idx) => ({
+            slot: pos.slot ?? idx + 1,
+            x: pos.x ?? 0,
+            y: pos.y ?? 0,
+            z: pos.z ?? 0,
+            yawDegrees: pos.yawDegrees ?? 0,
+            hasMotion: true,
+            hasFacial: !pos.disableMorph && Boolean(pos.facialFile || pos.morphVmd || facialFile),
+          }))
+          const nextIsGroup = builtPositions.length >= 2
+          const nextPositionCount = Math.max(1, builtPositions.length)
           if (isEdit && existingIndex >= 0) {
             const current = this.entries[existingIndex]
             let nextHasCover = current.hasCover ?? false
@@ -1127,10 +1546,13 @@ export class MotionMockBridgeClient implements MotionBridgeClient {
               ...current,
               title: req.title.trim(),
               subtitle: req.subtitle !== undefined ? req.subtitle.trim() : current.subtitle,
-              hasFacial: req.disableMorph ? false : req.facialFile !== '' || current.hasFacial,
-              hasCamera: req.clearCamera ? false : req.cameraFile !== '' || current.hasCamera,
-              hasAudio: req.clearAudio ? false : req.audioFile !== '' || current.hasAudio,
+              hasFacial: req.disableMorph ? false : facialFile !== '' || current.hasFacial,
+              hasCamera: req.clearCamera ? false : cameraFile !== '' || current.hasCamera,
+              hasAudio: req.clearAudio ? false : audioFile !== '' || current.hasAudio,
               hasCover: nextHasCover,
+              isGroup: rawPositions.length > 0 ? nextIsGroup : current.isGroup,
+              positionCount: rawPositions.length > 0 ? nextPositionCount : current.positionCount,
+              positions: rawPositions.length > 0 ? builtPositions : current.positions,
             }
           } else {
             let nextHasCover = false
@@ -1147,16 +1569,19 @@ export class MotionMockBridgeClient implements MotionBridgeClient {
               totalFrames: 10800,
               hasMotion: true,
               hasFacial: !req.disableMorph,
-              hasCamera: req.cameraFile !== '',
+              hasCamera: cameraFile !== '',
               hasAudio: hasAudioTrack,
               hasCover: nextHasCover,
+              isGroup: nextIsGroup,
+              positionCount: nextPositionCount,
+              positions: builtPositions,
             }
             this.entries.unshift(created)
           }
-          this.timings.set(id, req.timing)
+          this.timings.set(id, req.timing ?? defaultPerformanceTiming())
           this.libraryRevision += 1
           this.libraryNotice = isEdit ? `已更新曲目：${req.title}` : `已导入曲目：${req.title}`
-          if (!isEdit && !this.ensemble.active && this.player.state !== 'playing') {
+          if (!isEdit && this.player.state !== 'playing') {
             const targetEntry = this.entries.find((item) => item.id === id)
             if (targetEntry) this.loadEntry(targetEntry, false)
           }
@@ -1216,44 +1641,6 @@ export class MotionMockBridgeClient implements MotionBridgeClient {
         const files = this.pendingDropFiles
         this.pendingDropFiles = []
         return { files } as MotionMethods[M]['result']
-      }
-      case 'ensemble.probe':
-        this.requireCapability('ensemble.probe')
-        this.ensemble = { ...this.ensemble, probeEnabled: Boolean(p.enabled) }
-        this.emit('ensemble.changed', { ...this.ensemble })
-        return {} as MotionMethods[M]['result']
-      case 'ensemble.set': {
-        this.requireCapability('ensemble.set')
-        this.requireAllowed()
-        if (Number(p.revision) !== this.ensemble.revision) throw new BridgeError('stale_revision', '多人舞台配置已变化')
-        if (Number(p.actorEpoch) !== this.ensemble.actorEpoch) throw new BridgeError('stale_token', '角色名单已变化')
-        const nextSettings = p.settings as EnsembleSettings
-        const err = validateEnsemble(nextSettings)
-        if (err) throw new BridgeError('invalid_params', err)
-        this.ensemble = {
-          ...this.ensemble,
-          settings: nextSettings,
-          revision: this.ensemble.revision + 1,
-          active: nextSettings.enabled,
-          notice: nextSettings.enabled ? '多人舞台配置已应用（mock）' : '多人舞台已停用（mock）',
-        }
-        this.emit('ensemble.changed', { ...this.ensemble })
-        return {} as MotionMethods[M]['result']
-      }
-      case 'ensemble.presetSave': {
-        this.requireCapability('ensemble.presetSave')
-        const name = String(p.name ?? '').trim()
-        if (!name) throw new BridgeError('invalid_params', '预设名不能为空')
-        this.ensemblePresets.set(name, p.settings as EnsembleSettings)
-        this.ensemble = { ...this.ensemble, notice: `已保存预设：${name}` }
-        this.emit('ensemble.changed', { ...this.ensemble })
-        return {} as MotionMethods[M]['result']
-      }
-      case 'ensemble.presetLoad': {
-        this.requireCapability('ensemble.presetLoad')
-        const name = String(p.name ?? '').trim()
-        const preset = this.ensemblePresets.get(name) ?? this.ensemble.settings
-        return { settings: preset } as MotionMethods[M]['result']
       }
       case 'bone.get':
         this.requireCapability('bone.get')
@@ -1476,24 +1863,21 @@ export class MotionMockBridgeClient implements MotionBridgeClient {
       player: { ...this.player },
       library: {
         revision: this.libraryRevision,
-        entries: this.entries.map((entry) => ({ ...entry })),
+        entries: this.entries.map((entry) => ({
+          ...entry,
+          positions: entry.positions.map((pos) => ({ ...pos })),
+        })),
         refreshing: this.refreshing,
         notice: this.libraryNotice,
       },
       loaded: { ...this.loaded },
       playlist: { ...this.playlist },
       actors: { ...this.actors, actors: this.actors.actors.map((actor) => ({ ...actor })) },
+      formation: this.cloneFormation(),
       camera: { ...this.camera, settings: { ...this.camera.settings } },
       stage: { ...this.stage, settings: { ...this.stage.settings } },
       facial: { weights: { ...this.facial.weights }, notice: this.facial.notice },
       position: { offset: { ...this.position.offset }, notice: this.position.notice },
-      ensemble: {
-        ...this.ensemble,
-        settings: {
-          ...this.ensemble.settings,
-          slots: this.ensemble.settings.slots.map((slot) => ({ ...slot, offset: { ...slot.offset } })),
-        },
-      },
       physicsBackend: this.physicsBackend,
       musicVolumeSupport: 0,
       musicVolumeNotice: '',

@@ -23,9 +23,9 @@ import {
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Slider } from '@/components/ui/slider'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
-import { CAMERA_MODES, ENSEMBLE_PLAY_MODES, PLAYBACK_SPEEDS, PLAY_MODES } from '../protocol'
+import { CAMERA_MODES, PLAYBACK_SPEEDS, PLAY_MODES } from '../protocol'
 import { motionStore, useMotionStore } from '../store'
 import { durationMismatch, formatTransportTime, framePosition, validTimeline } from '../time'
 import { PrecisionControlPanel } from './PrecisionControlPanel'
@@ -42,10 +42,7 @@ function IconTooltip({ label, children }: { label: string; children: React.React
   )
 }
 
-function playModeIcon(mode: number, ensembleActive: boolean) {
-  if (ensembleActive) {
-    return mode === 1 ? RiRepeatFill : RiOrderPlayFill
-  }
+function playModeIcon(mode: number) {
   if (mode === 1) return RiRepeatOneFill
   if (mode === 2) return RiRepeatFill
   if (mode === 3) return RiShuffleFill
@@ -58,8 +55,6 @@ export function TransportBar() {
   const loaded = useMotionStore((state) => state.loaded)
   const libraryEntries = useMotionStore((state) => state.library.entries)
   const libraryRevision = useMotionStore((state) => state.library.revision)
-  const actors = useMotionStore((state) => state.actors)
-  const ensembleActive = useMotionStore((state) => state.ensemble.active)
   const musicVolumeSupport = useMotionStore((state) => state.musicVolumeSupport)
   const musicVolumeNotice = useMotionStore((state) => state.musicVolumeNotice)
   const navigationError = useMotionStore((state) => state.navigationError)
@@ -125,11 +120,11 @@ export function TransportBar() {
   }, [currentEntry?.subtitle])
 
   const cameraModeIndex = motionStore.cameraQuickModeIndex()
-  const playModeLabels = ensembleActive ? ENSEMBLE_PLAY_MODES : PLAY_MODES
+  const playModeLabels = PLAY_MODES
   const normalizedPlayMode =
     player.playMode >= 0 && player.playMode < playModeLabels.length ? player.playMode : 1
   const currentPlayModeLabel = playModeLabels[normalizedPlayMode] ?? playModeLabels[0]
-  const PlayModeIcon = playModeIcon(normalizedPlayMode, ensembleActive)
+  const PlayModeIcon = playModeIcon(normalizedPlayMode)
 
   const hasDurationMismatch = hasClip && durationMismatch(player.totalFrames, player.fps, player.duration)
   const showSourceNotice = loaded.sourceMissing || loaded.sourceChanged
@@ -147,10 +142,11 @@ export function TransportBar() {
   const speedModified = Math.abs(player.speed - 1) > 0.01
 
   return (
-    <footer
-      className="relative z-30 shrink-0 bg-playerBar select-none"
-      data-testid="transport-bar"
-    >
+    <TooltipProvider delayDuration={300}>
+      <footer
+        className="relative z-30 shrink-0 bg-playerBar select-none"
+        data-testid="transport-bar"
+      >
       {/* Top Edge: Full-width precision timeline scrubber */}
       <div
         className="group relative -mt-1.5 flex h-3 w-full cursor-pointer items-center"
@@ -292,7 +288,7 @@ export function TransportBar() {
             </div>
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <span className="truncate">
-                {currentSubtitle || (ensembleActive ? '多人舞台' : actors.targetLabel || '未绑定角色')}
+                {currentSubtitle || (hasClip ? '演出已加载' : '')}
               </span>
             </div>
           </div>
@@ -635,6 +631,7 @@ export function TransportBar() {
         </div>
       </div>
       <CoverEditorModal owner="transport" />
-    </footer>
+      </footer>
+    </TooltipProvider>
   )
 }

@@ -8,11 +8,11 @@ import {
   DEFAULT_CLOCK_STATE,
   DEFAULT_FACIAL_WEIGHTS,
   DEFAULT_PLAYER_STATE,
+  DEFAULT_STAGE_FORMATION,
   DEFAULT_STAGE_SETTINGS,
   DEFAULT_EXPERIMENT_SETTINGS,
   DEFAULT_GAZE_SETTINGS,
   DEFAULT_SOLE_PITCH_SETTINGS,
-  ENSEMBLE_INITIAL_SLOTS,
   IMPORT_SLOT,
   defaultImportRequest,
   defaultPerformanceTiming,
@@ -30,8 +30,6 @@ import {
   type ClockSource,
   type ClockState,
   type EditEntryInfo,
-  type EnsembleSnapshot,
-  type EnsembleSettings,
   type ExperimentsState,
   type FacialWeights,
   type GazeSettings,
@@ -40,6 +38,7 @@ import {
   type ImportRequest,
   type PerformanceTiming,
   type LibraryEntry,
+  type LibraryPositionEntry,
   type LibraryState,
   type LoadedState,
   type MotionAppearance,
@@ -49,12 +48,16 @@ import {
   type MotionStateSnapshot,
   type PermissionState,
   type PlayerState,
+  type SceneActor,
   type ScreenshotCapabilities,
   type SolePitchState,
   type SoleSettings,
   type SoleState,
-  type StageState,
+  type StageFormation,
   type StageNode,
+  type StageSlotOffset,
+  type StageSlotState,
+  type StageState,
   type StudioSettings,
   type StudioState,
   type TelemetrySnapshot,
@@ -65,10 +68,8 @@ import {
 import { parseTransportFrame, parseTransportTime } from './time'
 import { deepEqual } from './utils'
 import {
+  canUseAsMotion,
   classifyImportFiles,
-  ensembleUiError,
-  resolveSubmittableEnsemble,
-  validateEnsemble,
   isSupportedAudioExtension,
   isSupportedImageExtension,
   isSupportedLibraryFile,
@@ -79,7 +80,7 @@ import {
 
 export type MotionPage = 'library' | 'motion' | 'camera' | 'stage' | 'settings' | 'developer'
 
-export type LibraryFilter = 'all' | 'camera' | 'audio' | 'facial' | 'motionOnly'
+export type LibraryFilter = 'all' | 'group' | 'camera' | 'audio' | 'facial' | 'motionOnly'
 export type LibrarySort = 'default' | 'title' | 'durationDesc' | 'durationAsc'
 
 export interface PendingDelete {
@@ -95,6 +96,16 @@ export interface ImportSlotState {
   selection: number
 }
 
+export interface ImportPositionFormState {
+  motion: ImportSlotState
+  facial: ImportSlotState
+  x: number
+  y: number
+  z: number
+  yawDegrees: number
+  preserveExisting: boolean
+}
+
 export type ImportCoverMode = 'auto' | 'custom' | 'clear'
 
 export interface ImportFormState {
@@ -108,6 +119,7 @@ export interface ImportFormState {
   sourceFps: number
   fps: number
   timing: PerformanceTiming
+  positions: ImportPositionFormState[]
   slots: Record<ImportSlotKey, ImportSlotState>
   unsupportedAudio: number
   probes: Record<string, VmdProbe>
@@ -144,7 +156,14 @@ export interface ImportUiState {
   errorDetail: string
 }
 
-export type DialogTarget = 'library-add' | 'append' | ImportSlotKey | 'video' | 'cover-image'
+export type DialogTarget =
+  | 'library-add'
+  | 'append'
+  | ImportSlotKey
+  | 'video'
+  | 'cover-image'
+  | `position-motion:${number}`
+  | `position-facial:${number}`
 
 export interface DropUiState {
   visual: 'none' | 'armed' | 'hover' | 'invalid'
@@ -169,7 +188,20 @@ function emptyCoverEditor(): CoverEditorState {
   }
 }
 
+function emptyImportPosition(): ImportPositionFormState {
+  return {
+    motion: { candidates: [], selection: 0 },
+    facial: { candidates: [], selection: 0 },
+    x: 0,
+    y: 0,
+    z: 0,
+    yawDegrees: 0,
+    preserveExisting: false,
+  }
+}
+
 function emptyImportForm(): ImportFormState {
+  const firstPos = emptyImportPosition()
   return {
     open: false,
     mode: 'new',
@@ -181,9 +213,10 @@ function emptyImportForm(): ImportFormState {
     sourceFps: 0,
     fps: 0,
     timing: defaultPerformanceTiming(),
+    positions: [firstPos],
     slots: {
-      motion: { candidates: [], selection: 0 },
-      facial: { candidates: [], selection: 0 },
+      motion: firstPos.motion,
+      facial: firstPos.facial,
       camera: { candidates: [], selection: 0 },
       audio: { candidates: [], selection: 0 },
     },
@@ -209,61 +242,6 @@ function emptyImportUi(): ImportUiState {
     lastProgress: null,
     errorModalOpen: false,
     errorDetail: '',
-  }
-}
-
-function emptyEnsembleSlot(): EnsembleSettings['slots'][number] {
-  return {
-    enabled: false,
-    actorToken: 0,
-    actorHint: '',
-    motionKey: '',
-    offset: { x: 0, y: 0, z: 0 },
-    yawDegrees: 0,
-  }
-}
-
-function isUntouchedEnsembleSlot(slot: EnsembleSettings['slots'][number]): boolean {
-  return (
-    !slot.enabled &&
-    slot.actorToken === 0 &&
-    slot.actorHint === '' &&
-    slot.motionKey === '' &&
-    slot.offset.x === 0 &&
-    slot.offset.y === 0 &&
-    slot.offset.z === 0 &&
-    slot.yawDegrees === 0
-  )
-}
-
-function reconcileEnsembleDraftWithActors(
-  draft: EnsembleSettings,
-  actorCount: number,
-  active: boolean,
-): EnsembleSettings {
-  if (active) return draft
-  const targetCount = Math.max(ENSEMBLE_INITIAL_SLOTS, actorCount)
-  if (draft.slots.length === targetCount) return draft
-  let slots = draft.slots
-  if (slots.length < targetCount) {
-    slots = [...slots, ...Array.from({ length: targetCount - slots.length }, () => emptyEnsembleSlot())]
-  } else {
-    slots = [...slots]
-    while (slots.length > targetCount && isUntouchedEnsembleSlot(slots[slots.length - 1])) {
-      slots.pop()
-    }
-  }
-  const masterSlot = draft.masterSlot < slots.length ? draft.masterSlot : 0
-  const cameraSlot = draft.cameraSlot < slots.length ? draft.cameraSlot : 0
-  return { ...draft, masterSlot, cameraSlot, slots }
-}
-
-function emptyEnsembleSettings(): EnsembleSettings {
-  return {
-    enabled: false,
-    masterSlot: 0,
-    cameraSlot: 0,
-    slots: Array.from({ length: ENSEMBLE_INITIAL_SLOTS }, () => emptyEnsembleSlot()),
   }
 }
 
@@ -517,9 +495,160 @@ function normalizeTiming(raw: unknown): PerformanceTiming {
   }
 }
 
+function cloneDefaultFormation(): StageFormation {
+  return {
+    ...DEFAULT_STAGE_FORMATION,
+    slots: DEFAULT_STAGE_FORMATION.slots.map((s) => ({
+      ...s,
+      offset: { ...s.offset },
+      facialWeights: { ...s.facialWeights },
+    })),
+  }
+}
+
+function normalizeLibraryPositions(raw: unknown): LibraryPositionEntry[] {
+  if (!Array.isArray(raw)) return []
+  return raw.map((item, idx) => {
+    const obj = asObj(item)
+    return {
+      slot: asNum(obj.slot, idx + 1),
+      x: asNum(obj.x, 0),
+      y: asNum(obj.y, 0),
+      z: asNum(obj.z, 0),
+      yawDegrees: asNum(obj.yawDegrees ?? obj.yaw_degrees, 0),
+      hasMotion: asBool(obj.hasMotion, true),
+      hasFacial: asBool(obj.hasFacial, false),
+    }
+  })
+}
+
+function normalizeLibraryEntry(raw: unknown): LibraryEntry {
+  const obj = asObj(raw)
+  const positions = normalizeLibraryPositions(obj.positions)
+  const isGroup = asBool(obj.isGroup, positions.length >= 2)
+  const positionCount = asNum(obj.positionCount, isGroup ? Math.max(2, positions.length) : Math.max(1, positions.length))
+  return {
+    id: asStr(obj.id),
+    title: asStr(obj.title),
+    subtitle: typeof obj.subtitle === 'string' && obj.subtitle !== '' ? obj.subtitle : undefined,
+    directory: asStr(obj.directory),
+    durationSeconds: asNum(obj.durationSeconds, 0),
+    totalFrames: asNum(obj.totalFrames, 0),
+    hasMotion: asBool(obj.hasMotion, true),
+    hasFacial: asBool(obj.hasFacial, false),
+    hasCamera: asBool(obj.hasCamera, false),
+    hasAudio: asBool(obj.hasAudio, false),
+    audioFile: typeof obj.audioFile === 'string' && obj.audioFile !== '' ? obj.audioFile : undefined,
+    hasCover: obj.hasCover !== undefined ? asBool(obj.hasCover, false) : undefined,
+    isGroup,
+    positionCount,
+    positions,
+  }
+}
+
+function normalizeLibraryState(raw: unknown): LibraryState {
+  const obj = asObj(raw)
+  const entries = Array.isArray(obj.entries) ? obj.entries.map(normalizeLibraryEntry) : []
+  return {
+    revision: asNum(obj.revision, 0),
+    entries,
+    refreshing: asBool(obj.refreshing, false),
+    notice: asStr(obj.notice),
+  }
+}
+
+function normalizeActorsState(raw: unknown): ActorsState {
+  const obj = asObj(raw)
+  const rawActors = Array.isArray(obj.actors) ? obj.actors : []
+  const actors: SceneActor[] = rawActors.map((item) => {
+    const a = asObj(item)
+    return {
+      token: asNum(a.token, 0),
+      label: asStr(a.label),
+      character: asStr(a.character),
+      displayName: asStr(a.displayName),
+      shortName: asStr(a.shortName),
+      selected: asBool(a.selected, false),
+    }
+  })
+  return {
+    epoch: asNum(obj.epoch, 0),
+    actors,
+    targetLabel: asStr(obj.targetLabel),
+    boundLabel: asStr(obj.boundLabel),
+  }
+}
+
+function normalizeStageSlot(raw: unknown, idx: number): StageSlotState {
+  const obj = asObj(raw)
+  const offObj = asObj(obj.offset)
+  const fwObj = asObj(obj.facialWeights)
+  return {
+    slotIndex: asNum(obj.slotIndex, idx),
+    occupied: asBool(obj.occupied, false),
+    actorToken: asNum(obj.actorToken, 0),
+    actorInstanceId: asNum(obj.actorInstanceId, 0),
+    character: asStr(obj.character),
+    shortName: asStr(obj.shortName),
+    displayName: asStr(obj.displayName),
+    isOverflow: asBool(obj.isOverflow, false),
+    hasTrackMotion: asBool(obj.hasTrackMotion, false),
+    sourceSlotIndex: asNum(obj.sourceSlotIndex, 0),
+    placementDirty: asBool(obj.placementDirty, false),
+    hasActorBoneOverrides: asBool(obj.hasActorBoneOverrides, false),
+    physicsBackend: asStr(obj.physicsBackend),
+    offset: {
+      x: asNum(offObj.x, 0),
+      y: asNum(offObj.y, 0),
+      z: asNum(offObj.z, 0),
+      yawDegrees: asNum(offObj.yawDegrees, 0),
+    },
+    facialWeights: {
+      overall: asNum(fwObj.overall, 1),
+      brow: asNum(fwObj.brow, 1),
+      eye: asNum(fwObj.eye, 1),
+      mouth: asNum(fwObj.mouth, 1),
+    },
+  }
+}
+
+function normalizeFormation(raw: unknown): StageFormation {
+  if (!raw || typeof raw !== 'object') return cloneDefaultFormation()
+  const obj = asObj(raw)
+  const rawSlots = Array.isArray(obj.slots) ? obj.slots : []
+  const slots = rawSlots.length > 0 ? rawSlots.map(normalizeStageSlot) : cloneDefaultFormation().slots
+  const slotCount = Math.max(1, asNum(obj.slotCount, slots.length))
+  return {
+    active: asBool(obj.active, false),
+    available: asBool(obj.available, false),
+    verified: asBool(obj.verified, false),
+    isGroupSong: asBool(obj.isGroupSong, false),
+    trackPositionCount: Math.max(1, asNum(obj.trackPositionCount, 1)),
+    slotCount,
+    selectedSlotIndex: Math.min(Math.max(0, asNum(obj.selectedSlotIndex, 0)), slotCount - 1),
+    revision: asNum(obj.revision, 1),
+    actorEpoch: asNum(obj.actorEpoch, 1),
+    notice: asStr(obj.notice),
+    slots,
+  }
+}
+
+function normalizeCameraState(raw: CameraState): CameraState {
+  const sObj = asObj(raw.settings)
+  const settings = syncLegacyTransforms({
+    ...DEFAULT_CAMERA_SETTINGS,
+    ...raw.settings,
+    followSlotIndex: asNum(sObj.followSlotIndex, DEFAULT_CAMERA_SETTINGS.followSlotIndex),
+  })
+  return { ...raw, settings }
+}
+
 function normalizeEditEntryInfo(raw: unknown, fallbackKey: string): EditEntryInfo {
   const obj = asObj(raw)
   const entry = obj.entry && typeof obj.entry === 'object' ? asObj(obj.entry) : obj
+  const positions = normalizeLibraryPositions(obj.positions)
+  const isGroup = asBool(obj.isGroup, positions.length >= 2)
+  const positionCount = asNum(obj.positionCount, isGroup ? Math.max(2, positions.length) : Math.max(1, positions.length))
   return {
     key: asStr(obj.key ?? entry.editKey, fallbackKey),
     title: asStr(obj.title ?? entry.title, fallbackKey),
@@ -529,6 +658,9 @@ function normalizeEditEntryInfo(raw: unknown, fallbackKey: string): EditEntryInf
     hasAudio: asBool(obj.hasAudio, false),
     audioFile: asStr(obj.audioFile, ''),
     hasCover: asBool(obj.hasCover, false),
+    isGroup,
+    positionCount,
+    positions,
     timing: normalizeTiming(obj.timing ?? entry.timing),
   }
 }
@@ -635,11 +767,11 @@ export interface MotionAppState {
   loaded: LoadedState
   playlist: { mode: number; notice: string }
   actors: ActorsState
+  formation: StageFormation
   camera: CameraState
   stage: StageState
   facial: { weights: FacialWeights; notice: string }
   position: { offset: Vector3; notice: string }
-  ensemble: EnsembleSnapshot
   physicsBackend: number
   musicVolumeSupport: number
   musicVolumeNotice: string
@@ -658,6 +790,7 @@ export interface MotionAppState {
   clock: ClockState
   audioEffect: AudioEffectState
   coverCache: Record<string, string>
+  portraitCache: Record<string, string | null>
   // ---- UI-local state (never persisted by the bridge) ----
   page: MotionPage
   developerMode: boolean
@@ -686,11 +819,6 @@ export interface MotionAppState {
   dialogBusy: boolean
   drop: DropUiState
   dropNotice: string
-  ensembleDraft: EnsembleSettings
-  ensembleDraftRevision: number
-  ensembleDraftEpoch: number
-  ensembleDraftDirty: boolean
-  ensemblePresetName: string
   selectedBoneHid: number
   boneSymmetrical: boolean
   soleDraft: SoleSettings
@@ -719,6 +847,7 @@ function initialState(): MotionAppState {
     loaded: { motionKey: '', generation: 0, injectionSession: 0, sourceMissing: false, sourceChanged: false },
     playlist: { mode: 1, notice: '' },
     actors: { epoch: 0, actors: [], targetLabel: '', boundLabel: '' },
+    formation: cloneDefaultFormation(),
     camera: {
       settings: { ...DEFAULT_CAMERA_SETTINGS },
       available: false,
@@ -731,17 +860,6 @@ function initialState(): MotionAppState {
     stage: { settings: { ...DEFAULT_STAGE_SETTINGS }, sceneName: '', statusNotice: '' },
     facial: { weights: { ...DEFAULT_FACIAL_WEIGHTS }, notice: '' },
     position: { offset: { x: 0, y: 0, z: 0 }, notice: '' },
-    ensemble: {
-      settings: { enabled: false, masterSlot: 0, cameraSlot: 0, slots: [] },
-      revision: 0,
-      actorEpoch: 0,
-      available: false,
-      verified: false,
-      probeEnabled: false,
-      active: false,
-      notice: '',
-      physics: [],
-    },
     physicsBackend: 2,
     musicVolumeSupport: 0,
     musicVolumeNotice: '',
@@ -774,6 +892,7 @@ function initialState(): MotionAppState {
       presets: DEFAULT_AUDIO_EFFECT_STATE.presets.map((p) => ({ ...p })),
     },
     coverCache: {},
+    portraitCache: {},
     page: 'library',
     developerMode: false,
     selectedLibraryKey: null,
@@ -800,11 +919,6 @@ function initialState(): MotionAppState {
     dialogBusy: false,
     drop: { visual: 'none', fileCount: 0, accepted: 0, hostElevated: false, hostBlocked: false },
     dropNotice: '',
-    ensembleDraft: emptyEnsembleSettings(),
-    ensembleDraftRevision: -1,
-    ensembleDraftEpoch: -1,
-    ensembleDraftDirty: false,
-    ensemblePresetName: '',
     selectedBoneHid: 0,
     boneSymmetrical: false,
     soleDraft: defaultSoleSettings(),
@@ -843,6 +957,7 @@ export class MotionStore {
   private soleTimer: ReturnType<typeof setInterval> | null = null
   private solePitchTimer: ReturnType<typeof setInterval> | null = null
   private coverPending = new Set<string>()
+  private portraitInflight = new Map<string, Promise<string | null>>()
   private coverGeneration = 0
   private coverQueue: string[] = []
   private coverWorkersRunning = 0
@@ -904,7 +1019,8 @@ export class MotionStore {
         }
         this.set(patch)
       }),
-      bridge.on('library.changed', (library) => {
+      bridge.on('library.changed', (rawLibrary) => {
+        const library = normalizeLibraryState(rawLibrary)
         const previousEntries = this.state.library.entries
         const selectedKey = this.state.selectedLibraryKey
         const stillPresent = selectedKey !== null && library.entries.some((entry) => entry.id === selectedKey)
@@ -956,22 +1072,32 @@ export class MotionStore {
         })
       }),
       bridge.on('playlist.changed', (playlist) => this.set({ playlist })),
-      bridge.on('actors.changed', (actors) => {
-        const draft = reconcileEnsembleDraftWithActors(
-          this.state.ensembleDraft,
-          actors.actors.length,
-          this.state.ensemble.active,
-        )
-        this.set({ actors, ensembleDraft: draft })
+      bridge.on('actors.changed', (rawActors) => {
+        this.set({ actors: normalizeActorsState(rawActors) })
+      }),
+      bridge.on('formation.changed', (rawFormation) => {
+        const formation = normalizeFormation(rawFormation)
+        const sel = formation.slots[formation.selectedSlotIndex]
+        const patch: Partial<MotionAppState> = { formation }
+        if (sel && sel.occupied) {
+          patch.facial = { ...this.state.facial, weights: { ...sel.facialWeights } }
+          patch.position = {
+            ...this.state.position,
+            offset: { x: sel.offset.x, y: sel.offset.y, z: sel.offset.z },
+          }
+        }
+        this.set(patch)
       }),
       bridge.on('camera.changed', (camera) => this.onCameraChanged(camera)),
       bridge.on('stage.changed', (stage) => this.set({ stage })),
-      bridge.on('facial.changed', (facial) => this.set({ facial })),
-      bridge.on('position.changed', (position) => this.set({ position })),
-      bridge.on('ensemble.changed', (ensemble) => {
-        this.set({ ensemble })
-        this.syncEnsembleDraft(ensemble)
+      bridge.on('facial.changed', (facial) => {
+        const idx = this.state.formation.selectedSlotIndex
+        const slots = this.state.formation.slots.map((s, i) =>
+          i === idx ? { ...s, facialWeights: { ...facial.weights } } : s,
+        )
+        this.set({ facial, formation: { ...this.state.formation, slots } })
       }),
+      bridge.on('position.changed', (position) => this.set({ position })),
       bridge.on('settings.changed', (settings) => this.set({ physicsBackend: settings.physicsBackend })),
       bridge.on('import.progress', (importProgress) => this.onImportProgress(importProgress)),
       bridge.on('appearance.changed', (appearance) => this.set({ appearance })),
@@ -1070,21 +1196,25 @@ export class MotionStore {
 
   private applySnapshot(snapshot: MotionStateSnapshot): void {
     const raw = asObj(snapshot)
-    const cameraSettings = syncLegacyTransforms(snapshot.camera.settings)
+    const library = normalizeLibraryState(snapshot.library)
+    const actors = normalizeActorsState(snapshot.actors)
+    const formation = normalizeFormation(raw.formation)
+    const normalizedCamera = normalizeCameraState(snapshot.camera)
+    const cameraSettings = normalizedCamera.settings
     const stageRaw = asObj(raw.stage)
     const stageNodesRaw = raw.stageNodes ?? stageRaw.candidates
     const patch: Partial<MotionAppState> = {
       permission: snapshot.permission,
       player: snapshot.player,
-      library: snapshot.library,
+      library,
       loaded: snapshot.loaded,
       playlist: snapshot.playlist,
-      actors: snapshot.actors,
-      camera: snapshot.camera,
+      actors,
+      formation,
+      camera: normalizedCamera,
       stage: snapshot.stage,
       facial: snapshot.facial,
       position: snapshot.position,
-      ensemble: snapshot.ensemble,
       physicsBackend: snapshot.physicsBackend,
       musicVolumeSupport: snapshot.musicVolumeSupport,
       musicVolumeNotice: snapshot.musicVolumeNotice,
@@ -1106,12 +1236,12 @@ export class MotionStore {
     if (raw.solePitch) patch.solePitch = normalizeSolePitchState(raw.solePitch)
     if (raw.studio) this.onStudioChanged(normalizeStudioState(raw.studio))
     this.set(patch)
-    this.syncEnsembleDraft(snapshot.ensemble)
   }
 
-  private onCameraChanged(camera: CameraState): void {
-    const settings = syncLegacyTransforms(camera.settings)
-    const patch: Partial<MotionAppState> = { camera: { ...camera, settings } }
+  private onCameraChanged(rawCamera: CameraState): void {
+    const camera = normalizeCameraState(rawCamera)
+    const settings = camera.settings
+    const patch: Partial<MotionAppState> = { camera }
     if (this.state.cameraPending && this.state.cameraExpected && deepEqual(settings, this.state.cameraExpected)) {
       patch.cameraPending = false
       patch.cameraExpected = null
@@ -1305,7 +1435,7 @@ export class MotionStore {
   }
 
   cyclePlayMode = async (): Promise<void> => {
-    const maxModes = this.state.ensemble.active ? 2 : 4
+    const maxModes = 4
     const current = this.state.player.playMode
     const normalized = current >= 0 && current < maxModes ? current : 1
     const next = (normalized + 1) % maxModes
@@ -1504,6 +1634,100 @@ export class MotionStore {
     }
   }
 
+  // ---- Portraits & Formation (F5 / F7-F10 / F13) ----
+
+  ensureActorPortrait = (character: string): Promise<string | null> => {
+    const norm = character.trim().toLowerCase()
+    if (!norm) return Promise.resolve(null)
+    if (Object.prototype.hasOwnProperty.call(this.state.portraitCache, norm)) {
+      return Promise.resolve(this.state.portraitCache[norm] ?? null)
+    }
+    const existing = this.portraitInflight.get(norm)
+    if (existing) return existing
+    if (!this.supports('actors.getPortrait')) {
+      return Promise.resolve(null)
+    }
+    const promise = (async (): Promise<string | null> => {
+      try {
+        const res = await this.client().request('actors.getPortrait', { character: norm })
+        const uri = res.cached && typeof res.dataUri === 'string' && res.dataUri !== '' ? res.dataUri : null
+        this.set({ portraitCache: { ...this.state.portraitCache, [norm]: uri } })
+        return uri
+      } catch {
+        return null
+      } finally {
+        this.portraitInflight.delete(norm)
+      }
+    })()
+    this.portraitInflight.set(norm, promise)
+    return promise
+  }
+
+  selectFormationSlot = async (slotIndex: number): Promise<void> => {
+    try {
+      await this.client().request('formation.selectSlot', { slotIndex })
+      this.set({
+        formation: { ...this.state.formation, selectedSlotIndex: slotIndex },
+        actionError: null,
+      })
+    } catch (error) {
+      this.reportActionError(error)
+    }
+  }
+
+  swapFormationSlots = async (fromSlotIndex: number, toSlotIndex: number): Promise<void> => {
+    try {
+      await this.client().request('formation.swapSlots', { fromSlotIndex, toSlotIndex })
+      this.set({ actionError: null })
+    } catch (error) {
+      this.reportActionError(error)
+    }
+  }
+
+  setFormationSlotOffset = async (slotIndex: number, offset: StageSlotOffset): Promise<void> => {
+    try {
+      await this.client().request('formation.setSlotOffset', {
+        slotIndex,
+        x: offset.x,
+        y: offset.y,
+        z: offset.z,
+        yawDegrees: offset.yawDegrees,
+      })
+      this.set({ actionError: null })
+    } catch (error) {
+      this.reportActionError(error)
+    }
+  }
+
+  commitFormationSlotOffset = this.setFormationSlotOffset
+
+  resetFormationSlotOffset = async (slotIndex: number): Promise<void> => {
+    try {
+      await this.client().request('formation.resetSlotOffset', { slotIndex })
+      this.set({ actionError: null })
+    } catch (error) {
+      this.reportActionError(error)
+    }
+  }
+
+  saveFormationSlotOffset = async (slotIndex: number): Promise<void> => {
+    try {
+      await this.client().request('formation.saveSlotOffset', { slotIndex })
+      this.set({ actionError: null })
+    } catch (error) {
+      this.reportActionError(error)
+    }
+  }
+
+  setFormationSlotSource = async (slotIndex: number, sourceSlotIndex: number): Promise<void> => {
+    try {
+      await this.client().request('formation.setSlotSource', { slotIndex, sourceSlotIndex })
+      this.set({ actionError: null })
+    } catch (error) {
+      this.reportActionError(error)
+    }
+  }
+
   // ---- Camera page ----
 
   patchCameraDraft = (patch: Partial<CameraSettings>): void => {
@@ -1551,146 +1775,6 @@ export class MotionStore {
     }
   }
 
-  // ---- Ensemble (phase 2) ----
-
-  private syncEnsembleDraft(snapshot: EnsembleSnapshot): void {
-    const actorCount = this.state.actors.actors.length
-    if (this.state.ensembleDraftRevision !== snapshot.revision) {
-      const base = snapshot.settings.slots.length > 0 ? snapshot.settings : emptyEnsembleSettings()
-      const reconciled = reconcileEnsembleDraftWithActors(base, actorCount, snapshot.active)
-      this.set({
-        ensembleDraft: reconciled,
-        ensembleDraftRevision: snapshot.revision,
-        ensembleDraftEpoch: snapshot.actorEpoch,
-        ensembleDraftDirty: false,
-      })
-    } else if (this.state.ensembleDraftEpoch !== snapshot.actorEpoch) {
-      const cleared = {
-        ...this.state.ensembleDraft,
-        slots: this.state.ensembleDraft.slots.map((slot) => ({ ...slot, actorToken: 0 })),
-      }
-      const reconciled = reconcileEnsembleDraftWithActors(cleared, actorCount, snapshot.active)
-      this.set({ ensembleDraft: reconciled, ensembleDraftEpoch: snapshot.actorEpoch, ensembleDraftDirty: true })
-    } else {
-      const reconciled = reconcileEnsembleDraftWithActors(this.state.ensembleDraft, actorCount, snapshot.active)
-      if (reconciled !== this.state.ensembleDraft) this.set({ ensembleDraft: reconciled })
-    }
-  }
-
-  patchEnsembleDraft = (patch: Partial<EnsembleSettings>): void => {
-    this.set({ ensembleDraft: { ...this.state.ensembleDraft, ...patch }, ensembleDraftDirty: true })
-  }
-
-  patchEnsembleSlot = (index: number, patch: Partial<EnsembleSettings['slots'][number]>): void => {
-    const slots = this.state.ensembleDraft.slots.map((slot, slotIndex) =>
-      slotIndex === index ? { ...slot, ...patch } : slot,
-    )
-    this.set({ ensembleDraft: { ...this.state.ensembleDraft, slots }, ensembleDraftDirty: true })
-  }
-
-  copyMasterMotionToAllSlots = (): void => {
-    const draft = this.state.ensembleDraft
-    const motionKey = draft.slots[draft.masterSlot]?.motionKey ?? ''
-    if (motionKey === '') return
-    this.set({
-      ensembleDraft: { ...draft, slots: draft.slots.map((slot) => ({ ...slot, motionKey })) },
-      ensembleDraftDirty: true,
-    })
-  }
-
-  resetEnsemblePlacements = (): void => {
-    const draft = this.state.ensembleDraft
-    this.set({
-      ensembleDraft: {
-        ...draft,
-        slots: draft.slots.map((slot) => ({ ...slot, offset: { x: 0, y: 0, z: 0 }, yawDegrees: 0 })),
-      },
-      ensembleDraftDirty: true,
-    })
-  }
-
-  ensembleDraftError = (): string | null => {
-    const tokens = new Set(this.state.actors.actors.map((actor) => actor.token))
-    return ensembleUiError(resolveSubmittableEnsemble(this.state.ensembleDraft), tokens)
-  }
-
-  applyEnsemble = async (): Promise<void> => {
-    const { ensembleDraft, ensembleDraftRevision, ensembleDraftEpoch, ensemble } = this.state
-    const effective = resolveSubmittableEnsemble(ensembleDraft)
-    if (this.ensembleDraftError()) return
-    if (effective.enabled && !(ensemble.available && ensemble.verified)) return
-    try {
-      await this.client().request('ensemble.set', {
-        settings: effective,
-        revision: ensembleDraftRevision,
-        actorEpoch: ensembleDraftEpoch,
-      })
-      this.set({ ensembleDraftDirty: false, actionError: null })
-    } catch (error) {
-      this.reportEnsembleError(error)
-    }
-  }
-
-  disableEnsemble = async (): Promise<void> => {
-    const { ensemble } = this.state
-    if (!ensemble.active) return
-    try {
-      await this.client().request('ensemble.set', {
-        settings: { ...ensemble.settings, enabled: false },
-        revision: ensemble.revision,
-        actorEpoch: ensemble.actorEpoch,
-      })
-      this.set({ actionError: null })
-    } catch (error) {
-      this.reportEnsembleError(error)
-    }
-  }
-
-  private reportEnsembleError(error: unknown): void {
-    if (error instanceof BridgeError && error.code === 'stale_revision') {
-      this.set({ actionError: '多人舞台配置已变化，请重新载入后重试。' })
-    } else if (error instanceof BridgeError && error.code === 'stale_token') {
-      this.set({ actionError: '角色名单已变化，请重新绑定角色。' })
-    } else {
-      this.reportActionError(error)
-    }
-  }
-
-  setEnsembleProbe = async (enabled: boolean): Promise<void> => {
-    try {
-      await this.client().request('ensemble.probe', { enabled })
-      this.set({ actionError: null })
-    } catch (error) {
-      this.reportActionError(error)
-    }
-  }
-
-  setEnsemblePresetName = (name: string): void => this.set({ ensemblePresetName: name })
-
-  saveEnsemblePreset = async (): Promise<void> => {
-    const { ensemblePresetName, ensembleDraft } = this.state
-    if (ensemblePresetName === '' || validateEnsemble(ensembleDraft)) return
-    try {
-      await this.client().request('ensemble.presetSave', { name: ensemblePresetName, settings: ensembleDraft })
-      this.set({ actionError: null })
-    } catch (error) {
-      this.reportActionError(error)
-    }
-  }
-
-  loadEnsemblePreset = async (): Promise<void> => {
-    const { ensemblePresetName } = this.state
-    if (ensemblePresetName === '') return
-    try {
-      const { settings } = await this.client().request('ensemble.presetLoad', { name: ensemblePresetName })
-      // Preset load never binds live actors (ensemble::Load semantics).
-      const draft = { ...settings, slots: settings.slots.map((slot) => ({ ...slot, actorToken: 0 })) }
-      this.set({ ensembleDraft: draft, ensembleDraftDirty: true, actionError: null })
-    } catch (error) {
-      this.reportActionError(error)
-    }
-  }
-
   // ---- Import form (phase 2) ----
 
   private probePaths = async (paths: string[]): Promise<VmdProbe[]> => {
@@ -1712,52 +1796,109 @@ export class MotionStore {
     const form = emptyImportForm()
     form.open = true
     form.mode = 'new'
-    form.slots.motion.candidates = [IMPORT_SLOT.empty]
-    form.slots.facial.candidates = [IMPORT_SLOT.autoFacial]
+    form.positions = [
+      {
+        motion: { candidates: [IMPORT_SLOT.empty], selection: 0 },
+        facial: { candidates: [IMPORT_SLOT.autoFacial], selection: 0 },
+        x: 0,
+        y: 0,
+        z: 0,
+        yawDegrees: 0,
+        preserveExisting: false,
+      },
+    ]
+    form.slots.motion = form.positions[0].motion
+    form.slots.facial = form.positions[0].facial
     form.slots.camera.candidates = [IMPORT_SLOT.empty]
     form.slots.audio.candidates = [IMPORT_SLOT.autoAudio]
     this.set({ importForm: form })
     await this.probePaths(files)
-    const probes = Object.values(this.state.importForm.probes)
+    const probeMap = this.state.importForm.probes
+    const probes = Object.values(probeMap)
     const classification = classifyImportFiles(files, probes)
-    const next = this.state.importForm
+
     const appendUnique = (list: string[], item: string) => {
       if (!list.includes(item)) list.push(item)
     }
-    const slots = {
-      motion: { ...next.slots.motion, candidates: [...next.slots.motion.candidates] },
-      facial: { ...next.slots.facial, candidates: [...next.slots.facial.candidates] },
-      camera: { ...next.slots.camera, candidates: [...next.slots.camera.candidates] },
-      audio: { ...next.slots.audio, candidates: [...next.slots.audio.candidates] },
-    }
-    for (const file of files) {
-      const dot = file.lastIndexOf('.')
-      const ext = dot >= 0 ? file.slice(dot).toLowerCase() : ''
-      if (ext === '.vmd') {
-        appendUnique(slots.motion.candidates, file)
-        appendUnique(slots.facial.candidates, file)
-        appendUnique(slots.camera.candidates, file)
-      } else if (ext === '.gkcamera') {
-        appendUnique(slots.camera.candidates, file)
-      } else if (isSupportedAudioExtension(file)) {
-        appendUnique(slots.audio.candidates, file)
-      }
-    }
-    slots.facial.candidates.push(IMPORT_SLOT.skip)
-    slots.audio.candidates.push(IMPORT_SLOT.skip)
     const findIndex = (list: string[], path: string): number => {
       if (path === '') return 0
       const index = list.indexOf(path)
       return index > 0 ? index : 0
     }
-    slots.motion.selection = findIndex(slots.motion.candidates, classification.motionCandidate)
-    slots.facial.selection = findIndex(slots.facial.candidates, classification.facialCandidate)
-    slots.camera.selection = findIndex(slots.camera.candidates, classification.cameraCandidate)
-    slots.audio.selection = findIndex(slots.audio.candidates, classification.audioCandidate)
+
+    const vmdFiles: string[] = []
+    const cameraFiles: string[] = []
+    const facialOnlyFiles: string[] = []
+    const audioFiles: string[] = []
+    for (const file of files) {
+      const dot = file.lastIndexOf('.')
+      const ext = dot >= 0 ? file.slice(dot).toLowerCase() : ''
+      if (ext === '.vmd') {
+        appendUnique(vmdFiles, file)
+        const probe = probeMap[file]
+        if (!probe) {
+          appendUnique(cameraFiles, file)
+        } else {
+          if (probe.cameraFrames > 0) appendUnique(cameraFiles, file)
+          if (probe.tendency === 'facialOnly') appendUnique(facialOnlyFiles, file)
+        }
+      } else if (ext === '.gkcamera') {
+        appendUnique(cameraFiles, file)
+      } else if (isSupportedAudioExtension(file)) {
+        appendUnique(audioFiles, file)
+      }
+    }
+
+    const motionCandidates = classification.motionCandidates
+    let positions: ImportPositionFormState[]
+    if (motionCandidates.length >= 2) {
+      const separateFacial =
+        classification.facialCandidate !== '' && probeMap[classification.facialCandidate]?.tendency === 'facialOnly'
+          ? classification.facialCandidate
+          : ''
+      positions = motionCandidates.map((motionPath, idx) => {
+        const motionCands = [IMPORT_SLOT.empty, motionPath]
+        const facialCands = [IMPORT_SLOT.autoFacial, ...facialOnlyFiles, IMPORT_SLOT.skip]
+        const facialSel = idx === 0 && separateFacial ? findIndex(facialCands, separateFacial) : 0
+        return {
+          motion: { candidates: motionCands, selection: 1 },
+          facial: { candidates: facialCands, selection: facialSel },
+          x: 0,
+          y: 0,
+          z: 0,
+          yawDegrees: 0,
+          preserveExisting: false,
+        }
+      })
+    } else {
+      const motionCands = [IMPORT_SLOT.empty, ...vmdFiles]
+      const facialCands = [IMPORT_SLOT.autoFacial, ...vmdFiles, IMPORT_SLOT.skip]
+      positions = [
+        {
+          motion: { candidates: motionCands, selection: findIndex(motionCands, classification.motionCandidate) },
+          facial: { candidates: facialCands, selection: findIndex(facialCands, classification.facialCandidate) },
+          x: 0,
+          y: 0,
+          z: 0,
+          yawDegrees: 0,
+          preserveExisting: false,
+        },
+      ]
+    }
+
+    const camCands = [IMPORT_SLOT.empty, ...(motionCandidates.length >= 2 ? cameraFiles : [...cameraFiles, ...vmdFiles.filter((f) => !cameraFiles.includes(f))])]
+    const audioCands = [IMPORT_SLOT.autoAudio, ...audioFiles, IMPORT_SLOT.skip]
+    const slots = {
+      motion: positions[0].motion,
+      facial: positions[0].facial,
+      camera: { candidates: camCands, selection: findIndex(camCands, classification.cameraCandidate) },
+      audio: { candidates: audioCands, selection: findIndex(audioCands, classification.audioCandidate) },
+    }
     this.set({
       importForm: {
         ...this.state.importForm,
         title: classification.suggestedTitle,
+        positions,
         slots,
         unsupportedAudio: classification.unsupportedAudioCount,
         audioProbe: null,
@@ -1783,14 +1924,39 @@ export class MotionStore {
       form.title = info.title
       form.subtitle = info.subtitle ?? ''
       form.timing = info.timing
-      form.slots.motion.candidates = [IMPORT_SLOT.keepMotion]
-      form.slots.facial.candidates = [IMPORT_SLOT.clear]
+      if (info.isGroup && info.positions && info.positions.length >= 2) {
+        form.positions = info.positions.map((pos) => ({
+          motion: { candidates: [IMPORT_SLOT.keepMotion], selection: 0 },
+          facial: {
+            candidates: pos.hasFacial ? [IMPORT_SLOT.clear, IMPORT_SLOT.keepTrack] : [IMPORT_SLOT.clear],
+            selection: pos.hasFacial ? 1 : 0,
+          },
+          x: pos.x,
+          y: pos.y,
+          z: pos.z,
+          yawDegrees: pos.yawDegrees,
+          preserveExisting: true,
+        }))
+      } else {
+        form.positions = [
+          {
+            motion: { candidates: [IMPORT_SLOT.keepMotion], selection: 0 },
+            facial: {
+              candidates: info.hasFacial ? [IMPORT_SLOT.clear, IMPORT_SLOT.keepTrack] : [IMPORT_SLOT.clear],
+              selection: info.hasFacial ? 1 : 0,
+            },
+            x: 0,
+            y: 0,
+            z: 0,
+            yawDegrees: 0,
+            preserveExisting: true,
+          },
+        ]
+      }
+      form.slots.motion = form.positions[0].motion
+      form.slots.facial = form.positions[0].facial
       form.slots.camera.candidates = [IMPORT_SLOT.clear]
       form.slots.audio.candidates = [IMPORT_SLOT.clear]
-      if (info.hasFacial) {
-        form.slots.facial.candidates.push(IMPORT_SLOT.keepTrack)
-        form.slots.facial.selection = 1
-      }
       if (info.hasCamera) {
         form.slots.camera.candidates.push(IMPORT_SLOT.keepTrack)
         form.slots.camera.selection = 1
@@ -1826,35 +1992,268 @@ export class MotionStore {
     this.set({ importForm: emptyImportForm() })
   }
 
+  addImportPosition = (): void => {
+    const form = this.state.importForm
+    if (!form.open) return
+    const nextPos: ImportPositionFormState = {
+      motion: { candidates: [IMPORT_SLOT.empty], selection: 0 },
+      facial: {
+        candidates: form.mode === 'edit' ? [IMPORT_SLOT.clear] : [IMPORT_SLOT.autoFacial, IMPORT_SLOT.skip],
+        selection: 0,
+      },
+      x: 0,
+      y: 0,
+      z: 0,
+      yawDegrees: 0,
+      preserveExisting: false,
+    }
+    this.set({
+      importForm: {
+        ...form,
+        positions: [...form.positions, nextPos],
+      },
+    })
+  }
+
+  removeImportPosition = (posIndex: number): void => {
+    const form = this.state.importForm
+    if (posIndex <= 0 || posIndex >= form.positions.length) return
+    const removed = form.positions[posIndex]
+    const removedMotion = removed.motion.candidates[removed.motion.selection] ?? ''
+    const removedFacial = removed.facial.candidates[removed.facial.selection] ?? ''
+    const remaining = form.positions.filter((_, idx) => idx !== posIndex)
+    const stillUsedPaths = new Set<string>()
+    for (const pos of remaining) {
+      const m = pos.motion.candidates[pos.motion.selection] ?? ''
+      const f = pos.facial.candidates[pos.facial.selection] ?? ''
+      if (!isSlotPlaceholder(m)) stillUsedPaths.add(m)
+      if (!isSlotPlaceholder(f)) stillUsedPaths.add(f)
+    }
+    const camSel = form.slots.camera.candidates[form.slots.camera.selection] ?? ''
+    if (!isSlotPlaceholder(camSel)) stillUsedPaths.add(camSel)
+
+    const pruneCandidates = (slot: ImportSlotState): ImportSlotState => {
+      const selected = slot.candidates[slot.selection] ?? ''
+      const nextCandidates = slot.candidates.filter(
+        (c) =>
+          (c !== removedMotion && c !== removedFacial) ||
+          c === selected ||
+          stillUsedPaths.has(c) ||
+          isSlotPlaceholder(c),
+      )
+      const nextSelection = Math.max(0, nextCandidates.indexOf(selected))
+      return { candidates: nextCandidates, selection: nextSelection }
+    }
+
+    const cleanedPositions = remaining.map((pos) => ({
+      ...pos,
+      motion: pruneCandidates(pos.motion),
+      facial: pruneCandidates(pos.facial),
+    }))
+    const cleanedCamera = pruneCandidates(form.slots.camera)
+    this.set({
+      importForm: {
+        ...form,
+        positions: cleanedPositions,
+        slots: {
+          ...form.slots,
+          motion: cleanedPositions[0].motion,
+          facial: cleanedPositions[0].facial,
+          camera: cleanedCamera,
+        },
+      },
+    })
+  }
+
+  setImportPositionSelection = (posIndex: number, kind: 'motion' | 'facial', selection: number): void => {
+    const form = this.state.importForm
+    if (posIndex < 0 || posIndex >= form.positions.length) return
+    const positions = form.positions.map((pos, idx) => {
+      if (idx !== posIndex) return pos
+      const chosen = pos[kind].candidates[selection] ?? ''
+      return {
+        ...pos,
+        [kind]: { ...pos[kind], selection },
+        ...(kind === 'motion' && chosen !== IMPORT_SLOT.keepMotion ? { preserveExisting: false } : {}),
+      }
+    })
+    this.set({
+      importForm: {
+        ...form,
+        positions,
+        slots: {
+          ...form.slots,
+          motion: positions[0].motion,
+          facial: positions[0].facial,
+        },
+      },
+    })
+  }
+
+  setImportPositionPlacement = (
+    posIndex: number,
+    placement: { x: number; y: number; z: number; yawDegrees: number },
+  ): void => {
+    const form = this.state.importForm
+    if (posIndex <= 0 || posIndex >= form.positions.length) return
+    const finite = (v: number) => (Number.isFinite(v) ? v : 0)
+    const positions = form.positions.map((pos, idx) =>
+      idx === posIndex
+        ? {
+            ...pos,
+            x: finite(placement.x),
+            y: finite(placement.y),
+            z: finite(placement.z),
+            yawDegrees: finite(placement.yawDegrees),
+          }
+        : pos,
+    )
+    this.set({ importForm: { ...form, positions } })
+  }
+
+  importPickPositionFile = async (posIndex: number, kind: 'motion' | 'facial', file: string): Promise<void> => {
+    await this.probePaths([file])
+    const form = this.state.importForm
+    if (posIndex < 0 || posIndex >= form.positions.length) return
+    const positions = form.positions.map((pos, idx) => {
+      if (idx !== posIndex) return pos
+      const candidates = [...pos[kind].candidates]
+      let selection = candidates.indexOf(file)
+      if (selection < 0) {
+        candidates.push(file)
+        selection = candidates.length - 1
+      }
+      return {
+        ...pos,
+        [kind]: { candidates, selection },
+        ...(kind === 'motion' ? { preserveExisting: false } : {}),
+      }
+    })
+    this.set({
+      importForm: {
+        ...form,
+        positions,
+        slots: {
+          ...form.slots,
+          motion: positions[0].motion,
+          facial: positions[0].facial,
+        },
+      },
+    })
+  }
+
   importAppendFiles = async (files: string[]): Promise<void> => {
     await this.probePaths(files)
-    const next = { ...this.state.importForm }
-    const slots = {
-      motion: { ...next.slots.motion, candidates: [...next.slots.motion.candidates] },
-      facial: { ...next.slots.facial, candidates: [...next.slots.facial.candidates] },
-      camera: { ...next.slots.camera, candidates: [...next.slots.camera.candidates] },
-      audio: { ...next.slots.audio, candidates: [...next.slots.audio.candidates] },
-    }
+    const next = this.state.importForm
+    const probeMap = next.probes
+    let positions = next.positions.map((pos) => ({
+      ...pos,
+      motion: { ...pos.motion, candidates: [...pos.motion.candidates] },
+      facial: { ...pos.facial, candidates: [...pos.facial.candidates] },
+    }))
+    const camera = { ...next.slots.camera, candidates: [...next.slots.camera.candidates] }
+    const audio = { ...next.slots.audio, candidates: [...next.slots.audio.candidates] }
     const appendUnique = (list: string[], item: string) => {
       if (!list.includes(item)) list.push(item)
     }
+    const insertBeforeSkip = (list: string[], item: string): number => {
+      const existing = list.indexOf(item)
+      if (existing >= 0) return existing
+      const skipIdx = list.indexOf(IMPORT_SLOT.skip)
+      if (skipIdx >= 0) {
+        list.splice(skipIdx, 0, item)
+        return skipIdx
+      }
+      list.push(item)
+      return list.length - 1
+    }
+
+    let appendedAudio: string | null = null
     for (const file of files) {
       const dot = file.lastIndexOf('.')
       const ext = dot >= 0 ? file.slice(dot).toLowerCase() : ''
-      if (ext === '.vmd') {
-        appendUnique(slots.motion.candidates, file)
-        appendUnique(slots.facial.candidates, file)
-        appendUnique(slots.camera.candidates, file)
+      if (isSupportedAudioExtension(file)) {
+        const idx = insertBeforeSkip(audio.candidates, file)
+        const currentAudio = audio.candidates[audio.selection] ?? ''
+        if (isSlotPlaceholder(currentAudio) && currentAudio !== IMPORT_SLOT.keepTrack) {
+          audio.selection = idx
+          appendedAudio = file
+        }
       } else if (ext === '.gkcamera') {
-        appendUnique(slots.camera.candidates, file)
-      } else if (isSupportedAudioExtension(file)) {
-        appendUnique(slots.audio.candidates, file)
+        appendUnique(camera.candidates, file)
+        const currentCam = camera.candidates[camera.selection] ?? ''
+        if (isSlotPlaceholder(currentCam) && currentCam !== IMPORT_SLOT.keepTrack) {
+          camera.selection = camera.candidates.indexOf(file)
+        }
+      } else if (ext === '.vmd') {
+        const probe = probeMap[file]
+        if (probe && !canUseAsMotion(probe)) {
+          if (probe.cameraFrames > 0) {
+            appendUnique(camera.candidates, file)
+            const currentCam = camera.candidates[camera.selection] ?? ''
+            if (isSlotPlaceholder(currentCam) && currentCam !== IMPORT_SLOT.keepTrack) {
+              camera.selection = camera.candidates.indexOf(file)
+            }
+          }
+          if (probe.morphFrames > 0 || probe.eyeBoneFrames > 0) {
+            for (let p = 0; p < positions.length; p += 1) {
+              const idx = insertBeforeSkip(positions[p].facial.candidates, file)
+              const curFacial = positions[p].facial.candidates[positions[p].facial.selection] ?? ''
+              if (p === 0 && isSlotPlaceholder(curFacial) && curFacial !== IMPORT_SLOT.keepTrack) {
+                positions[p].facial.selection = idx
+              }
+            }
+          }
+        } else {
+          const emptyIdx = positions.findIndex((pos) => {
+            const picked = pos.motion.candidates[pos.motion.selection] ?? ''
+            return picked === IMPORT_SLOT.empty
+          })
+          if (emptyIdx >= 0) {
+            appendUnique(positions[emptyIdx].motion.candidates, file)
+            positions[emptyIdx].motion.selection = positions[emptyIdx].motion.candidates.indexOf(file)
+            positions[emptyIdx].preserveExisting = false
+          } else {
+            positions.push({
+              motion: { candidates: [IMPORT_SLOT.empty, file], selection: 1 },
+              facial: {
+                candidates: next.mode === 'edit' ? [IMPORT_SLOT.clear] : [IMPORT_SLOT.autoFacial, IMPORT_SLOT.skip],
+                selection: 0,
+              },
+              x: 0,
+              y: 0,
+              z: 0,
+              yawDegrees: 0,
+              preserveExisting: false,
+            })
+          }
+        }
       }
     }
-    this.set({ importForm: { ...next, slots } })
+
+    this.set({
+      importForm: {
+        ...next,
+        positions,
+        slots: {
+          motion: positions[0].motion,
+          facial: positions[0].facial,
+          camera,
+          audio,
+        },
+        ...(appendedAudio ? { audioProbe: null } : {}),
+      },
+    })
+    if (appendedAudio) {
+      void this.probeImportAudio(appendedAudio)
+    }
   }
 
   importPickSlotFile = async (slot: ImportSlotKey, file: string): Promise<void> => {
+    if (slot === 'motion' || slot === 'facial') {
+      await this.importPickPositionFile(0, slot, file)
+      return
+    }
     await this.probePaths([file])
     const slotState = this.state.importForm.slots[slot]
     const candidates = [...slotState.candidates]
@@ -1876,6 +2275,10 @@ export class MotionStore {
   }
 
   setImportSelection = (slot: ImportSlotKey, selection: number): void => {
+    if (slot === 'motion' || slot === 'facial') {
+      this.setImportPositionSelection(0, slot, selection)
+      return
+    }
     const picked = this.state.importForm.slots[slot].candidates[selection] ?? ''
     this.set({
       importForm: {
@@ -2267,17 +2670,20 @@ export class MotionStore {
 
   importFormPicks = () => {
     const form = this.state.importForm
-    const pick = (slot: ImportSlotKey): string => {
-      const slotState = form.slots[slot]
-      return slotState.candidates[slotState.selection] ?? ''
-    }
+    const pickSlot = (slotState: ImportSlotState): string => slotState.candidates[slotState.selection] ?? ''
+    const posPicks = form.positions.map((pos) => ({
+      motion: pickSlot(pos.motion),
+      facial: pickSlot(pos.facial),
+      preserveExisting: pos.preserveExisting,
+    }))
     return {
       isEditMode: form.mode === 'edit',
-      motion: pick('motion'),
-      facial: pick('facial'),
-      camera: pick('camera'),
-      audio: pick('audio'),
+      motion: posPicks[0]?.motion ?? '',
+      facial: posPicks[0]?.facial ?? '',
+      camera: pickSlot(form.slots.camera),
+      audio: pickSlot(form.slots.audio),
       title: form.title,
+      positions: posPicks,
     }
   }
 
@@ -2315,6 +2721,31 @@ export class MotionStore {
     request.rebakeOutput = form.mode === 'edit' && form.fps > 0
     request.timing = form.timing
     const isDisk = (path: string) => !isSlotPlaceholder(path)
+    const isGroup = form.positions.length >= 2
+    request.isGroup = isGroup
+
+    if (isGroup) {
+      request.positions = form.positions.map((pos, idx) => {
+        const mPick = pos.motion.candidates[pos.motion.selection] ?? ''
+        const fPick = pos.facial.candidates[pos.facial.selection] ?? ''
+        const preserveExisting = form.mode === 'edit' && pos.preserveExisting && isSlotPlaceholder(mPick)
+        const disableMorph = fPick === IMPORT_SLOT.clear || fPick === IMPORT_SLOT.skip
+        return {
+          slot: idx + 1,
+          ...(isDisk(mPick) ? { motionFile: mPick, motionVmd: mPick } : {}),
+          ...(isDisk(fPick) ? { facialFile: fPick, morphVmd: fPick } : {}),
+          disableMorph,
+          preserveExisting,
+          x: pos.x,
+          y: pos.y,
+          z: pos.z,
+          yawDegrees: pos.yawDegrees,
+        }
+      })
+    } else {
+      request.positions = []
+    }
+
     if (form.mode === 'edit') {
       request.editKey = form.editKey
       if (isDisk(picks.motion)) request.motionFile = picks.motion
@@ -2450,7 +2881,6 @@ export class MotionStore {
     if (
       isNew &&
       this.state.loaded.motionKey !== targetKey &&
-      !this.state.ensemble.active &&
       this.state.player.state !== 'playing' &&
       this.supports('library.select')
     ) {
@@ -2646,9 +3076,9 @@ export class MotionStore {
     const kind =
       target === 'library-add' || target === 'append'
         ? 0
-        : target === 'motion'
+        : target === 'motion' || target.startsWith('position-motion:')
           ? 1
-          : target === 'facial'
+          : target === 'facial' || target.startsWith('position-facial:')
             ? 2
             : target === 'camera'
               ? 3
@@ -2682,7 +3112,15 @@ export class MotionStore {
         else if (target === 'append') await this.importAppendFiles(result.paths)
         else if (target === 'video') this.set({ studioVideoPath: result.paths[0] })
         else if (target === 'cover-image') await this.loadCoverPreviewFromPath(result.paths[0])
-        else if (target) await this.importPickSlotFile(target, result.paths[0])
+        else if (target?.startsWith('position-motion:')) {
+          const posIndex = Number(target.slice('position-motion:'.length))
+          await this.importPickPositionFile(posIndex, 'motion', result.paths[0])
+        } else if (target?.startsWith('position-facial:')) {
+          const posIndex = Number(target.slice('position-facial:'.length))
+          await this.importPickPositionFile(posIndex, 'facial', result.paths[0])
+        } else if (target === 'motion' || target === 'facial' || target === 'camera' || target === 'audio') {
+          await this.importPickSlotFile(target, result.paths[0])
+        }
       } else if (result.state === 'failed' && result.notice !== '') {
         this.set({ actionError: result.notice })
       }
@@ -3236,6 +3674,7 @@ export class MotionStore {
     this.pendingVolume = null
     this.pendingFacial = null
     this.coverPending.clear()
+    this.portraitInflight.clear()
     this.coverQueue = []
     this.coverWorkersRunning = 0
     this.coverGeneration += 1

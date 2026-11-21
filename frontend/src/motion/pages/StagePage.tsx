@@ -1,6 +1,5 @@
 import * as React from 'react'
 import {
-  RiGroup2Fill,
   RiPaletteFill,
   RiRefreshFill,
   RiSearchFill,
@@ -13,9 +12,7 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
-import { ensembleSlotName } from '../protocol'
 import { motionStore, useMotionStore } from '../store'
 import { CollapsiblePropertySection, PropertyRow, PropertySection } from '../components/PropertyGroup'
 import { PendingBadge } from '../components/Unsupported'
@@ -39,13 +36,10 @@ function hexToRgb(hex: string): [number, number, number] {
 
 export function StagePage() {
   const stage = useMotionStore((state) => state.stage)
-  const actors = useMotionStore((state) => state.actors)
-  const ensemble = useMotionStore((state) => state.ensemble)
   const rawNodes = useMotionStore((state) => state.stageNodes)
   const safeNodes = Array.isArray(rawNodes) ? rawNodes : []
   const supported = useMotionStore((state) => state.capabilities.includes('stage.set'))
   const scanSupported = useMotionStore((state) => state.capabilities.includes('stage.scan'))
-  const actorSelectSupported = useMotionStore((state) => state.capabilities.includes('actors.selectTarget'))
   const [scanning, setScanning] = React.useState(false)
   const [nodeFilter, setNodeFilter] = React.useState('')
 
@@ -53,7 +47,6 @@ export function StagePage() {
   const sceneBgEnabled = !settings.hideBackground
   const customNodeActive = settings.customNodeControl
   const disabled = !supported
-  const selectedActor = actors.actors.find((actor) => actor.selected)
 
   const triggerScan = React.useCallback(async () => {
     if (!scanSupported || scanning) return
@@ -75,104 +68,44 @@ export function StagePage() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-4" data-testid="stage-page">
-      {/* Stage Context & Roster Overview */}
-      <div className="grid items-start gap-4 lg:grid-cols-2">
-        <PropertySection
-          title={
-            <span className="inline-flex items-center gap-1.5">
-              <RiSparkling2Fill className="size-3.5 text-primary" />
-              <span>当前舞台环境</span>
-            </span>
-          }
-          description="实时显示摄影舞台状态、背景渲染模式与实验替换标记"
-        >
-          <PropertyRow label="当前摄影场景">
-            <span className="rounded-[4px] border border-border bg-muted/60 px-2 py-0.5 text-xs text-foreground">
-              {stage.sceneName || '默认摄影场景'}
-            </span>
-          </PropertyRow>
-          <PropertyRow label="渲染与背景模式">
-            <Badge variant={settings.lightingEffectsEnabled ? 'success' : 'muted'} className="rounded-[4px]">
-              {settings.lightingEffectsEnabled ? '光影开启' : '光影关闭'}
-            </Badge>
-            <Badge variant={sceneBgEnabled ? 'outline' : 'warning'} className="rounded-[4px]">
-              {sceneBgEnabled ? '原景模式' : '纯色幕布'}
-            </Badge>
-          </PropertyRow>
-          {(stage.statusNotice || settings.loadReplacementKey !== '') && (
-            <div className="space-y-1.5 px-3.5 py-2.5 text-xs">
-              {stage.statusNotice && (
-                <p className={cn(/失败|错误/.test(stage.statusNotice) ? 'text-destructive' : 'text-muted-foreground')}>
-                  舞台状态: {stage.statusNotice}
-                </p>
-              )}
-              {settings.loadReplacementKey !== '' && (
-                <p className="rounded border border-warning/35 bg-warning/10 px-2.5 py-1.5 text-warning">
-                  已保留实验舞台选择；请在 [开发] 页的“摄影舞台替换”中修改或恢复原生背景。
-                </p>
-              )}
-            </div>
-          )}
-        </PropertySection>
-
-        <PropertySection
-          title={
-            <span className="inline-flex items-center gap-1.5">
-              <RiGroup2Fill className="size-3.5 text-primary" />
-              <span>舞台角色阵容</span>
-            </span>
-          }
-          description={ensemble.active ? '当前处于多人舞台编排模式' : '切换当前单人舞台驱动角色；支持扩展多人同台演出'}
-          actions={
-            <Button variant="outline" size="sm" className="h-7 px-2 text-xs" onClick={() => motionStore.setPage('motion')}>
-              前往编排
-            </Button>
-          }
-        >
-          {ensemble.active ? (
-            <div className="grid grid-cols-2 divide-x divide-y divide-border/60 sm:grid-cols-3">
-              {ensemble.settings.slots.map((slot, index) => (
-                <div
-                  key={index}
-                  className={cn(
-                    'px-3 py-2.5 text-xs',
-                    slot.enabled ? 'bg-card' : 'bg-muted/25 opacity-60',
-                  )}
-                >
-                  <div className="font-semibold text-foreground">{ensembleSlotName(index)}</div>
-                  <div className="truncate text-muted-foreground">{slot.actorHint || '未绑定'}</div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <>
-              <PropertyRow label="驱动角色" description={`当前场景共识别 ${actors.actors.length} 名角色`}>
-                <Select
-                  value={selectedActor ? String(selectedActor.token) : undefined}
-                  disabled={actors.actors.length === 0 || !actorSelectSupported}
-                  onValueChange={(value) => void motionStore.selectActor(Number(value))}
-                >
-                  <SelectTrigger className="h-8 w-[180px] text-xs" aria-label="舞台驱动角色">
-                    <SelectValue placeholder={actors.targetLabel || '尚未识别角色'} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {actors.actors.map((actor) => (
-                      <SelectItem key={actor.token} value={String(actor.token)}>
-                        {actor.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </PropertyRow>
-              <PropertyRow label="当前绑定状态">
-                <span className="rounded-[4px] border border-border bg-muted/60 px-2 py-0.5 text-xs text-muted-foreground">
-                  已绑定：{actors.boundLabel || '尚未绑定'}
-                </span>
-              </PropertyRow>
-            </>
-          )}
-        </PropertySection>
-      </div>
+      {/* Stage Context Overview */}
+      <PropertySection
+        title={
+          <span className="inline-flex items-center gap-1.5">
+            <RiSparkling2Fill className="size-3.5 text-primary" />
+            <span>当前舞台环境</span>
+          </span>
+        }
+        description="实时显示摄影舞台状态、背景渲染模式与实验替换标记"
+      >
+        <PropertyRow label="当前摄影场景">
+          <span className="rounded-[4px] border border-border bg-muted/60 px-2 py-0.5 text-xs text-foreground">
+            {stage.sceneName || '默认摄影场景'}
+          </span>
+        </PropertyRow>
+        <PropertyRow label="渲染与背景模式">
+          <Badge variant={settings.lightingEffectsEnabled ? 'success' : 'muted'} className="rounded-[4px]">
+            {settings.lightingEffectsEnabled ? '光影开启' : '光影关闭'}
+          </Badge>
+          <Badge variant={sceneBgEnabled ? 'outline' : 'warning'} className="rounded-[4px]">
+            {sceneBgEnabled ? '原景模式' : '纯色幕布'}
+          </Badge>
+        </PropertyRow>
+        {(stage.statusNotice || settings.loadReplacementKey !== '') && (
+          <div className="space-y-1.5 px-3.5 py-2.5 text-xs">
+            {stage.statusNotice && (
+              <p className={cn(/失败|错误/.test(stage.statusNotice) ? 'text-destructive' : 'text-muted-foreground')}>
+                舞台状态: {stage.statusNotice}
+              </p>
+            )}
+            {settings.loadReplacementKey !== '' && (
+              <p className="rounded border border-warning/35 bg-warning/10 px-2.5 py-1.5 text-warning">
+                已保留实验舞台选择；请在 [开发] 页的“摄影舞台替换”中修改或恢复原生背景。
+              </p>
+            )}
+          </div>
+        )}
+      </PropertySection>
 
       {/* Stage Visual Controls */}
       <PropertySection

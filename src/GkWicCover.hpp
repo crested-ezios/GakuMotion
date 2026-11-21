@@ -27,6 +27,7 @@
 #undef far
 #ifdef _MSC_VER
 #pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "oleaut32.lib")
 #pragma comment(lib, "windowscodecs.lib")
 #endif
 #endif

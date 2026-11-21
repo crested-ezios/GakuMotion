@@ -33,13 +33,14 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
+#include <atomic>
 #include <fstream>
 #include <limits>
 #include <string>
+#include <thread>
 #include <vector>
 #include <filesystem>
 #include <unordered_map>
-#include <limits>
 
 using namespace GakuMotion;
 
@@ -2632,6 +2633,468 @@ static void TestInjectionRuntimeBoundary()
 #endif
 #include "test_ensemble_placement.hpp"
 #include "test_photography_ensemble_probe.hpp"
+#include "test_portrait_cache.hpp"
+
+struct Slot2MouthReaderCapture
+{
+	static inline float lastSourceFps = 0.0f;
+	static inline int calls = 0;
+	static inline std::string lastSourcePath;
+	static int32_t __cdecl MockRead(const char* sourceUtf8, float sourceFps, float /*clipFps*/,
+		int32_t frames, float* outputFrameMajor, int32_t outputFloats)
+	{
+		++calls;
+		lastSourceFps = sourceFps;
+		lastSourcePath = sourceUtf8 ? sourceUtf8 : "";
+		if (!outputFrameMajor || outputFloats < frames * static_cast<int32_t>(mouth_source::Names.size()))
+			return 2;
+		std::fill_n(outputFrameMajor, static_cast<size_t>(frames) * mouth_source::Names.size(), 0.0f);
+		for (int32_t f = 0; f < frames; ++f)
+		{
+			outputFrameMajor[static_cast<size_t>(f) * mouth_source::Names.size() + 8] = 0.5f;
+			outputFrameMajor[static_cast<size_t>(f) * mouth_source::Names.size() + 10] = 0.25f;
+		}
+		return 0;
+	}
+};
+
+static void TestGroupSongLibrary()
+{
+	BeginTest("group_song_library_and_slot_player");
+	namespace fs = std::filesystem;
+	const fs::path root = fs::temp_directory_path() / "gkmotion_group_song_test";
+	std::error_code ec;
+	fs::remove_all(root, ec);
+
+	auto writeClipFrames = [](const fs::path& path, uint32_t frames, float fps, bool withFacial) {
+		fs::create_directories(path.parent_path());
+		std::ofstream out(path, std::ios::binary | std::ios::trunc);
+		auto put = [&](auto v) { out.write(reinterpret_cast<const char*>(&v), sizeof(v)); };
+		out.write("GKCLIPCL", 8);
+		put(uint32_t{4});
+		put(fps);
+		put(frames);
+		put(static_cast<float>(frames) / fps);
+		put(uint32_t{1});
+		put(0.083f);
+		put(uint16_t{0});
+		put(uint8_t{4});
+		put(uint8_t{0});
+		out.write("Hips", 4);
+		for (uint32_t f = 0; f < frames; ++f)
+		{
+			put(Vector3{});
+			put(Quaternion::Identity());
+		}
+		put(uint8_t{0}); // hasCamera
+		if (withFacial)
+		{
+			put(uint32_t{1});
+			put(uint16_t{2});
+			out.write("aa", 2);
+			for (uint32_t f = 0; f < frames; ++f) put(0.0f);
+		}
+		else
+		{
+			put(uint32_t{0});
+		}
+	};
+
+	// 1. Legacy solo song (no is_group in info.json)
+	const fs::path soloDir = root / "solo_song";
+	writeClipFrames(soloDir / "motion.gkclip", 10, 30.0f, false);
+	WriteTextFile(soloDir / "info.json", R"({"title":"Solo","fps":30,"total_frames":10,"duration_seconds":0.3333,"bone_count":1})");
+
+	// 2. 3-slot group song
+	const fs::path grpDir = root / "group_song";
+	writeClipFrames(grpDir / "motion.gkclip", 10, 30.0f, false);
+	writeClipFrames(grpDir / "positions" / "slot_2" / "motion.gkclip", 25, 60.0f, true);
+	writeClipFrames(grpDir / "positions" / "slot_3" / "motion.gkclip", 15, 30.0f, false);
+	WriteTextFile(grpDir / "positions" / "slot_2" / "bone_overrides.json", R"({"overrides":[]})");
+	WriteTextFile(grpDir / "positions" / "slot_2" / "root_height_calibration.json", R"({"enabled":false})");
+	WriteTextFile(grpDir / "song.wav", "RIFF0000WAVE");
+	WriteTextFile(grpDir / "info.json", R"({
+  "title": "Group Three",
+  "fps": 30,
+  "total_frames": 25,
+  "duration_seconds": 0.5,
+  "bone_count": 1,
+  "is_group": true,
+  "position_count": 3,
+  "custom_note": "keep_me",
+  "positions": [
+    {"slot": 1, "x": 0, "y": 0, "z": 0, "yaw_degrees": 0, "has_motion": true, "has_facial": false, "source_vmd": "s1.vmd", "source_vmd_sha256": "aaa", "source_fps": 30, "frames": 10, "bones": 1},
+    {"slot": 2, "x": -1.5, "y": 0.25, "z": 2, "yaw_degrees": 45, "has_motion": true, "has_facial": true, "source_vmd": "s2.vmd", "source_vmd_sha256": "bbb", "source_fps": 60, "frames": 25, "bones": 1},
+    {"slot": 3, "x": 1.5, "y": 0, "z": -1, "yaw_degrees": -30, "has_motion": true, "has_facial": false, "source_vmd": "s3.vmd", "source_vmd_sha256": "ccc", "source_fps": 30, "frames": 15, "bones": 1}
+  ]
+})");
+
+	// 3. Group song without info.json (fallback discovery from positions/slot_2/)
+	const fs::path noInfoDir = root / "no_info_group";
+	writeClipFrames(noInfoDir / "motion.gkclip", 8, 24.0f, false);
+	writeClipFrames(noInfoDir / "positions" / "slot_2" / "motion.gkclip", 12, 60.0f, false);
+
+	// 4. Group song with corrupt slot_2 clip -> partial warning, no crash
+	const fs::path badSlotDir = root / "bad_slot_group";
+	writeClipFrames(badSlotDir / "motion.gkclip", 8, 30.0f, false);
+	WriteTextFile(badSlotDir / "positions" / "slot_2" / "motion.gkclip", "CORRUPT");
+
+	const auto scan = ScanMotionLibraryDetailed(MotionPathToUtf8(root));
+	Check(scan.Succeeded() && scan.status == MotionLibraryScanStatus::Partial && scan.motions.size() == 4,
+	      "group scan collects all 4 tracks with partial warning for corrupt slot_2");
+	const int soloIdx = FindMotionKeyIndex(scan.motions, "solo_song");
+	const int grpIdx = FindMotionKeyIndex(scan.motions, "group_song");
+	const int noInfoIdx = FindMotionKeyIndex(scan.motions, "no_info_group");
+	const int badIdx = FindMotionKeyIndex(scan.motions, "bad_slot_group");
+	Check(soloIdx >= 0 && !scan.motions[soloIdx].isGroup && scan.motions[soloIdx].positionCount == 1 &&
+	      scan.motions[soloIdx].positions.size() == 1, "solo song defaults to 1-slot non-group");
+	Check(grpIdx >= 0 && scan.motions[grpIdx].isGroup && scan.motions[grpIdx].positionCount == 3 &&
+	      scan.motions[grpIdx].positions.size() == 3, "3-slot group song detected");
+	if (grpIdx >= 0 && scan.motions[grpIdx].positions.size() == 3)
+	{
+		const auto& g = scan.motions[grpIdx];
+		Check(Near(g.fps, 30.0f), "slot 2 probe does not clobber slot 1 fps");
+		Check(g.positions[0].slot == 1 && g.positions[0].hasMotion && !g.positions[0].hasOverrides, "slot 1 position entry");
+		Check(g.positions[1].slot == 2 && g.positions[1].hasMotion && g.positions[1].hasOverrides &&
+		      Near(g.positions[1].x, -1.5f) && Near(g.positions[1].yawDegrees, 45.0f), "slot 2 position entry");
+		Check(g.positions[2].slot == 3 && g.positions[2].hasMotion && !g.positions[2].hasOverrides &&
+		      Near(g.positions[2].x, 1.5f) && Near(g.positions[2].yawDegrees, -30.0f), "slot 3 position entry");
+		Check(g.SlotDirectory(2) == ResolveMotionSlotDirectory(g.dir, 2), "SlotDirectory matches ResolveMotionSlotDirectory");
+	}
+	Check(noInfoIdx >= 0 && scan.motions[noInfoIdx].isGroup && scan.motions[noInfoIdx].positionCount == 2,
+	      "missing info.json still discovers positions/slot_2");
+	if (noInfoIdx >= 0 && scan.motions[noInfoIdx].positions.size() == 2)
+	{
+		Check(Near(scan.motions[noInfoIdx].fps, 24.0f) && Near(scan.motions[noInfoIdx].positions[0].sourceFps, 24.0f),
+		      "missing info.json keeps slot 1 fps (24.0)");
+		Check(Near(scan.motions[noInfoIdx].positions[1].sourceFps, 60.0f),
+		      "missing info.json uses slot_2 clip fps (60.0) for positions[1].sourceFps");
+	}
+	Check(badIdx >= 0 && scan.motions[badIdx].isGroup && scan.motions[badIdx].positions.size() == 2 &&
+	      !scan.motions[badIdx].positions[1].hasMotion, "corrupt slot_2 marks hasMotion=false without crash");
+
+	// Zero-rebake placement update helper
+	std::string updateErr;
+	Check(UpdateTrackInfoJsonPositionPlacement(grpDir, 2, -2.25f, 0.5f, 1.75f, 60.0f, updateErr),
+	      "UpdateTrackInfoJsonPositionPlacement succeeds: " + updateErr);
+	Check(!UpdateTrackInfoJsonPositionPlacement(grpDir, 99, 0.0f, 0.0f, 0.0f, 0.0f, updateErr),
+	      "UpdateTrackInfoJsonPositionPlacement rejects missing slot");
+	Check(!UpdateTrackInfoJsonPositionPlacement(grpDir, 2, std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f, 0.0f, updateErr),
+	      "UpdateTrackInfoJsonPositionPlacement rejects NaN");
+	{
+		jsonlite::Value updatedInfo;
+		std::string parseErr;
+		Check(jsonlite::ParseFile(MotionPathToUtf8(grpDir / "info.json"), updatedInfo, parseErr), "updated info.json parses");
+		Check(updatedInfo.StringPath("custom_note", "") == "keep_me", "placement update preserves custom keys");
+		const auto scan2 = ScanMotionLibraryDetailed(MotionPathToUtf8(root));
+		const int gi = FindMotionKeyIndex(scan2.motions, "group_song");
+		Check(gi >= 0 && scan2.motions[gi].positions.size() == 3 &&
+		      Near(scan2.motions[gi].positions[1].x, -2.25f) &&
+		      Near(scan2.motions[gi].positions[1].yawDegrees, 60.0f) &&
+		      scan2.motions[gi].positions[1].sourceVmdSha256 == "bbb",
+		      "placement update persists cleanly without altering source_vmd_sha256");
+	}
+
+	// Concurrent UpdateTrackInfoJsonPositionPlacement stress (4 threads x 25 iterations = 100 updates)
+	{
+		std::atomic<int> failures{0};
+		std::vector<std::thread> workers;
+		for (int t = 0; t < 4; ++t)
+		{
+			workers.emplace_back([&, t] {
+				for (int iter = 0; iter < 25; ++iter)
+				{
+					std::string err;
+					const int slot = (iter % 2 == 0) ? 2 : 3;
+					const float x = static_cast<float>(t * 10 + iter) * 0.1f;
+					const float yaw = static_cast<float>((t + iter) % 180) - 90.0f;
+					if (!UpdateTrackInfoJsonPositionPlacement(grpDir, slot, x, 0.25f, -0.5f, yaw, err))
+					{
+						failures.fetch_add(1, std::memory_order_relaxed);
+					}
+				}
+			});
+		}
+		for (auto& w : workers) w.join();
+		Check(failures.load() == 0, "concurrent UpdateTrackInfoJsonPositionPlacement has zero failures");
+		jsonlite::Value afterConcurrentInfo;
+		std::string parseErr;
+		Check(jsonlite::ParseFile(MotionPathToUtf8(grpDir / "info.json"), afterConcurrentInfo, parseErr) &&
+		      afterConcurrentInfo.IsObject(),
+		      "info.json remains valid JSON after 100 concurrent placement updates: " + parseErr);
+	}
+
+	// Concurrent reader-writer stress: 4 writers x 40 updates vs 1 ScanMotionLibraryDetailed reader
+	{
+		std::atomic<bool> go{false};
+		std::atomic<bool> stopReader{false};
+		std::atomic<int> readerScans{0};
+		std::atomic<int> readerMissing{0};
+		std::atomic<int> writerFails{0};
+		std::thread reader([&] {
+			while (!go.load(std::memory_order_acquire)) std::this_thread::yield();
+			while (!stopReader.load(std::memory_order_acquire))
+			{
+				const auto s = ScanMotionLibraryDetailed(MotionPathToUtf8(root));
+				readerScans.fetch_add(1, std::memory_order_relaxed);
+				if (FindMotionKeyIndex(s.motions, "group_song") < 0)
+				{
+					readerMissing.fetch_add(1, std::memory_order_relaxed);
+				}
+			}
+		});
+		std::vector<std::thread> writers;
+		for (int t = 0; t < 4; ++t)
+		{
+			writers.emplace_back([&, t] {
+				while (!go.load(std::memory_order_acquire)) std::this_thread::yield();
+				for (int iter = 0; iter < 40; ++iter)
+				{
+					std::string err;
+					const int slot = (iter % 2 == 0) ? 2 : 3;
+					const float x = static_cast<float>(t * 100 + iter) * 0.05f;
+					const float yaw = static_cast<float>((t * 17 + iter) % 360) - 180.0f;
+					if (!UpdateTrackInfoJsonPositionPlacement(grpDir, slot, x, 0.25f, -0.5f, yaw, err))
+					{
+						writerFails.fetch_add(1, std::memory_order_relaxed);
+					}
+				}
+			});
+		}
+		go.store(true, std::memory_order_release);
+		for (auto& w : writers) w.join();
+		stopReader.store(true, std::memory_order_release);
+		reader.join();
+		Check(writerFails.load() == 0 && readerMissing.load() == 0 && readerScans.load() > 0,
+		      "concurrent ScanMotionLibraryDetailed reader + 4x40 placement writers have zero failures");
+		jsonlite::Value afterRwInfo;
+		std::string parseErr;
+		Check(ParseTrackInfoJsonFile(grpDir / "info.json", afterRwInfo, parseErr) && afterRwInfo.IsObject(),
+		      "info.json remains valid JSON after ScanMotionLibraryDetailed reader-writer contention: " + parseErr);
+	}
+
+	// Concurrent reader-writer stress: 4 writers x 40 updates vs 1 ReadMotionFileVersion reader
+	{
+		std::atomic<bool> go{false};
+		std::atomic<bool> stopReader{false};
+		std::atomic<int> readerPolls{0};
+		std::atomic<int> writerFails{0};
+		const std::string grpUtf8ForPoll = MotionPathToUtf8(grpDir);
+		std::thread reader([&] {
+			while (!go.load(std::memory_order_acquire)) std::this_thread::yield();
+			while (!stopReader.load(std::memory_order_acquire))
+			{
+				const auto v = ReadMotionFileVersion(grpUtf8ForPoll);
+				(void)v;
+				readerPolls.fetch_add(1, std::memory_order_relaxed);
+			}
+		});
+		std::vector<std::thread> writers;
+		for (int t = 0; t < 4; ++t)
+		{
+			writers.emplace_back([&, t] {
+				while (!go.load(std::memory_order_acquire)) std::this_thread::yield();
+				for (int iter = 0; iter < 40; ++iter)
+				{
+					std::string err;
+					const int slot = (iter % 2 == 0) ? 2 : 3;
+					const float x = static_cast<float>(t * 100 + iter) * 0.05f;
+					const float yaw = static_cast<float>((t * 17 + iter) % 360) - 180.0f;
+					if (!UpdateTrackInfoJsonPositionPlacement(grpDir, slot, x, 0.25f, -0.5f, yaw, err))
+					{
+						writerFails.fetch_add(1, std::memory_order_relaxed);
+					}
+				}
+			});
+		}
+		go.store(true, std::memory_order_release);
+		for (auto& w : writers) w.join();
+		stopReader.store(true, std::memory_order_release);
+		reader.join();
+		Check(writerFails.load() == 0 && readerPolls.load() > 0,
+		      "concurrent ReadMotionFileVersion reader + 4x40 placement writers have zero failures");
+		jsonlite::Value afterWatcherRwInfo;
+		std::string parseErr;
+		Check(ParseTrackInfoJsonFile(grpDir / "info.json", afterWatcherRwInfo, parseErr) && afterWatcherRwInfo.IsObject(),
+		      "info.json remains valid JSON after ReadMotionFileVersion reader-writer contention: " + parseErr);
+	}
+
+	// Concurrent reader-writer stress: 4 writers x 40 updates vs tight-loop & periodic jsonlite::ParseFile readers
+	{
+		const std::string infoUtf8 = MotionPathToUtf8(grpDir / "info.json");
+		auto runParseFileStress = [&](int readerCount, bool periodic1Ms, const char* label) {
+			std::atomic<bool> go{false};
+			std::atomic<bool> stopReader{false};
+			std::atomic<int> readerReads{0};
+			std::atomic<int> readerFails{0};
+			std::atomic<int> writerFails{0};
+			std::vector<std::thread> readers;
+			readers.reserve(static_cast<size_t>(readerCount));
+			for (int r = 0; r < readerCount; ++r)
+			{
+				readers.emplace_back([&] {
+					while (!go.load(std::memory_order_acquire)) std::this_thread::yield();
+					while (!stopReader.load(std::memory_order_acquire))
+					{
+						jsonlite::Value val;
+						std::string err;
+						if (jsonlite::ParseFile(infoUtf8, val, err) && val.IsObject())
+						{
+							readerReads.fetch_add(1, std::memory_order_relaxed);
+						}
+						else
+						{
+							readerFails.fetch_add(1, std::memory_order_relaxed);
+						}
+						if (periodic1Ms) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+					}
+				});
+			}
+			std::vector<std::thread> writers;
+			for (int t = 0; t < 4; ++t)
+			{
+				writers.emplace_back([&, t] {
+					while (!go.load(std::memory_order_acquire)) std::this_thread::yield();
+					for (int iter = 0; iter < 40; ++iter)
+					{
+						std::string err;
+						bool ok = false;
+						const int slot = (iter % 2 == 0) ? 2 : 3;
+						const float x = static_cast<float>(t * 100 + iter) * 0.05f;
+						const float yaw = static_cast<float>((t * 17 + iter) % 360) - 180.0f;
+						if (iter % 3 == 0)
+						{
+							ok = UpdateTrackInfoJsonPositionsPlacement(
+								grpDir,
+								{
+									TrackPositionPlacementUpdate{2, x, 0.25f, -0.5f, yaw},
+									TrackPositionPlacementUpdate{3, -x, 0.0f, 0.5f, -yaw}
+								},
+								err);
+						}
+						else if (iter % 3 == 1)
+						{
+							ok = UpdateTrackInfoJsonCover(grpDir, (iter % 2) == 0, (iter % 2) == 0 ? "cover.png" : "", err);
+						}
+						else
+						{
+							ok = UpdateTrackInfoJsonPositionPlacement(grpDir, slot, x, 0.25f, -0.5f, yaw, err);
+						}
+						if (!ok)
+						{
+							writerFails.fetch_add(1, std::memory_order_relaxed);
+						}
+					}
+				});
+			}
+			go.store(true, std::memory_order_release);
+			for (auto& w : writers) w.join();
+			stopReader.store(true, std::memory_order_release);
+			for (auto& r : readers) r.join();
+			Check(writerFails.load() == 0 && readerFails.load() == 0 && readerReads.load() > 0, label);
+			jsonlite::Value afterInfo;
+			std::string parseErr;
+			Check(ParseTrackInfoJsonFile(grpDir / "info.json", afterInfo, parseErr) && afterInfo.IsObject(),
+			      std::string("info.json remains valid JSON after ") + label + ": " + parseErr);
+		};
+		runParseFileStress(1, false, "concurrent tight-loop jsonlite::ParseFile reader + 4x40 placement writers have zero failures");
+		runParseFileStress(2, false, "1E: 2 concurrent tight-loop jsonlite::ParseFile readers + 4x40 mixed writers have zero failures");
+		runParseFileStress(1, true, "concurrent 1ms-periodic jsonlite::ParseFile reader + 4x40 placement writers have zero failures");
+	}
+
+	// File watcher: ReadMotionFileVersion preserves files[4] audio and detects per-slot edits
+	const MotionFileVersion v1 = ReadMotionFileVersion(MotionPathToUtf8(grpDir));
+	Check(v1.positionsDirExists && v1.slotFiles.size() == 2 && v1.slotFiles[0].slot == 2 && v1.slotFiles[1].slot == 3,
+	      "ReadMotionFileVersion collects sorted slotFiles");
+	WriteTextFile(grpDir / "positions" / "slot_2" / "bone_overrides.json", R"({"overrides":[{"bone":0}]})");
+	const MotionFileVersion v2 = ReadMotionFileVersion(MotionPathToUtf8(grpDir));
+	Check(v2 != v1 && v2.files[4] == v1.files[4], "ReadMotionFileVersion detects slot_2 override change while keeping files[4] audio");
+	writeClipFrames(grpDir / "positions" / "slot_2" / "motion.gkclip", 27, 60.0f, true);
+	const MotionFileVersion v3 = ReadMotionFileVersion(MotionPathToUtf8(grpDir));
+	Check(v3 != v2, "ReadMotionFileVersion detects slot_2 clip change");
+	fs::remove_all(grpDir / "positions" / "slot_3", ec);
+	const MotionFileVersion v4 = ReadMotionFileVersion(MotionPathToUtf8(grpDir));
+	Check(v4 != v3 && v4.slotFiles.size() == 1, "ReadMotionFileVersion detects slot_3 deletion");
+
+	// MotionPlayer::LoadMotionSlot
+	MotionPlayer player;
+	const std::string grpUtf8 = MotionPathToUtf8(grpDir);
+	Check(player.LoadMotionSlot(grpUtf8, 1) && player.currentMotionSlot == 1 &&
+	      player.currentMotionDir == grpUtf8 && player.CurrentSlotDirectory() == grpUtf8 &&
+	      player.clip.total_frames == 10 && player.AudioPath() == grpUtf8 + "/song.wav",
+	      "LoadMotionSlot(1) loads root clip and shared audio");
+	Check(player.LoadMotionSlot(grpUtf8, 2) && player.currentMotionSlot == 2 &&
+	      player.currentMotionDir == grpUtf8 &&
+	      player.CurrentSlotDirectory() == ResolveMotionSlotDirectory(grpUtf8, 2) &&
+	      player.clip.total_frames == 27 && player.AudioPath() == grpUtf8 + "/song.wav" &&
+	      player.SlotBoneOverridesPath() == ResolveMotionSlotDirectory(grpUtf8, 2) + "/bone_overrides.json",
+	      "LoadMotionSlot(2) loads positions/slot_2 clip while preserving track-root audio");
+
+	// 1I.2: AdoptLoadedMotionSlot(slot >= 2) preserves positions[slot - 1].source_fps for mouth_source::Restore
+	{
+		const fs::path slot2FpsDir = root / "slot2_mouth_fps_group";
+		auto writeLegacyMouthClip = [](const fs::path& path, uint32_t frames, float fps) {
+			fs::create_directories(path.parent_path());
+			std::ofstream out(path, std::ios::binary | std::ios::trunc);
+			auto put = [&](auto v) { out.write(reinterpret_cast<const char*>(&v), sizeof(v)); };
+			out.write("GKCLIPCL", 8);
+			put(uint32_t{4});
+			put(fps);
+			put(frames);
+			put(static_cast<float>(frames) / fps);
+			put(uint32_t{1});
+			put(0.083f);
+			put(uint16_t{0});
+			put(uint8_t{4});
+			put(uint8_t{0});
+			out.write("Hips", 4);
+			for (uint32_t f = 0; f < frames; ++f)
+			{
+				put(Vector3{});
+				put(Quaternion::Identity());
+			}
+			put(uint8_t{0}); // hasCamera
+			put(uint32_t{1});
+			put(uint16_t{6});
+			out.write("mmd2.a", 6);
+			for (uint32_t f = 0; f < frames; ++f) put(0.25f);
+		};
+		writeLegacyMouthClip(slot2FpsDir / "motion.gkclip", 4, 24.0f);
+		writeLegacyMouthClip(slot2FpsDir / "positions" / "slot_2" / "motion.gkclip", 4, 30.0f);
+		WriteTextFile(slot2FpsDir / "source.vmd", "stub-vmd-1");
+		WriteTextFile(slot2FpsDir / "positions" / "slot_2" / "source.vmd", "stub-vmd-2");
+		WriteTextFile(slot2FpsDir / "info.json", R"({
+  "title": "Slot2FpsGroup",
+  "fps": 30,
+  "source_fps": 24,
+  "total_frames": 4,
+  "duration_seconds": 0.1667,
+  "bone_count": 1,
+  "is_group": true,
+  "position_count": 2,
+  "positions": [
+    {"slot": 1, "x": 0, "y": 0, "z": 0, "yaw_degrees": 0, "has_motion": true, "has_facial": true, "source_fps": 24, "frames": 4, "bones": 1},
+    {"slot": 2, "x": 1, "y": 0, "z": 0, "yaw_degrees": 0, "has_motion": true, "has_facial": true, "source_fps": 60, "frames": 4, "bones": 1}
+  ]
+})");
+
+		const auto prevReader = mouth_source::reader;
+		mouth_source::reader = &Slot2MouthReaderCapture::MockRead;
+		Slot2MouthReaderCapture::calls = 0;
+		Slot2MouthReaderCapture::lastSourceFps = 0.0f;
+
+		const std::string slot2FpsUtf8 = MotionPathToUtf8(slot2FpsDir);
+		MotionPlayer slotPlayer;
+		Check(slotPlayer.LoadMotionSlot(slot2FpsUtf8, 1) && Slot2MouthReaderCapture::calls == 1 && Near(Slot2MouthReaderCapture::lastSourceFps, 24.0f),
+		      "1I.1: LoadMotionSlot(1) passes root source_fps=24 to mouth_source::Restore");
+		Check(slotPlayer.LoadMotionSlot(slot2FpsUtf8, 2) && Slot2MouthReaderCapture::calls == 2 && Near(Slot2MouthReaderCapture::lastSourceFps, 60.0f),
+		      "1I.2: LoadMotionSlot(2) passes positions[1].source_fps=60 to mouth_source::Restore");
+
+		mouth_source::reader = prevReader;
+	}
+
+	fs::remove_all(root, ec);
+}
 
 static void TestNativeAudioSettingsPersistence()
 {
@@ -2661,7 +3124,20 @@ static void TestNativeAudioSettingsPersistence()
 int main(int argc, char** argv)
 {
  std::setvbuf(stdout, nullptr, _IONBF, 0);
- const std::string repoRoot = argc > 1 ? argv[1] : ".";
+ std::string repoRoot = ".";
+ std::string verifyOctoRoot;
+ for (int i = 1; i < argc; ++i)
+ {
+  const std::string arg = argv[i];
+  if (arg == "--verify-octo" && i + 1 < argc)
+  {
+   verifyOctoRoot = argv[++i];
+  }
+  else if (repoRoot == "." && arg.rfind("--", 0) != 0)
+  {
+   repoRoot = arg;
+  }
+ }
  TestJsonLite();
  TestConfigTemplate();
  TestCommandSeq();
@@ -2713,7 +3189,18 @@ int main(int argc, char** argv)
  TestClipSwitchKeepsActorRest();
  TestPreviewWaitsForHumanoid();
  TestSceneIsolation();
+ TestGroupSongLibrary();
  TestNativeAudioSettingsPersistence();
+ TestSceneActorMetadata();
+ TestPortraitCacheUnit();
+ if (!verifyOctoRoot.empty())
+ {
+  TestOfflineOctoRealCache(MotionPathFromUtf8(verifyOctoRoot), /*required=*/true);
+ }
+ else
+ {
+  TestOfflineOctoRealCache(std::filesystem::path(L"f:\\Games\\gakumas"), /*required=*/false);
+ }
  std::printf("Synthetic core: %d passed, %d failed\n", g_pass, g_fail);
  return g_fail == 0 ? 0 : 1;
 }

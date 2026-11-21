@@ -89,6 +89,8 @@ namespace GakuMotion
 		}
 		bool audioStarted{false};
 		std::string currentMotionDir;
+		int currentMotionSlot{1};
+		std::string currentSlotDir;
 
 		// The performance clock advances at this rate; each file maps that clock
 		// through its own speed and offset. MCI cannot stretch audio.
@@ -310,15 +312,45 @@ namespace GakuMotion
 			return currentMotionDir + "/" + (audioFileName.empty() ? std::string("song.wav") : audioFileName);
 		}
 
+		const std::string& CurrentSlotDirectory() const
+		{
+			return currentSlotDir.empty() ? currentMotionDir : currentSlotDir;
+		}
+
+		std::string SlotBoneOverridesPath() const
+		{
+			const auto& dir = CurrentSlotDirectory();
+			return dir.empty() ? std::string() : dir + "/bone_overrides.json";
+		}
+
+		std::string SlotAuxReplayPath() const
+		{
+			const auto& dir = CurrentSlotDirectory();
+			return dir.empty() ? std::string() : dir + "/aux_replay.json";
+		}
+
+		std::string SlotRootHeightCalibrationPath() const
+		{
+			const auto& dir = CurrentSlotDirectory();
+			return dir.empty() ? std::string() : dir + "/root_height_calibration.json";
+		}
+
 		// Absolute path of the clip actually loaded (diagnostics / panel display)
 		std::string loadedMotionFile{""};
 		std::string mouthSourceStatus;
 
 		bool LoadMotion(const std::string& motionDirectory)
 		{
+			return LoadMotionSlot(motionDirectory, 1);
+		}
+
+		bool LoadMotionSlot(const std::string& trackDirectory, int slot)
+		{
+			const int normalizedSlot = slot < 1 ? 1 : slot;
+			const std::string slotDir = ResolveMotionSlotDirectory(trackDirectory, normalizedSlot);
 			// Format-agnostic discovery: gkclip (role-agnostic) wins, then
 			// gk_world_dump, then the legacy .gkmotion.
-			std::string motionFile = FindMotionFile(motionDirectory);
+			std::string motionFile = FindMotionFile(slotDir);
 			if (motionFile.empty())
 			{
 				return false;
@@ -328,7 +360,7 @@ namespace GakuMotion
 			{
 				return false;
 			}
-			AdoptLoadedMotion(motionDirectory, motionFile, std::move(nextClip));
+			AdoptLoadedMotionSlot(trackDirectory, slotDir, normalizedSlot, motionFile, std::move(nextClip));
 			return true;
 		}
 
@@ -336,28 +368,74 @@ namespace GakuMotion
 		// Core uses this when atomically reloading body and camera from one version.
 		void AdoptLoadedMotion(const std::string& motionDirectory, const std::string& motionFile, MotionClip nextClip)
 		{
-			mouthSourceStatus = mouth_source::Restore(nextClip, motionDirectory);
-			if (mouth_source::report) mouth_source::report(motionDirectory.c_str(), mouthSourceStatus.c_str());
+			AdoptLoadedMotionSlot(motionDirectory, motionDirectory, 1, motionFile, std::move(nextClip));
+		}
+
+		void AdoptLoadedMotionSlot(const std::string& trackDirectory, const std::string& slotDirectory, int slot,
+			const std::string& motionFile, MotionClip nextClip)
+		{
+			const int normalizedSlot = slot < 1 ? 1 : slot;
+			const std::string resolvedSlotDir = slotDirectory.empty()
+				? ResolveMotionSlotDirectory(trackDirectory, normalizedSlot)
+				: slotDirectory;
+			jsonlite::Value metadata;
+			std::string metadataError;
+			const bool hasMetadata = ParseTrackInfoJsonFile(MotionPathFromUtf8(trackDirectory) / "info.json", metadata, metadataError);
+			const jsonlite::Value* mouthMetadata = nullptr;
+			if (hasMetadata)
+			{
+				mouthMetadata = &metadata;
+				if (normalizedSlot >= 2)
+				{
+					if (const auto* positions = metadata.Find("positions"); positions && positions->IsArray())
+					{
+						const jsonlite::Value* slotMeta = nullptr;
+						for (const auto& item : positions->arrayItems)
+						{
+							if (!item.IsObject()) continue;
+							const auto* slotField = item.Find("slot");
+							if (slotField && slotField->IsNumber() &&
+								static_cast<int>(std::llround(slotField->numberValue)) == normalizedSlot)
+							{
+								slotMeta = &item;
+								break;
+							}
+						}
+						if (!slotMeta && static_cast<size_t>(normalizedSlot - 1) < positions->arrayItems.size())
+						{
+							const auto& candidate = positions->arrayItems[static_cast<size_t>(normalizedSlot - 1)];
+							if (candidate.IsObject() && candidate.Find("slot") == nullptr)
+								slotMeta = &candidate;
+						}
+						if (slotMeta && (slotMeta->Find("source_fps") || slotMeta->Find("source_morph_fps")))
+							mouthMetadata = slotMeta;
+					}
+				}
+			}
+			mouthSourceStatus = mouth_source::Restore(
+				nextClip,
+				resolvedSlotDir,
+				mouthMetadata);
+			if (mouth_source::report) mouth_source::report(resolvedSlotDir.c_str(), mouthSourceStatus.c_str());
 			// Release the old pose before replacing its clip, including callers
 			// that bypass Core::SelectMotionByIndex. Keep the original actor rest
 			// snapshot; recapturing immediately after Rebind samples old animation.
 			if (state != PlaybackState::Stopped) Stop();
-			currentMotionDir = motionDirectory;
+			currentMotionDir = trackDirectory;
+			currentSlotDir = resolvedSlotDir;
+			currentMotionSlot = normalizedSlot;
 			additionalPerformanceDuration = 0.0f;
 			clip = std::move(nextClip);
 			loadedMotionFile = motionFile;
 			// Reload even when absent/invalid: another song's trim must not leak.
-			controller.LoadRootHeightCalibration(motionDirectory + "/root_height_calibration.json", clip);
+			controller.LoadRootHeightCalibration(resolvedSlotDir + "/root_height_calibration.json", clip);
 			audioStarted = false;
 			audioWaitingForTiming = false;
-			jsonlite::Value metadata;
-			std::string metadataError;
-			const bool hasMetadata = jsonlite::ParseFile(motionDirectory + "/info.json", metadata, metadataError);
 			timing = hasMetadata ? ReadPerformanceTiming(metadata) : PerformanceTiming{};
 			cameraSourceDuration = 0.0f;
 			const std::string hintedAudio = hasMetadata ? metadata.StringPath("audio_file", "") : std::string();
 			const std::string resolvedAudio = audio::ResolveTrackAudioFileName(
-				MotionPathFromUtf8(motionDirectory), hintedAudio);
+				MotionPathFromUtf8(trackDirectory), hintedAudio);
 			audioFileName = resolvedAudio.empty() ? std::string("song.wav") : resolvedAudio;
 			audioSourceDuration = audio::AudioFileDuration(MotionPathFromUtf8(AudioPath()));
 			if (audioSourceDuration <= 0.0f && hasMetadata)

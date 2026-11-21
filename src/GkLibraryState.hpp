@@ -6,35 +6,36 @@
 
 namespace GakuMotion
 {
+	struct SlotFileVersion
+	{
+		int slot{0};
+		std::array<FileSignature, 9> files{};
+		bool operator==(const SlotFileVersion&) const = default;
+	};
+
 	// A library refresh observes files; it never changes the loaded performance.
 	struct MotionFileVersion
 	{
 		std::array<FileSignature, 12> files{};
+		bool positionsDirExists{false};
+		std::vector<SlotFileVersion> slotFiles;
 		bool operator==(const MotionFileVersion&) const = default;
 	};
 
 	inline MotionFileVersion ReadMotionFileVersion(const std::string& directory)
 	{
 		MotionFileVersion result;
-		const std::filesystem::path root(std::u8string(directory.begin(), directory.end()));
+		const std::filesystem::path root = MotionPathFromUtf8(directory);
 		std::string audioHint;
 		std::string coverHint;
 		{
-			std::error_code ec;
-			if (std::filesystem::is_regular_file(root / "info.json", ec))
+			jsonlite::Value rootJson;
+			std::string parseErr;
+			if (ParseTrackInfoJsonFile(root / "info.json", rootJson, parseErr) &&
+				rootJson.type == jsonlite::Type::Object)
 			{
-				std::ifstream infoStream(root / "info.json", std::ios::binary);
-				if (infoStream)
-				{
-					std::string raw((std::istreambuf_iterator<char>(infoStream)), std::istreambuf_iterator<char>());
-					jsonlite::Value rootJson;
-					std::string parseErr;
-					if (jsonlite::ParseText(raw, rootJson, parseErr) && rootJson.type == jsonlite::Type::Object)
-					{
-						audioHint = rootJson.StringPath("audio_file", "");
-						coverHint = rootJson.StringPath("cover_file", "");
-					}
-				}
+				audioHint = rootJson.StringPath("audio_file", "");
+				coverHint = rootJson.StringPath("cover_file", "");
 			}
 		}
 
@@ -49,17 +50,52 @@ namespace GakuMotion
 			"bone_overrides.json", "root_height_calibration.json",
 			"aux_replay.json", "source.vmd", "source_morph.vmd", resolvedCover};
 
-		for (size_t i = 0; i < result.files.size(); ++i)
-		{
+		auto statFile = [](const std::filesystem::path& path, FileSignature& signature) {
 			std::error_code ec;
-			const auto path = root / std::u8string(names[i].begin(), names[i].end());
-			auto& signature = result.files[i];
 			signature.exists = std::filesystem::is_regular_file(path, ec);
-			if (!signature.exists || ec) continue;
+			if (!signature.exists || ec) return;
 			auto time = std::filesystem::last_write_time(path, ec);
 			if (!ec) signature.writeTime = static_cast<long long>(time.time_since_epoch().count());
 			auto length = std::filesystem::file_size(path, ec);
 			if (!ec) signature.size = static_cast<long long>(length);
+		};
+
+		for (size_t i = 0; i < result.files.size(); ++i)
+		{
+			statFile(root / std::u8string(names[i].begin(), names[i].end()), result.files[i]);
+		}
+
+		std::error_code posEc;
+		const auto positionsDir = root / "positions";
+		result.positionsDirExists = std::filesystem::is_directory(positionsDir, posEc);
+		if (result.positionsDirExists && !posEc)
+		{
+			static constexpr std::array<const char*, 9> kSlotNames{
+				"motion.gkclip", "motion.gk_world_dump", "motion.gkmotion",
+				"bone_overrides.json", "root_height_calibration.json",
+				"aux_replay.json", "source.vmd", "source_morph.vmd",
+				"motion.morph_report.json"};
+			std::filesystem::directory_iterator it(positionsDir, posEc), end;
+			for (; !posEc && it != end; it.increment(posEc))
+			{
+				if (posEc) break;
+				const auto& entry = *it;
+				std::error_code dirEc;
+				if (!entry.is_directory(dirEc) || dirEc) continue;
+				const auto utf8Name = entry.path().filename().u8string();
+				const std::string slotName(utf8Name.begin(), utf8Name.end());
+				int slot = 0;
+				if (!ParseSlotDirectoryIndex(slotName, slot)) continue;
+				SlotFileVersion sv;
+				sv.slot = slot;
+				for (size_t i = 0; i < kSlotNames.size(); ++i)
+				{
+					statFile(entry.path() / kSlotNames[i], sv.files[i]);
+				}
+				result.slotFiles.push_back(std::move(sv));
+			}
+			std::sort(result.slotFiles.begin(), result.slotFiles.end(),
+				[](const SlotFileVersion& a, const SlotFileVersion& b) { return a.slot < b.slot; });
 		}
 		return result;
 	}

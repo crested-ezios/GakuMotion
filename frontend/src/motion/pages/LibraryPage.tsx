@@ -55,6 +55,7 @@ const VIRTUALIZE_THRESHOLD = 200
 
 const FILTER_OPTIONS: ReadonlyArray<{ value: LibraryFilter; label: string }> = [
   { value: 'all', label: '全部曲目' },
+  { value: 'group', label: '团曲' },
   { value: 'camera', label: '含镜头' },
   { value: 'audio', label: '含音乐' },
   { value: 'facial', label: '含表情' },
@@ -272,14 +273,21 @@ function LibraryRow({
             >
               {entry.title}
             </div>
-            <p
-              className={cn(
-                'truncate text-xs tabular-nums',
-                isPlaying ? 'text-primary/85' : 'text-muted-foreground',
+            <div className="flex min-w-0 items-center gap-1.5 text-xs tabular-nums">
+              {entry.isGroup && (
+                <span className="inline-flex shrink-0 items-center rounded-lg border border-amber-400/60 bg-amber-500/15 px-1.5 py-0.5 text-micro leading-none text-amber-600 dark:text-amber-300">
+                  团曲
+                </span>
               )}
-            >
-              {subtitleText ? `${subtitleText} · ${entry.totalFrames} 帧` : `${entry.id} · ${entry.totalFrames} 帧`}
-            </p>
+              <p
+                className={cn(
+                  'min-w-0 truncate',
+                  isPlaying ? 'text-primary/85' : 'text-muted-foreground',
+                )}
+              >
+                {subtitleText ? `${subtitleText} · ${entry.totalFrames} 帧` : `${entry.id} · ${entry.totalFrames} 帧`}
+              </p>
+            </div>
           </div>
         </div>
 
@@ -402,6 +410,7 @@ export function LibraryPage() {
       ) {
         return false
       }
+      if (filter === 'group') return Boolean(entry.isGroup)
       if (filter === 'camera') return entry.hasCamera
       if (filter === 'audio') return entry.hasAudio
       if (filter === 'facial') return entry.hasFacial

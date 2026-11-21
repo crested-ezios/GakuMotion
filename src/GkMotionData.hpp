@@ -62,6 +62,37 @@ namespace GakuMotion
 		return std::string();
 	}
 
+	inline bool ParseSlotDirectoryIndex(std::string_view name, int& outSlot)
+	{
+		constexpr std::string_view kPrefix = "slot_";
+		if (name.size() <= kPrefix.size() || name.rfind(kPrefix, 0) != 0) return false;
+		const std::string_view digits = name.substr(kPrefix.size());
+		if (digits.empty() || digits.front() == '0') return false;
+		int value = 0;
+		for (char ch : digits)
+		{
+			if (ch < '0' || ch > '9') return false;
+			value = value * 10 + (ch - '0');
+			if (value > 256) return false;
+		}
+		if (value < 2) return false;
+		outSlot = value;
+		return true;
+	}
+
+	inline std::string ResolveMotionSlotDirectory(const std::string& trackDirectory, int slot1Based)
+	{
+		if (slot1Based <= 1 || trackDirectory.empty()) return trackDirectory;
+		std::string base = trackDirectory;
+		while (!base.empty() && (base.back() == '/' || base.back() == '\\')) base.pop_back();
+		return base + "/positions/slot_" + std::to_string(slot1Based);
+	}
+
+	inline std::string FindMotionSlotFile(const std::string& trackDirectory, int slot1Based)
+	{
+		return FindMotionFile(ResolveMotionSlotDirectory(trackDirectory, slot1Based));
+	}
+
 	// Gakumas humanoid parent chain, keyed by humanoid id.
 	//
 	// Source of truth: GAKUMAS_PARENT in tools/vmd2gkmotion/convert.py, cross-checked

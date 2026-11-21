@@ -15,6 +15,7 @@ namespace GakuMotion
 		std::string displayName{};
 		std::string faceName{};
 		std::string presetName{};
+		std::string shortName{};
 	};
 	inline std::string GakuActorsPresetName(const std::string& name)
 	{
@@ -36,7 +37,41 @@ namespace GakuMotion
 		uint64_t token{0};
 		std::string label;
 		bool selected{false};
+		std::string character{};
+		std::string displayName{};
+		std::string shortName{};
 	};
+
+	/// Resolves display name for UI/bridge metadata without changing FormatSceneActorLabel.
+	inline std::string ResolveSceneActorDisplayName(const SceneActorObservation& item)
+	{
+		if (!item.presetName.empty()) return item.presetName;
+		if (!item.displayName.empty()) return item.displayName;
+		if (!item.character.empty())
+		{
+			if (const char* cn = LookupIdolChineseName(item.character.c_str())) return cn;
+			return item.character;
+		}
+		return {};
+	}
+
+	/// Resolves compact idol card name (short given name -> preset -> displayName -> fallback).
+	inline std::string ResolveSceneActorShortName(const SceneActorObservation& item)
+	{
+		if (!item.shortName.empty()) return item.shortName;
+		if (!item.presetName.empty()) return item.presetName;
+		if (!item.character.empty())
+		{
+			if (const char* sn = LookupIdolShortName(item.character.c_str())) return sn;
+		}
+		if (!item.displayName.empty()) return item.displayName;
+		if (!item.character.empty())
+		{
+			if (const char* cn = LookupIdolChineseName(item.character.c_str())) return cn;
+			return item.character;
+		}
+		return "未识别角色";
+	}
 
 	/// Formats a scene actor's UI display label, preferring any user preset name.
 	inline std::string FormatSceneActorLabel(const SceneActorObservation& item, size_t oneBasedIndex)
@@ -77,6 +112,7 @@ namespace GakuMotion
 				const auto* old = Find(observation.actor);
 				SceneActorEntry entry;
 				static_cast<SceneActorObservation&>(entry) = observation;
+				if (entry.shortName.empty()) entry.shortName = ResolveSceneActorShortName(entry);
 				entry.token = old && old->instanceId == observation.instanceId ? old->token : nextToken_++;
 				next.push_back(std::move(entry));
 			}

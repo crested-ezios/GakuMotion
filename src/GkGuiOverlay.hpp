@@ -28,7 +28,7 @@
 #include "GkStageStudioSettings.hpp"
 #include "GkCamera.hpp"
 #include "GkSceneActors.hpp"
-#include "GkEnsembleSettings.hpp"
+#include "GkStageFormation.hpp"
 #include "gui/GuiOverlayCommon.hpp"
 
 #include <string>
@@ -154,10 +154,7 @@ namespace GakuMotion
 		void (*fnClearTargetActor)(void* self){nullptr}; // Legacy developer callback: reselect bound/first actor
 		void (*fnNextTargetActor)(void* self){nullptr}; // Legacy developer callback: cycle current actors
 		void (*fnPickFocusedActor)(void* self){nullptr}; // Legacy developer callback: select bound actor
-		ensemble::Snapshot ensembleSnapshot;
-		void (*fnSetEnsemble)(void*, const ensemble::Settings&, uint64_t revision, uint64_t actorEpoch){nullptr};
-		void (*fnEnsemblePreset)(void*, bool save, const char* name, const ensemble::Settings& draft){nullptr};
-		void (*fnEnsembleProbe)(void*, bool){nullptr};
+		StageFormation formation;
 
 		// ---- 写动作（回调到 Core） ----
 		void* self{nullptr};
@@ -278,10 +275,6 @@ namespace GakuMotion
 		float solePlotSpanM{.65f};
 		float initialPositionEdit[3]{};
 		bool initialPositionEditing{false};
-		ensemble::Settings ensembleDraft;
-		uint64_t ensembleDraftRevision{0}, ensembleDraftEpoch{0};
-		bool ensembleDraftReady{false}, ensembleDraftDirty{false};
-		char ensemblePresetName[128]{"我的舞台"};
 #ifdef GKMOTION_GUI_ACTIVE
 		ImGuiTextFilter motionFilter;
 #ifdef GKMOTION_GUI_TEST

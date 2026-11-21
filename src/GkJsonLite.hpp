@@ -35,6 +35,15 @@
 #include <fstream>
 #include <sstream>
 #include <filesystem>
+#include <shared_mutex>
+#ifdef _WIN32
+#include <chrono>
+#include <thread>
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace GakuMotion::jsonlite
 {
@@ -641,6 +650,12 @@ namespace GakuMotion::jsonlite
 	// -----------------------------------------------------------------------------
 	// 3. 便捷入口
 	// -----------------------------------------------------------------------------
+	inline std::shared_mutex& JsonFileCommitMutex()
+	{
+		static std::shared_mutex mutex;
+		return mutex;
+	}
+
 	inline bool ParseText(const std::string& text, Value& out, std::string& error)
 	{
 		Parser parser(text);
@@ -649,7 +664,70 @@ namespace GakuMotion::jsonlite
 
 	inline bool ParseFile(const std::string& path, Value& out, std::string& error)
 	{
-		std::ifstream file(std::filesystem::path(std::u8string(path.begin(), path.end())), std::ios::binary);
+		const std::filesystem::path fsPath(std::u8string(path.begin(), path.end()));
+		std::string text;
+#ifdef _WIN32
+		{
+			std::shared_lock<std::shared_mutex> commitReadLock(JsonFileCommitMutex());
+			HANDLE file = INVALID_HANDLE_VALUE;
+			for (int attempt = 0; attempt < 16; ++attempt)
+			{
+				file = CreateFileW(
+					fsPath.c_str(),
+					GENERIC_READ,
+					FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+					nullptr,
+					OPEN_EXISTING,
+					FILE_ATTRIBUTE_NORMAL,
+					nullptr);
+				if (file != INVALID_HANDLE_VALUE) break;
+				const DWORD lastErr = GetLastError();
+				if (lastErr == ERROR_ACCESS_DENIED)
+				{
+					const DWORD attrs = GetFileAttributesW(fsPath.c_str());
+					if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0)
+						break;
+				}
+				if ((lastErr != ERROR_ACCESS_DENIED && lastErr != ERROR_SHARING_VIOLATION) || attempt == 15)
+				{
+					break;
+				}
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
+			if (file == INVALID_HANDLE_VALUE)
+			{
+				error = "cannot open file: " + path;
+				return false;
+			}
+			LARGE_INTEGER fileSize{};
+			if (!GetFileSizeEx(file, &fileSize) || fileSize.QuadPart < 0 ||
+				static_cast<uint64_t>(fileSize.QuadPart) > 64ULL * 1024ULL * 1024ULL)
+			{
+				CloseHandle(file);
+				error = "cannot open file: " + path;
+				return false;
+			}
+			text.resize(static_cast<size_t>(fileSize.QuadPart));
+			size_t totalRead = 0;
+			while (totalRead < text.size())
+			{
+				DWORD bytesRead = 0;
+				const size_t remaining = text.size() - totalRead;
+				const DWORD chunk = static_cast<DWORD>(remaining < size_t{0x40000000} ? remaining : size_t{0x40000000});
+				if (!ReadFile(file, text.data() + totalRead, chunk, &bytesRead, nullptr))
+				{
+					CloseHandle(file);
+					error = "cannot open file: " + path;
+					return false;
+				}
+				if (bytesRead == 0) break;
+				totalRead += bytesRead;
+			}
+			CloseHandle(file);
+			text.resize(totalRead);
+		}
+#else
+		std::ifstream file(fsPath, std::ios::binary);
 		if (!file.is_open())
 		{
 			error = "cannot open file: " + path;
@@ -657,7 +735,8 @@ namespace GakuMotion::jsonlite
 		}
 		std::ostringstream buffer;
 		buffer << file.rdbuf();
-		std::string text = buffer.str();
+		text = buffer.str();
+#endif
 		if (text.empty())
 		{
 			error = "empty file: " + path;

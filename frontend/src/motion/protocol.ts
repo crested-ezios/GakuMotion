@@ -68,6 +68,16 @@ export interface PlayerState {
   playMode: number
 }
 
+export interface LibraryPositionEntry {
+  slot: number
+  x: number
+  y: number
+  z: number
+  yawDegrees: number
+  hasMotion: boolean
+  hasFacial: boolean
+}
+
 export interface LibraryEntry {
   id: string
   title: string
@@ -81,6 +91,9 @@ export interface LibraryEntry {
   hasAudio: boolean
   audioFile?: string
   hasCover?: boolean
+  isGroup: boolean
+  positionCount: number
+  positions: LibraryPositionEntry[]
 }
 
 export interface LibraryState {
@@ -106,6 +119,9 @@ export interface PermissionState {
 export interface SceneActor {
   token: number
   label: string
+  character: string
+  displayName: string
+  shortName: string
   selected: boolean
 }
 
@@ -114,6 +130,52 @@ export interface ActorsState {
   actors: SceneActor[]
   targetLabel: string
   boundLabel: string
+}
+
+export interface ActorPortraitResult {
+  ok: boolean
+  character: string
+  cached: boolean
+  dataUri: string | null
+}
+
+export interface StageSlotOffset {
+  x: number
+  y: number
+  z: number
+  yawDegrees: number
+}
+
+export interface StageSlotState {
+  slotIndex: number
+  occupied: boolean
+  actorToken: number
+  actorInstanceId: number
+  character: string
+  shortName: string
+  displayName: string
+  isOverflow: boolean
+  hasTrackMotion: boolean
+  sourceSlotIndex: number
+  placementDirty: boolean
+  hasActorBoneOverrides: boolean
+  physicsBackend: string
+  offset: StageSlotOffset
+  facialWeights: FacialWeights
+}
+
+export interface StageFormation {
+  active: boolean
+  available: boolean
+  verified: boolean
+  isGroupSong: boolean
+  trackPositionCount: number
+  slotCount: number
+  selectedSlotIndex: number
+  revision: number
+  actorEpoch: number
+  notice: string
+  slots: StageSlotState[]
 }
 
 export interface CameraTransform {
@@ -126,6 +188,7 @@ export interface CameraSettings {
   mode: number
   followBehavior: number
   followTarget: number
+  followSlotIndex: number
   followActor: boolean
   limitToScene: boolean
   boundsMin: Vector3
@@ -197,34 +260,6 @@ export interface PositionState {
   notice: string
 }
 
-export interface EnsembleSlot {
-  enabled: boolean
-  actorToken: number
-  actorHint: string
-  motionKey: string
-  offset: Vector3
-  yawDegrees: number
-}
-
-export interface EnsembleSettings {
-  enabled: boolean
-  masterSlot: number
-  cameraSlot: number
-  slots: EnsembleSlot[]
-}
-
-export interface EnsembleSnapshot {
-  settings: EnsembleSettings
-  revision: number
-  actorEpoch: number
-  available: boolean
-  verified: boolean
-  probeEnabled: boolean
-  active: boolean
-  notice: string
-  physics: string[]
-}
-
 export interface ImportProgress {
   active: boolean
   finished: boolean
@@ -259,11 +294,11 @@ export interface MotionStateSnapshot {
   loaded: LoadedState
   playlist: { mode: number; notice: string }
   actors: ActorsState
+  formation: StageFormation
   camera: CameraState
   stage: StageState
   facial: FacialState
   position: PositionState
-  ensemble: EnsembleSnapshot
   physicsBackend: number
   musicVolumeSupport: number
   musicVolumeNotice: string
@@ -314,10 +349,29 @@ export interface VmdProbe {
 export interface ImportClassification {
   suggestedTitle: string
   motionCandidate: string
+  motionCandidates: string[]
   facialCandidate: string
   cameraCandidate: string
   audioCandidate: string
   unsupportedAudioCount: number
+}
+
+export interface ImportPositionRequest {
+  slot: number
+  sourceSlot?: number
+  motionFile?: string
+  motionVmd?: string
+  facialFile?: string
+  morphVmd?: string
+  disableMorph?: boolean
+  clearMorph?: boolean
+  sourceFps?: number
+  rebakeOutput?: boolean
+  preserveExisting?: boolean
+  x?: number
+  y?: number
+  z?: number
+  yawDegrees?: number
 }
 
 export interface ImportRequest {
@@ -325,6 +379,7 @@ export interface ImportRequest {
   subtitle?: string
   editKey: string
   motionFile: string
+  motionVmd?: string
   facialFile: string
   cameraFile: string
   audioFile: string
@@ -337,6 +392,8 @@ export interface ImportRequest {
   sourceFps?: number
   rebakeOutput?: boolean
   timing: PerformanceTiming
+  isGroup?: boolean
+  positions?: ImportPositionRequest[]
 }
 
 export interface EditEntryInfo {
@@ -348,6 +405,9 @@ export interface EditEntryInfo {
   hasAudio: boolean
   audioFile?: string
   hasCover?: boolean
+  isGroup?: boolean
+  positionCount?: number
+  positions?: LibraryPositionEntry[]
   timing: PerformanceTiming
 }
 
@@ -604,6 +664,16 @@ export interface MotionMethods {
   'library.delete': { params: { key: string; revision: number }; result: Record<string, never> }
   'library.openFolder': { params: void; result: Record<string, never> }
   'actors.selectTarget': { params: { token: number; epoch: number }; result: Record<string, never> }
+  'actors.getPortrait': { params: { character?: string; token?: number }; result: ActorPortraitResult }
+  'formation.selectSlot': { params: { slotIndex: number }; result: Record<string, never> }
+  'formation.swapSlots': { params: { fromSlotIndex: number; toSlotIndex: number }; result: Record<string, never> }
+  'formation.setSlotOffset': {
+    params: { slotIndex: number; x: number; y: number; z: number; yawDegrees?: number }
+    result: Record<string, never>
+  }
+  'formation.resetSlotOffset': { params: { slotIndex: number }; result: Record<string, never> }
+  'formation.saveSlotOffset': { params: { slotIndex: number }; result: Record<string, never> }
+  'formation.setSlotSource': { params: { slotIndex: number; sourceSlotIndex: number }; result: Record<string, never> }
   'facial.setWeights': { params: FacialWeights; result: Record<string, never> }
   'facial.save': { params: void; result: Record<string, never> }
   'position.set': { params: Vector3; result: Record<string, never> }
@@ -641,13 +711,6 @@ export interface MotionMethods {
   'drop.setTarget': { params: { enabled: boolean }; result: Record<string, never> }
   'drop.poll': { params: void; result: { files: string[] } }
   'drop.peek': { params: void; result: DropPeek }
-  'ensemble.set': {
-    params: { settings: EnsembleSettings; revision: number; actorEpoch: number }
-    result: Record<string, never>
-  }
-  'ensemble.presetSave': { params: { name: string; settings: EnsembleSettings }; result: Record<string, never> }
-  'ensemble.presetLoad': { params: { name: string }; result: { settings: EnsembleSettings } }
-  'ensemble.probe': { params: { enabled: boolean }; result: Record<string, never> }
   'bone.get': { params: void; result: BoneState }
   'bone.set': {
     params: {
@@ -694,11 +757,11 @@ export interface MotionEvents {
   'loaded.changed': LoadedState
   'playlist.changed': { mode: number; notice: string }
   'actors.changed': ActorsState
+  'formation.changed': StageFormation
   'camera.changed': CameraState
   'stage.changed': StageState
   'facial.changed': FacialState
   'position.changed': PositionState
-  'ensemble.changed': EnsembleSnapshot
   'settings.changed': { physicsBackend: number }
   'import.progress': ImportProgress
   'appearance.changed': MotionAppearance
@@ -729,7 +792,6 @@ export interface MotionBridgeClient {
 }
 
 export const PLAY_MODES = ['播放一次', '单曲循环', '列表循环', '随机播放'] as const
-export const ENSEMBLE_PLAY_MODES = ['演出一次', '整场循环'] as const
 export const PLAYBACK_SPEEDS = [0.1, 0.2, 0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0] as const
 export const CAMERA_MODES = ['游戏', 'VMD', '跟随', '注视'] as const
 export const CAMERA_QUICK_MODES = ['镜头: 游戏', '镜头: VMD', '镜头: 跟随', '镜头: 注视'] as const
@@ -741,6 +803,7 @@ export const DEFAULT_CAMERA_SETTINGS: CameraSettings = {
   mode: 0,
   followBehavior: 1,
   followTarget: 0,
+  followSlotIndex: -1,
   followActor: false,
   limitToScene: false,
   boundsMin: { x: -5, y: 0.05, z: -5 },
@@ -780,6 +843,38 @@ export const DEFAULT_STAGE_SETTINGS: StageSettings = {
 }
 
 export const DEFAULT_FACIAL_WEIGHTS: FacialWeights = { overall: 1, brow: 1, eye: 1, mouth: 1 }
+
+export const DEFAULT_STAGE_FORMATION: StageFormation = {
+  active: false,
+  available: false,
+  verified: false,
+  isGroupSong: false,
+  trackPositionCount: 1,
+  slotCount: 1,
+  selectedSlotIndex: 0,
+  revision: 1,
+  actorEpoch: 1,
+  notice: '',
+  slots: [
+    {
+      slotIndex: 0,
+      occupied: false,
+      actorToken: 0,
+      actorInstanceId: 0,
+      character: '',
+      shortName: '',
+      displayName: '',
+      isOverflow: false,
+      hasTrackMotion: false,
+      sourceSlotIndex: 0,
+      placementDirty: false,
+      hasActorBoneOverrides: false,
+      physicsBackend: '',
+      offset: { x: 0, y: 0, z: 0, yawDegrees: 0 },
+      facialWeights: { overall: 1, brow: 1, eye: 1, mouth: 1 },
+    },
+  ],
+}
 
 export const DEFAULT_CLOCK_STATE: ClockState = {
   runMode: 'realtime',
@@ -883,12 +978,6 @@ export const VMD_BADGE_TEXT: Record<VmdTendency, string> = {
 export function vmdBadgeText(probe: VmdProbe): string {
   if (probe.isGkCamera) return '[烘焙镜头]'
   return VMD_BADGE_TEXT[probe.tendency] ?? '[无效VMD]'
-}
-
-export const ENSEMBLE_INITIAL_SLOTS = 1
-
-export function ensembleSlotName(index: number): string {
-  return `演员${index + 1}`
 }
 
 // Developer-only photography stage replacement (GuiStageLoadReplacement.hpp).

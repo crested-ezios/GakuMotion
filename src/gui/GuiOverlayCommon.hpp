@@ -532,6 +532,7 @@ namespace GakuMotion
 	{
 		std::string suggestedTitle;
 		std::string motionCandidate;
+		std::vector<std::string> motionCandidates;
 		std::string facialCandidate;
 		std::string cameraCandidate;
 		std::string audioCandidate;
@@ -671,21 +672,44 @@ namespace GakuMotion
 		// 3. 动作分配：优先从仅动作/动作+表情中挑选，关键词为平手判定
 		std::vector<std::string> motionCandidatesPool = motionOnlyList;
 		motionCandidatesPool.insert(motionCandidatesPool.end(), motionAndFacialList.begin(), motionAndFacialList.end());
-
-		if (!motionCandidatesPool.empty())
-		{
-			res.motionCandidate = PickBest(motionCandidatesPool, HasMotionKeyword);
-		}
-		else
+		if (motionCandidatesPool.empty())
 		{
 			for (const auto& item : vmdAndCamCandidates)
 			{
-				if (item.probe.CanUseAsMotion())
-				{
-					res.motionCandidate = item.path;
-					break;
-				}
+				if (item.probe.CanUseAsMotion()) motionCandidatesPool.push_back(item.path);
 			}
+		}
+
+		// Deduplicate and sort body motion candidates by filename for deterministic multi-VMD slot mapping.
+		for (const auto& path : motionCandidatesPool)
+		{
+			if (std::find(res.motionCandidates.begin(), res.motionCandidates.end(), path) == res.motionCandidates.end())
+			{
+				res.motionCandidates.push_back(path);
+			}
+		}
+		auto FileNameLower = [](const std::string& p) -> std::string
+		{
+			std::string name = WideToUtf8(std::filesystem::path(Utf8ToWide(p)).filename().wstring());
+			for (auto& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+			return name;
+		};
+		std::sort(res.motionCandidates.begin(), res.motionCandidates.end(),
+		          [&](const std::string& a, const std::string& b)
+		          {
+			          const std::string la = FileNameLower(a);
+			          const std::string lb = FileNameLower(b);
+			          if (la != lb) return la < lb;
+			          return a < b;
+		          });
+
+		if (!motionOnlyList.empty() || !motionAndFacialList.empty())
+		{
+			res.motionCandidate = PickBest(motionCandidatesPool, HasMotionKeyword);
+		}
+		else if (!res.motionCandidates.empty())
+		{
+			res.motionCandidate = res.motionCandidates.front();
 		}
 
 		// 4. 若未匹配到独立表情文件，但动作文件自身携带表情（MotionAndFacial），则表情复用该文件

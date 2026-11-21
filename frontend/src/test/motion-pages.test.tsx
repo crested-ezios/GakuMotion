@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CameraPage } from '@/motion/pages/CameraPage'
@@ -93,7 +93,7 @@ describe('SettingsPage', () => {
 })
 
 describe('MotionPage', () => {
-  it('selects the drive actor, expands ensemble & bone sections, and labels phase1 unsupported badges', async () => {
+  it('renders ActorSlotStrip, expands BoneSection, and labels phase1 unsupported badges', async () => {
     bridge.close()
     bridge = new MotionMockBridgeClient({ capabilityProfile: 'phase1' })
     setMotionBridge(bridge)
@@ -102,18 +102,14 @@ describe('MotionPage', () => {
 
     const user = userEvent.setup()
     render(<MotionPage />)
-    await user.click(screen.getByRole('combobox', { name: '驱动角色' }))
-    await user.click(await screen.findByRole('option', { name: '凛' }))
-    await waitFor(() => expect(motionStore.getState().actors.targetLabel).toBe('凛'))
-    await user.click(screen.getByText('多人舞台'))
-    expect(screen.getByTestId('ensemble-section')).toBeInTheDocument()
+    expect(screen.getByTestId('actor-slot-strip')).toBeInTheDocument()
+    expect(screen.getByText('1号位')).toBeInTheDocument()
     await user.click(screen.getByText('高级动作设置'))
     expect(screen.getByTestId('bone-section')).toBeInTheDocument()
-    expect(within(screen.getByTestId('ensemble-section')).getByText('主槽（音频与运镜）')).toBeInTheDocument()
     expect(screen.getAllByText('待迁移').length).toBeGreaterThan(0)
   })
 
-  it('commits facial weight changes and saves them', async () => {
+  it('commits facial weight changes through rotary knobs and saves them', async () => {
     const user = userEvent.setup()
     const spy = vi.spyOn(bridge, 'request')
     render(<MotionPage />)
@@ -125,47 +121,56 @@ describe('MotionPage', () => {
     expect(spy.mock.calls.some((call) => call[0] === 'facial.save')).toBe(true)
   })
 
-  it('auto-syncs ensemble slots to >3 detected actors and skips unbound slots on apply', async () => {
+  it('dynamically renders >3 stage slots and supports slot selection and offset updates', async () => {
     const user = userEvent.setup()
     const spy = vi.spyOn(bridge, 'request')
     const baseActors = motionStore.getState().actors
-    const firstKey = motionStore.getState().library.entries[0]?.id ?? 'demo-song'
     bridge.push('actors.changed', {
       ...baseActors,
       actors: [
-        { token: 101, label: '咲季', selected: true },
-        { token: 102, label: '凛', selected: false },
-        { token: 103, label: '千奈', selected: false },
-        { token: 104, label: 'ことね', selected: false },
-        { token: 105, label: '手毬', selected: false },
+        { token: 101, label: '咲季', character: 'hski', displayName: '花海咲季', shortName: '咲季', selected: true },
+        { token: 102, label: '手毬', character: 'ttmr', displayName: '月村手毬', shortName: '手毬', selected: false },
+        { token: 103, label: '千奈', character: 'kcna', displayName: '仓本千奈', shortName: '千奈', selected: false },
+        { token: 104, label: '琴音', character: 'fktn', displayName: '藤田琴音', shortName: '琴音', selected: false },
+        { token: 105, label: '広', character: 'shro', displayName: '篠澤広', shortName: '広', selected: false },
       ],
     })
-    await waitFor(() => expect(motionStore.getState().ensembleDraft.slots).toHaveLength(5))
+    bridge.push('formation.changed', {
+      ...motionStore.getState().formation,
+      active: true,
+      isGroupSong: true,
+      trackPositionCount: 3,
+      slotCount: 5,
+      selectedSlotIndex: 0,
+      slots: [0, 1, 2, 3, 4].map((idx) => ({
+        slotIndex: idx,
+        occupied: true,
+        actorToken: 101 + idx,
+        actorInstanceId: 1000 + idx,
+        character: ['hski', 'ttmr', 'kcna', 'fktn', 'shro'][idx],
+        shortName: ['咲季', '手毬', '千奈', '琴音', '広'][idx],
+        displayName: ['花海咲季', '月村手毬', '仓本千奈', '藤田琴音', '篠澤広'][idx],
+        isOverflow: idx >= 3,
+        hasTrackMotion: idx < 3,
+        sourceSlotIndex: idx < 3 ? idx : 0,
+        placementDirty: false,
+        hasActorBoneOverrides: false,
+        physicsBackend: '原生',
+        offset: { x: idx * 0.5, y: 0, z: 0, yawDegrees: 0 },
+        facialWeights: { overall: 1, brow: 1, eye: 1, mouth: 1 },
+      })),
+    })
 
     const { rerender } = render(<MotionPage />)
-    await user.click(screen.getByText('多人舞台'))
-    const section = screen.getByTestId('ensemble-section')
-    expect(within(section).getByText('使用 演员4')).toBeInTheDocument()
-    expect(within(section).getByText('使用 演员5')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByText('4号位')).toBeInTheDocument())
+    expect(screen.getByText('5号位')).toBeInTheDocument()
 
-    await user.click(within(section).getByRole('checkbox', { name: '启用多人舞台' }))
-    motionStore.patchEnsembleSlot(0, { enabled: true, actorToken: 101, actorHint: '咲季', motionKey: firstKey })
-    motionStore.patchEnsembleSlot(0, { offset: { x: 256, y: -256, z: 120 } })
-    await waitFor(() => expect(motionStore.ensembleDraftError()).toBeNull())
-
-    await user.click(within(section).getByRole('button', { name: '应用多人舞台配置' }))
-    await waitFor(() => expect(motionStore.getState().ensemble.active).toBe(true))
-
-    const applyCall = spy.mock.calls.find((call) => call[0] === 'ensemble.set')
-    expect(applyCall).toBeDefined()
-    const sentSettings = (applyCall?.[1] as { settings: { slots: Array<{ enabled: boolean; offset: { x: number; y: number; z: number } }> } }).settings
-    expect(sentSettings.slots).toHaveLength(5)
-    expect(sentSettings.slots[0].enabled).toBe(true)
-    expect(sentSettings.slots[0].offset).toEqual({ x: 256, y: -256, z: 120 })
-    expect(sentSettings.slots.slice(1).every((slot) => !slot.enabled)).toBe(true)
+    await user.click(screen.getByTestId('actor-slot-card-3'))
+    await waitFor(() =>
+      expect(spy.mock.calls.some((call) => call[0] === 'formation.selectSlot')).toBe(true),
+    )
 
     rerender(<StagePage />)
-    expect(screen.getByText('演员4')).toBeInTheDocument()
-    expect(screen.getByText('演员5')).toBeInTheDocument()
+    expect(screen.queryByText('舞台角色阵容')).not.toBeInTheDocument()
   })
 })
