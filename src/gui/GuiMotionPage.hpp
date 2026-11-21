@@ -30,14 +30,14 @@ namespace GakuMotion
 			overlay.ensembleDraftEpoch = snapshot.actorEpoch;
 			overlay.ensembleDraftDirty = true;
 		}
-		if (!ImGui::CollapsingHeader("多人舞台（最多3人）", snapshot.active ? ImGuiTreeNodeFlags_DefaultOpen : ImGuiTreeNodeFlags_None))
+		if (!ImGui::CollapsingHeader("多人舞台", snapshot.active ? ImGuiTreeNodeFlags_DefaultOpen : ImGuiTreeNodeFlags_None))
 			return;
 		ImGui::PushID("ensemble");
 		auto& draft = overlay.ensembleDraft;
 		const bool playing = snapshot.active && ctx.player && ctx.player->state == PlaybackState::Playing;
-		ImGui::TextWrapped("为摄影场景中的角色分别指定动作，共享播放进度、音频与镜头。预设载入后请重新绑定角色并应用。");
+		ImGui::TextWrapped("为摄影场景中的角色分别指定动作，共享播放进度、音频与镜头。未绑定的槽位不会参与播放。");
 		if (!snapshot.notice.empty()) ImGui::TextWrapped("%s", snapshot.notice.c_str());
-		if (!snapshot.available) ImGui::TextDisabled("进入有效摄影场景后可应用；现在可编辑和保存预设。");
+		if (!snapshot.available) ImGui::TextDisabled("进入有效摄影场景后可应用；现在可编辑配置。");
 		else if (!snapshot.verified) ImGui::TextDisabled("尚未完成摄影槽位验证；请开启探针确认后再应用。");
 		bool probe = snapshot.probeEnabled;
 		ImGui::BeginDisabled(!ctx.fnEnsembleProbe);
@@ -51,13 +51,19 @@ namespace GakuMotion
 		}
 		ImGui::BeginDisabled(playing);
 		bool changed = ImGui::Checkbox("启用多人舞台", &draft.enabled);
-		const char* slotNames[]{"演员1", "演员2", "演员3"};
+		if (ImGui::Button("新增角色")) { draft.slots.emplace_back(); changed = true; }
+		std::vector<std::string> names;
+		names.reserve(draft.slots.size());
+		for (size_t i = 0; i < draft.slots.size(); ++i) names.push_back("演员" + std::to_string(i + 1));
+		std::vector<const char*> slotNames;
+		slotNames.reserve(names.size());
+		for (const auto& name : names) slotNames.push_back(name.c_str());
 		int master = static_cast<int>(draft.masterSlot), follow = static_cast<int>(draft.cameraSlot);
-		if (ImGui::Combo("音频与运镜主槽", &master, slotNames, static_cast<int>(ensemble::MaxActors)))
+		if (ImGui::Combo("音频与运镜主槽", &master, slotNames.data(), static_cast<int>(slotNames.size())))
 		{ draft.masterSlot = static_cast<uint32_t>(master); changed = true; }
-		if (ImGui::Combo("镜头跟随目标槽", &follow, slotNames, static_cast<int>(ensemble::MaxActors)))
+		if (ImGui::Combo("镜头跟随目标槽", &follow, slotNames.data(), static_cast<int>(slotNames.size())))
 		{ draft.cameraSlot = static_cast<uint32_t>(follow); changed = true; }
-		for (size_t i = 0; i < ensemble::MaxActors; ++i)
+		for (size_t i = 0; i < draft.slots.size(); ++i)
 		{
 			ImGui::PushID(static_cast<int>(i));
 			auto& slot = draft.slots[i];
@@ -75,7 +81,7 @@ namespace GakuMotion
 					for (const auto& actor : ctx.sceneActors)
 					{
 						bool occupied = false;
-						for (size_t other = 0; other < ensemble::MaxActors; ++other)
+						for (size_t other = 0; other < draft.slots.size(); ++other)
 							if (other != i && draft.slots[other].actorToken == actor.token) occupied = true;
 						ImGui::BeginDisabled(occupied);
 						const std::string label = actor.label + "##ensemble_actor_" + std::to_string(actor.token);
@@ -100,15 +106,15 @@ namespace GakuMotion
 					ImGui::EndCombo();
 				}
 				float offset[]{slot.offset.x, slot.offset.y, slot.offset.z};
-				if (ImGui::DragFloat3("站位偏移（米）", offset, .01f, -10, 10, "%.2f"))
+				if (ImGui::DragFloat3("站位偏移（米）", offset, .01f, -256, 256, "%.2f", ImGuiSliderFlags_AlwaysClamp))
 				{ slot.offset = {offset[0], offset[1], offset[2]}; changed = true; }
 				changed |= ImGui::DragFloat("朝向（度）", &slot.yawDegrees, 1, -180, 180, "%.1f");
-				if (!snapshot.physics[i].empty()) ImGui::TextWrapped("物理：%s", snapshot.physics[i].c_str());
+				if (i < snapshot.physics.size() && !snapshot.physics[i].empty()) ImGui::TextWrapped("物理：%s", snapshot.physics[i].c_str());
 				ImGui::TreePop();
 			}
 			ImGui::PopID();
 		}
-		const bool masterHasMotion = draft.masterSlot < ensemble::MaxActors && !draft.slots[draft.masterSlot].motionKey.empty();
+		const bool masterHasMotion = draft.masterSlot < draft.slots.size() && !draft.slots[draft.masterSlot].motionKey.empty();
 		ImGui::BeginDisabled(!masterHasMotion);
 		if (ImGui::Button("复制主槽动作到全部槽"))
 		{
@@ -124,13 +130,16 @@ namespace GakuMotion
 			changed = true;
 		}
 		if (changed) overlay.ensembleDraftDirty = true;
+		auto activeDraft = draft;
+		for (auto& slot : activeDraft.slots)
+			if (!slot.actorToken || slot.motionKey.empty()) slot.enabled = false;
 		std::string error;
-		bool valid = ensemble::Validate(draft, error);
-		if (valid && draft.enabled)
+		bool valid = ensemble::Validate(activeDraft, error);
+		if (valid && activeDraft.enabled)
 		{
-			if (!draft.slots[draft.masterSlot].enabled || !draft.slots[draft.cameraSlot].enabled)
+			if (!activeDraft.slots[activeDraft.masterSlot].enabled || !activeDraft.slots[activeDraft.cameraSlot].enabled)
 			{ valid = false; error = "主槽与镜头跟随槽必须启用。"; }
-			for (const auto& slot : draft.slots) if (slot.enabled)
+			for (const auto& slot : activeDraft.slots) if (slot.enabled)
 			{
 				bool found = false;
 				for (const auto& actor : ctx.sceneActors) if (actor.token == slot.actorToken) found = true;
@@ -142,7 +151,7 @@ namespace GakuMotion
 		ImGui::BeginDisabled(!ctx.fnSetEnsemble || !valid || !ready);
 		if (ImGui::Button("应用多人舞台配置"))
 		{
-			ctx.fnSetEnsemble(ctx.self, draft, overlay.ensembleDraftRevision, overlay.ensembleDraftEpoch);
+			ctx.fnSetEnsemble(ctx.self, activeDraft, overlay.ensembleDraftRevision, overlay.ensembleDraftEpoch);
 			overlay.ensembleDraftDirty = false;
 		}
 		ImGui::EndDisabled();
@@ -156,17 +165,7 @@ namespace GakuMotion
 			ctx.fnSetEnsemble(ctx.self, next, snapshot.revision, snapshot.actorEpoch);
 		}
 		ImGui::EndDisabled();
-		ImGui::InputText("舞台预设名称", overlay.ensemblePresetName, sizeof(overlay.ensemblePresetName));
-		std::string presetError;
-		const bool canSave = ensemble::Validate(draft, presetError);
-		ImGui::BeginDisabled(!ctx.fnEnsemblePreset || !overlay.ensemblePresetName[0] || !canSave);
-		if (ImGui::Button("保存舞台预设")) ctx.fnEnsemblePreset(ctx.self, true, overlay.ensemblePresetName, draft);
-		ImGui::EndDisabled();
-		ImGui::SameLine();
-		ImGui::BeginDisabled(!ctx.fnEnsemblePreset || !overlay.ensemblePresetName[0] || playing);
-		if (ImGui::Button("载入舞台预设")) ctx.fnEnsemblePreset(ctx.self, false, overlay.ensemblePresetName, draft);
-		ImGui::EndDisabled();
-		ImGui::TextDisabled("预设保存动作与布局；角色提示不自动绑定场景角色。");
+		// Preset files and backend remain available; the layout preset panel is temporarily hidden.
 		ImGui::PopID();
 	}
 
@@ -240,17 +239,17 @@ namespace GakuMotion
 		// 位置 X / Y / Z
 		ImGui::TextUnformatted("世界坐标偏移 (米)");
 		ImGui::SetNextItemWidth(dragItemWidth);
-		if (ImGui::DragFloat("##pos_x", &overlay.initialPositionEdit[0], 0.01f, -10.0f, 10.0f, "X: %.2f"))
+		if (ImGui::DragFloat("##pos_x", &overlay.initialPositionEdit[0], 0.01f, -256.0f, 256.0f, "X: %.2f", ImGuiSliderFlags_AlwaysClamp))
 			posChanged = true;
 
 		ImGui::SameLine();
 		ImGui::SetNextItemWidth(dragItemWidth);
-		if (ImGui::DragFloat("##pos_y", &overlay.initialPositionEdit[1], 0.01f, -10.0f, 10.0f, "Y: %.2f"))
+		if (ImGui::DragFloat("##pos_y", &overlay.initialPositionEdit[1], 0.01f, -256.0f, 256.0f, "Y: %.2f", ImGuiSliderFlags_AlwaysClamp))
 			posChanged = true;
 
 		ImGui::SameLine();
 		ImGui::SetNextItemWidth(dragItemWidth);
-		if (ImGui::DragFloat("##pos_z", &overlay.initialPositionEdit[2], 0.01f, -10.0f, 10.0f, "Z: %.2f"))
+		if (ImGui::DragFloat("##pos_z", &overlay.initialPositionEdit[2], 0.01f, -256.0f, 256.0f, "Z: %.2f", ImGuiSliderFlags_AlwaysClamp))
 			posChanged = true;
 
 		if (posChanged)

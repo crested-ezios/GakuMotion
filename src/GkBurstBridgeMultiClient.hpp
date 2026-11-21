@@ -1,13 +1,13 @@
 #pragma once
 #include "GakuBurstBridge.h"
 #include "GkIdolController.hpp"
-#include <array>
+#include <deque>
 #include <chrono>
 #include <string>
 #include <windows.h>
 
 namespace GakuMotion {
-// One module/session, three actor-lifetime contexts. The v2 client remains the
+// One module/session, multiple actor-lifetime contexts. The v2 client remains the
 // compatibility path for the fixed master actor when v3 is unavailable.
 class BurstBridgeMultiClient {
     friend struct BurstBridgeMultiClientTestAccess;
@@ -24,7 +24,7 @@ public:
 private:
     HMODULE module_{}; GbbApiV3 api_{}; GbbConfig config_{};
     std::wstring path_; bool attempted_{},stopped_{};
-    std::array<Slot,GBB_MAX_CONTEXTS> slots_{};
+    std::deque<Slot> slots_{};
     static HMODULE Load(const wchar_t* path) {
         __try { return LoadLibraryExW(path,nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_DEFAULT_DIRS); }
         __except(EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
@@ -68,7 +68,7 @@ private:
     }
 public:
     std::string reason{"not_requested"};
-    Slot& State(size_t index) { return slots_[index]; }
+    Slot& State(size_t index) { if (slots_.size() <= index) slots_.resize(index + 1); return slots_[index]; }
     const Slot& State(size_t index) const { return slots_[index]; }
     void Configure(const wchar_t* root,GbbLogFn log,void* context) {
         if (root && *root) path_=std::wstring(root)+L"/GakuBurstBridge.dll";
@@ -100,7 +100,8 @@ public:
     }
     bool Publish(size_t index,const IdolBoneBinding& binding,const IdolController& ctrl,float time,int frame,
         bool quartz=false,bool diagnostics=false) {
-        if (index>=slots_.size() || !Ensure()) return false;
+        if (!Ensure()) return false;
+        if (slots_.size() <= index) slots_.resize(index + 1);
         auto& slot=slots_[index]; if (slot.faulted) return false;
         if (slot.token && slot.actor!=binding.actor && !Clear(index)) return false;
         if (!slot.token) {
@@ -158,6 +159,7 @@ public:
     }
     bool HasCaptureInput() const { for (const auto& slot:slots_) if (slot.outstanding) return true; return false; }
     bool ClearForCapture(size_t index) {
+        if (index>=slots_.size()) return true;
         auto& slot=slots_[index]; if (!slot.outstanding) return true;
         if (!slot.token || !api_.clear_context) return false;
         GbbStatus before{}; before.size=sizeof(before); before.version=GBB_API_VERSION;
@@ -172,6 +174,7 @@ public:
     }
     bool ClearForCapture() { bool clean=true; for (size_t i=0;i<slots_.size();++i) clean=ClearForCapture(i)&&clean; return clean; }
     bool Clear(size_t index) {
+        if (index>=slots_.size()) return true;
         auto& slot=slots_[index];
         if (slot.token && (!api_.destroy_context || Destroy(api_,slot.token)!=GBB_OK)) {
             slot.outstanding=true; slot.faulted=true; slot.reason="capture_destroy_unconfirmed"; return false;

@@ -1,0 +1,733 @@
+{
+  "schema_version": 1,
+  "source_project": "GakuBurstBridge",
+  "source_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+  "source_status_at_selection": "clean",
+  "purpose": "independent local source staging; no remote publication or game deployment",
+  "selection_method": "explicit file allowlist; source Git blobs for project files; separately reviewed fixed vendor source subset; no recursive repository copy",
+  "review_scope": "runtime/tests/tools/interfaces read in full; fixed ABI/RVA/opcode constants are compatibility facts, not bundled game assets",
+  "excluded": [
+    "old Git metadata/history",
+    "build/cache/binary files",
+    "real game files/assets",
+    "motion/music/models/weights/captures",
+    "historical research inputs/logs",
+    "machine-specific maintenance prose",
+    "old onboarding test receipt"
+  ],
+  "manifest_self_excluded": true,
+  "files": [
+    {
+      "path": ".gitattributes",
+      "source_kind": "staging_authored",
+      "sha256": "ef5e480c3a26406b6435f2a8f6877e61f4d8c5cb56f400377c8b970c8c008c33",
+      "review_status": "approved_for_local_staging",
+      "review": "New self-contained build/governance/provenance documentation; no runtime code or external asset input."
+    },
+    {
+      "path": ".gitignore",
+      "source_kind": "rewritten_portable_staging_document",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "source_path": ".gitignore",
+      "source_git_blob": "45a547348e929168b3e4dc43c086f757e10323d5",
+      "source_git_blob_sha256": "a3a0e64da16ec7f47c4177e15d36e84ce8be0f9bbca19c1e8c940d71f5dbc603",
+      "sha256": "95fea449372f1820cb5fc2e8b852d43daff9a595d6b3ee5438b0bc1a708884db",
+      "review_status": "approved_for_local_staging",
+      "review": "Entire project source/test/tool file reviewed; no real asset payload, model weights, recordings, private absolute build dependency or other external implementation bundled. Compatibility profile identifiers/RVA/opcodes are bounded interface gate facts."
+    },
+    {
+      "path": "AGENTS.md",
+      "source_kind": "staging_authored",
+      "sha256": "9cd65c2e03f75a6d4353a00a5144ff761ea8879ad963b5620c1c1d98572c28af",
+      "review_status": "approved_for_local_staging",
+      "review": "New self-contained build/governance/provenance documentation; no runtime code or external asset input."
+    },
+    {
+      "path": "LICENSE",
+      "source_kind": "copied_git_blob",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "source_path": "LICENSE",
+      "source_git_blob": "9043bfe36e5c1aa48364381c23119e88e9db699f",
+      "source_git_blob_sha256": "dd26115e999468a4757f6af6f178a45cd1dd831309119937d2515d89795bcd4e",
+      "sha256": "dd26115e999468a4757f6af6f178a45cd1dd831309119937d2515d89795bcd4e",
+      "review_status": "approved_for_local_staging",
+      "review": "Entire project source/test/tool file reviewed; no real asset payload, model weights, recordings, private absolute build dependency or other external implementation bundled. Compatibility profile identifiers/RVA/opcodes are bounded interface gate facts."
+    },
+    {
+      "path": "NOTICE",
+      "source_kind": "staging_authored",
+      "sha256": "713168e0545cdd6af0d098c29d3b0cfb313acb7fd6096b39ffe40b390ee8dc8c",
+      "review_status": "approved_for_local_staging",
+      "review": "New self-contained build/governance/provenance documentation; no runtime code or external asset input."
+    },
+    {
+      "path": "README.md",
+      "source_kind": "cloud_documentation_only",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "source_path": "README.md",
+      "source_git_blob": "fef935681fb2420d0ed8f3738cd93fdc154be060",
+      "source_git_blob_sha256": "f446d1a935bfa665fc53dd81f19181ca46b2a2da1e2add0f8c0c36ce87d23a16",
+      "sha256": "d8212716f209a240ef4351ea081995be18d5e14c399471bf54956d75b429aef8",
+      "review_status": "cloud-polish-imported",
+      "review": "Imported from user-reviewed cloud documentation commit a6bca793bc3bcbb04a68c97e8142c2c3a9ab4153; runtime source unchanged.",
+      "prior_staging_sha256": "7fb85d82fe44b4f48d9f3f7c0fd35a8f39d7ee0526c28f5b717c826663c99019",
+      "maintenance_base_commit": "11a771b71ff4d87228a2bf0dc0857db604a616d4",
+      "restoration_source_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "restoration_source_path": "README.md",
+      "documentation_history": [
+        {
+          "date": "2026-11-04",
+          "previous": {
+            "path": "README.md",
+            "source_kind": "maintained_product_documentation",
+            "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+            "source_path": "README.md",
+            "source_git_blob": "fef935681fb2420d0ed8f3738cd93fdc154be060",
+            "source_git_blob_sha256": "f446d1a935bfa665fc53dd81f19181ca46b2a2da1e2add0f8c0c36ce87d23a16",
+            "sha256": "435ee3010be26efc74e34e6f0b2f603142c680a96803e649863802a7b4bd9c09",
+            "review_status": "author_reviewed_documentation_maintenance",
+            "review": "Read against current fixed code and existing clone receipts; sources and CLI paths checked. No new independent provenance/game approval is implied.",
+            "prior_staging_sha256": "7fb85d82fe44b4f48d9f3f7c0fd35a8f39d7ee0526c28f5b717c826663c99019",
+            "maintenance_base_commit": "11a771b71ff4d87228a2bf0dc0857db604a616d4",
+            "restoration_source_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+            "restoration_source_path": "README.md"
+          }
+        },
+        {
+          "date": "2026-11-07",
+          "previous_sha256": "782cd54180891721939ceac5dfe6885c57bfa90b2fb97de5c892e966046d0bba"
+        }
+      ],
+      "documentation_repair": {
+        "review": "Reviewed technical facts and conditions against current staged code; humanizer-zh expression pass.",
+        "runtime_changed": false
+      },
+      "path_layout_refresh_20261106": {
+        "previous_sha256": "1c874cbfe555dd373510a33af8c4c997b0759de1495b80e5e9473082e3a76c89",
+        "scope": "Documentation now describes GakuLoader/plugins companion layout; no bridge runtime change."
+      },
+      "staging_adapted": true
+    },
+    {
+      "path": "SOURCE_REVIEW.md",
+      "source_kind": "maintained_product_documentation",
+      "sha256": "1619d5be4b31c52bc8fc62042e33a9e0049a5c72b7fabc2ec72e0638fe01101c",
+      "review_status": "author_reviewed_documentation_maintenance",
+      "review": "Read against current fixed code and existing clone receipts; sources and CLI paths checked. No new independent provenance/game approval is implied.",
+      "prior_staging_sha256": "5b7e7771602a228678ea93ec23ab1606d05ca7ba854d14cbd0dbd8661859784d",
+      "maintenance_base_commit": "11a771b71ff4d87228a2bf0dc0857db604a616d4"
+    },
+    {
+      "path": "THIRD_PARTY_NOTICES.md",
+      "source_kind": "adapted_git_blob_license_completion_notice",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "source_path": "THIRD_PARTY_NOTICES.md",
+      "source_git_blob": "61f7b91f8bac7170e0eab457a680b1e926f482ee",
+      "source_git_blob_sha256": "7fccd41ff2ad11d71c6a76125da8fc934600e6c1209fcca549187814fa5660fc",
+      "sha256": "2fe0dc9c46d52f7370d71e19fabebbfe58b61cc47483357996151fde967e87ce",
+      "review_status": "approved_for_local_staging",
+      "review": "Entire project source/test/tool file reviewed; no real asset payload, model weights, recordings, private absolute build dependency or other external implementation bundled. Compatibility profile identifiers/RVA/opcodes are bounded interface gate facts."
+    },
+    {
+      "path": "build.ps1",
+      "source_kind": "adapted_git_blob",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "source_path": "build.ps1",
+      "source_git_blob": "c96a4a02f287c4db212945aa4287eaaf02b542ca",
+      "source_git_blob_sha256": "dd8c8ea13eb9fcd46416f9d925bd01c024c18aba6be4e758a09646a28b2a0bcc",
+      "sha256": "fb71b808af1316b8a3eeecdef52128ae37cf4a0fbd578d17d53382edf0dadcfe",
+      "review_status": "approved_for_local_staging",
+      "review": "Entire project source/test/tool file reviewed; no real asset payload, model weights, recordings, private absolute build dependency or other external implementation bundled. Compatibility profile identifiers/RVA/opcodes are bounded interface gate facts.",
+      "release_version_refresh_20261106": "Compiles Windows version resource for product identity; C ABI unchanged."
+    },
+    {
+      "path": "deps/minhook/LICENSE.txt",
+      "source_kind": "third_party_official_license_normalized",
+      "sha256": "638d0e5629c065357491fc202a398358eba988a05e04c43fd762cd1c70df443a",
+      "upstream_url": "https://raw.githubusercontent.com/TsudaKageyu/minhook/8af6b4acae5a9388fd742b56fa79ece89d96f823/LICENSE.txt",
+      "upstream_revision_declared_by_source_gitlink": "8af6b4acae5a9388fd742b56fa79ece89d96f823",
+      "upstream_byte_verification": "official license text read independently; normalized text, not upstream raw transport-byte equality",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "license": "BSD-2-Clause; original MinHook and HDE copyright headers retained",
+      "review_status": "approved_for_local_staging",
+      "upstream_revision": "8af6b4acae5a9388fd742b56fa79ece89d96f823",
+      "normalization": "UTF-8 without BOM; LF; all73 visible official text lines retained",
+      "review": "Complete MinHook+HDE32+HDE64 terms independently read from official fixed-revision raw GitHub source; source checkpoint incomplete27-line copy replaced only in staging."
+    },
+    {
+      "path": "deps/minhook/UPSTREAM.md",
+      "source_kind": "staging_authored",
+      "sha256": "d8c921bfacf76d0f501d9499325a4b48f9bf0bd95bb3504414b7358862a9af93",
+      "review_status": "approved_for_local_staging",
+      "review": "New self-contained build/governance/provenance documentation; no runtime code or external asset input."
+    },
+    {
+      "path": "deps/minhook/UPSTREAM_COMPARISON.json",
+      "source_kind": "staging_authored_source_review",
+      "sha256": "5504dacc3818c48fd09b36d8ef0f06ffe6adab88d6d0416f3592a0f7649556d0",
+      "review_status": "approved_for_local_staging",
+      "review": "Recorded complete official fixed-URL source line coverage and C-token comparison, including mismatch contexts. Does not introduce or execute external source code."
+    },
+    {
+      "path": "deps/minhook/include/MinHook.h",
+      "source_kind": "third_party_vendor",
+      "sha256": "62dff05e63155c6bf8135c36a0d79dedbdcaaede9da26fe38daf0bea34323e38",
+      "upstream_url": "https://github.com/TsudaKageyu/minhook",
+      "upstream_revision_declared_by_source_gitlink": "8af6b4acae5a9388fd742b56fa79ece89d96f823",
+      "upstream_byte_verification": "13 complete fixed-URL rendered source files compared as C tokens; 4 token-identical and 9 different. Raw upstream bytes/Git blob identity not certified.",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "license": "BSD-2-Clause; original MinHook and HDE copyright headers retained",
+      "review_status": "reviewed_local_staging_variant; declared_upstream_mismatch_documented",
+      "upstream_comparison_record": "deps/minhook/UPSTREAM_COMPARISON.json"
+    },
+    {
+      "path": "deps/minhook/src/buffer.c",
+      "source_kind": "third_party_vendor",
+      "sha256": "0ab484d7870c3a8e7a3a1ee61e2070072cf445ed85b619d4c4207fed34356d99",
+      "upstream_url": "https://github.com/TsudaKageyu/minhook",
+      "upstream_revision_declared_by_source_gitlink": "8af6b4acae5a9388fd742b56fa79ece89d96f823",
+      "upstream_byte_verification": "13 complete fixed-URL rendered source files compared as C tokens; 4 token-identical and 9 different. Raw upstream bytes/Git blob identity not certified.",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "license": "BSD-2-Clause; original MinHook and HDE copyright headers retained",
+      "review_status": "reviewed_local_staging_variant; declared_upstream_mismatch_documented",
+      "upstream_comparison_record": "deps/minhook/UPSTREAM_COMPARISON.json"
+    },
+    {
+      "path": "deps/minhook/src/buffer.h",
+      "source_kind": "third_party_vendor",
+      "sha256": "9769702bd625249e59a19ede05c84365fcc7707e1fa0e5df08df42227cee13e3",
+      "upstream_url": "https://github.com/TsudaKageyu/minhook",
+      "upstream_revision_declared_by_source_gitlink": "8af6b4acae5a9388fd742b56fa79ece89d96f823",
+      "upstream_byte_verification": "13 complete fixed-URL rendered source files compared as C tokens; 4 token-identical and 9 different. Raw upstream bytes/Git blob identity not certified.",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "license": "BSD-2-Clause; original MinHook and HDE copyright headers retained",
+      "review_status": "reviewed_local_staging_variant; declared_upstream_mismatch_documented",
+      "upstream_comparison_record": "deps/minhook/UPSTREAM_COMPARISON.json"
+    },
+    {
+      "path": "deps/minhook/src/hde/hde32.c",
+      "source_kind": "third_party_vendor",
+      "sha256": "5da4941e9044f7b325c7f952b5840089e365f374740b7fe7318805d08c0d6c32",
+      "upstream_url": "https://github.com/TsudaKageyu/minhook",
+      "upstream_revision_declared_by_source_gitlink": "8af6b4acae5a9388fd742b56fa79ece89d96f823",
+      "upstream_byte_verification": "13 complete fixed-URL rendered source files compared as C tokens; 4 token-identical and 9 different. Raw upstream bytes/Git blob identity not certified.",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "license": "BSD-2-Clause; original MinHook and HDE copyright headers retained",
+      "review_status": "reviewed_local_staging_variant; declared_upstream_mismatch_documented",
+      "upstream_comparison_record": "deps/minhook/UPSTREAM_COMPARISON.json"
+    },
+    {
+      "path": "deps/minhook/src/hde/hde32.h",
+      "source_kind": "third_party_vendor",
+      "sha256": "5132de5be8ac7a9d054420f5caef0fb01437faa892f03b3cdc77f795973bf15a",
+      "upstream_url": "https://github.com/TsudaKageyu/minhook",
+      "upstream_revision_declared_by_source_gitlink": "8af6b4acae5a9388fd742b56fa79ece89d96f823",
+      "upstream_byte_verification": "13 complete fixed-URL rendered source files compared as C tokens; 4 token-identical and 9 different. Raw upstream bytes/Git blob identity not certified.",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "license": "BSD-2-Clause; original MinHook and HDE copyright headers retained",
+      "review_status": "reviewed_local_staging_variant; declared_upstream_mismatch_documented",
+      "upstream_comparison_record": "deps/minhook/UPSTREAM_COMPARISON.json"
+    },
+    {
+      "path": "deps/minhook/src/hde/hde64.c",
+      "source_kind": "third_party_vendor",
+      "sha256": "94178f7cf3685c96e0ac2cf069c876b0ea9c047a39c4b5251b762b69e99b824c",
+      "upstream_url": "https://github.com/TsudaKageyu/minhook",
+      "upstream_revision_declared_by_source_gitlink": "8af6b4acae5a9388fd742b56fa79ece89d96f823",
+      "upstream_byte_verification": "13 complete fixed-URL rendered source files compared as C tokens; 4 token-identical and 9 different. Raw upstream bytes/Git blob identity not certified.",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "license": "BSD-2-Clause; original MinHook and HDE copyright headers retained",
+      "review_status": "reviewed_local_staging_variant; declared_upstream_mismatch_documented",
+      "upstream_comparison_record": "deps/minhook/UPSTREAM_COMPARISON.json"
+    },
+    {
+      "path": "deps/minhook/src/hde/hde64.h",
+      "source_kind": "third_party_vendor",
+      "sha256": "e99aa4997bda14b534c614c3d8cb78a72c4aca91a1212c8b03ec605d1d75e36e",
+      "upstream_url": "https://github.com/TsudaKageyu/minhook",
+      "upstream_revision_declared_by_source_gitlink": "8af6b4acae5a9388fd742b56fa79ece89d96f823",
+      "upstream_byte_verification": "13 complete fixed-URL rendered source files compared as C tokens; 4 token-identical and 9 different. Raw upstream bytes/Git blob identity not certified.",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "license": "BSD-2-Clause; original MinHook and HDE copyright headers retained",
+      "review_status": "reviewed_local_staging_variant; declared_upstream_mismatch_documented",
+      "upstream_comparison_record": "deps/minhook/UPSTREAM_COMPARISON.json"
+    },
+    {
+      "path": "deps/minhook/src/hde/pstdint.h",
+      "source_kind": "third_party_vendor",
+      "sha256": "604d1cdf45c5a95bc9cf1bbf39ca05ef83013541101d34971c5cd7577e3d5247",
+      "upstream_url": "https://github.com/TsudaKageyu/minhook",
+      "upstream_revision_declared_by_source_gitlink": "8af6b4acae5a9388fd742b56fa79ece89d96f823",
+      "upstream_byte_verification": "13 complete fixed-URL rendered source files compared as C tokens; 4 token-identical and 9 different. Raw upstream bytes/Git blob identity not certified.",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "license": "BSD-2-Clause; original MinHook and HDE copyright headers retained",
+      "review_status": "reviewed_local_staging_variant; declared_upstream_mismatch_documented",
+      "upstream_comparison_record": "deps/minhook/UPSTREAM_COMPARISON.json"
+    },
+    {
+      "path": "deps/minhook/src/hde/table32.h",
+      "source_kind": "third_party_vendor",
+      "sha256": "43bf687a9fff071b5f46070db4d36c846f8e069cdc57485ee897c499aacdde23",
+      "upstream_url": "https://github.com/TsudaKageyu/minhook",
+      "upstream_revision_declared_by_source_gitlink": "8af6b4acae5a9388fd742b56fa79ece89d96f823",
+      "upstream_byte_verification": "13 complete fixed-URL rendered source files compared as C tokens; 4 token-identical and 9 different. Raw upstream bytes/Git blob identity not certified.",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "license": "BSD-2-Clause; original MinHook and HDE copyright headers retained",
+      "review_status": "reviewed_local_staging_variant; declared_upstream_mismatch_documented",
+      "upstream_comparison_record": "deps/minhook/UPSTREAM_COMPARISON.json"
+    },
+    {
+      "path": "deps/minhook/src/hde/table64.h",
+      "source_kind": "third_party_vendor",
+      "sha256": "b774446d2f110ce954fb0a710f4693c5562ddbd8d56fe84106f2ee80db8b50a2",
+      "upstream_url": "https://github.com/TsudaKageyu/minhook",
+      "upstream_revision_declared_by_source_gitlink": "8af6b4acae5a9388fd742b56fa79ece89d96f823",
+      "upstream_byte_verification": "13 complete fixed-URL rendered source files compared as C tokens; 4 token-identical and 9 different. Raw upstream bytes/Git blob identity not certified.",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "license": "BSD-2-Clause; original MinHook and HDE copyright headers retained",
+      "review_status": "reviewed_local_staging_variant; declared_upstream_mismatch_documented",
+      "upstream_comparison_record": "deps/minhook/UPSTREAM_COMPARISON.json"
+    },
+    {
+      "path": "deps/minhook/src/hook.c",
+      "source_kind": "third_party_vendor",
+      "sha256": "68f8a4784cc783754ba436dcbcfd367480ab042248a89338aec8fb0954c4d6ca",
+      "upstream_url": "https://github.com/TsudaKageyu/minhook",
+      "upstream_revision_declared_by_source_gitlink": "8af6b4acae5a9388fd742b56fa79ece89d96f823",
+      "upstream_byte_verification": "13 complete fixed-URL rendered source files compared as C tokens; 4 token-identical and 9 different. Raw upstream bytes/Git blob identity not certified.",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "license": "BSD-2-Clause; original MinHook and HDE copyright headers retained",
+      "review_status": "reviewed_local_staging_variant; declared_upstream_mismatch_documented",
+      "upstream_comparison_record": "deps/minhook/UPSTREAM_COMPARISON.json"
+    },
+    {
+      "path": "deps/minhook/src/trampoline.c",
+      "source_kind": "third_party_vendor",
+      "sha256": "5ae2543b8147a0b19f678aae91cb4eff9482f8dd3b02a4e034d9b0e42dce604e",
+      "upstream_url": "https://github.com/TsudaKageyu/minhook",
+      "upstream_revision_declared_by_source_gitlink": "8af6b4acae5a9388fd742b56fa79ece89d96f823",
+      "upstream_byte_verification": "13 complete fixed-URL rendered source files compared as C tokens; 4 token-identical and 9 different. Raw upstream bytes/Git blob identity not certified.",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "license": "BSD-2-Clause; original MinHook and HDE copyright headers retained",
+      "review_status": "reviewed_local_staging_variant; declared_upstream_mismatch_documented",
+      "upstream_comparison_record": "deps/minhook/UPSTREAM_COMPARISON.json"
+    },
+    {
+      "path": "deps/minhook/src/trampoline.h",
+      "source_kind": "third_party_vendor",
+      "sha256": "53ed9934492320617a27bfd952ffe7f5b7a4a1d09963d4512447082fe7b727b4",
+      "upstream_url": "https://github.com/TsudaKageyu/minhook",
+      "upstream_revision_declared_by_source_gitlink": "8af6b4acae5a9388fd742b56fa79ece89d96f823",
+      "upstream_byte_verification": "13 complete fixed-URL rendered source files compared as C tokens; 4 token-identical and 9 different. Raw upstream bytes/Git blob identity not certified.",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "license": "BSD-2-Clause; original MinHook and HDE copyright headers retained",
+      "review_status": "reviewed_local_staging_variant; declared_upstream_mismatch_documented",
+      "upstream_comparison_record": "deps/minhook/UPSTREAM_COMPARISON.json"
+    },
+    {
+      "path": "docs/COMPATIBILITY.md",
+      "source_kind": "cloud_documentation_only",
+      "sha256": "ae504c2502c146eb42052304abb396fdf9e2c7448f19a9dd824a820e5c0b7296",
+      "maintenance_base_commit": "11a771b71ff4d87228a2bf0dc0857db604a616d4",
+      "review_status": "cloud-polish-imported",
+      "review": "Imported from user-reviewed cloud documentation commit a6bca793bc3bcbb04a68c97e8142c2c3a9ab4153; runtime source unchanged.",
+      "documentation_history": [
+        {
+          "date": "2026-11-07",
+          "previous_sha256": "307f96f58d6bb82cb49e1cab9b61ac38e40b357829da252871932c6a4482516a"
+        }
+      ],
+      "staging_adapted": true
+    },
+    {
+      "path": "docs/DEVELOPMENT.md",
+      "source_kind": "new_product_documentation",
+      "sha256": "ef52f6848747a0030afede1fe4fc4eec040648f3d5a3d33aad23fb28e0f38c41",
+      "maintenance_base_commit": "11a771b71ff4d87228a2bf0dc0857db604a616d4",
+      "review_status": "author_reviewed_documentation_maintenance",
+      "review": "New user/developer navigation derived from current fixed interfaces and portable source394 documentation; local links and documented readonly command flows verified. No independent approval or new game acceptance claimed.",
+      "documentation_history": [
+        {
+          "date": "2026-11-07",
+          "previous_sha256": "a1f936a37a55e31939ca969e3e84b99c382023511948b3ea53e734c8dcb5df51"
+        }
+      ],
+      "staging_adapted": true
+    },
+    {
+      "path": "docs/INSTALLATION.md",
+      "source_kind": "cloud_documentation_only",
+      "sha256": "60d78e8f018ad7d03ae1810408b82290164b4db6fbc7f41666d13c6f75c24f3f",
+      "maintenance_base_commit": "11a771b71ff4d87228a2bf0dc0857db604a616d4",
+      "review_status": "cloud-polish-imported",
+      "review": "Imported from user-reviewed cloud documentation commit a6bca793bc3bcbb04a68c97e8142c2c3a9ab4153; runtime source unchanged.",
+      "path_layout_refresh_20261106": {
+        "previous_sha256": "5420931898a31301671ff83e109a462f15746e8b9e17e3cd602a5d26de469f07",
+        "scope": "Documentation now describes GakuLoader/plugins companion layout; no bridge runtime change."
+      },
+      "documentation_history": [
+        {
+          "date": "2026-11-07",
+          "previous_sha256": "96c42980a4b1f71980daf971120ed628b0fec2bc19eab47a44681010be7b858a"
+        }
+      ],
+      "staging_adapted": true
+    },
+    {
+      "path": "docs/INTEGRATION.md",
+      "source_kind": "cloud_documentation_only",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "source_path": "docs/INTEGRATION.md",
+      "source_git_blob": "d3f025eec30c130aaeec7adbbf5fe16837c5e83b",
+      "source_git_blob_sha256": "fe5cf935000b1b2545f50ea84e5c9d310643453ae3fdfba8120f5616665a1e1c",
+      "sha256": "bbb76d377d572dd584b56e3dd6c17831c2fcd08c49823d1d11d46648df370563",
+      "review_status": "cloud-polish-imported",
+      "review": "Imported from user-reviewed cloud documentation commit a6bca793bc3bcbb04a68c97e8142c2c3a9ab4153; runtime source unchanged.",
+      "path_layout_refresh_20261106": {
+        "previous_sha256": "aa0bcf4aff1ca2a75911586c2e6d97f7f790177b42f660b1215321bc8adf671f",
+        "scope": "Documentation now describes GakuLoader/plugins companion layout; no bridge runtime change."
+      },
+      "documentation_history": [
+        {
+          "date": "2026-11-07",
+          "previous_sha256": "c089a32e9e7570b0f0c29c33eabd3334af3372631a9b14d06f53b625d9da4369"
+        }
+      ],
+      "staging_adapted": true
+    },
+    {
+      "path": "docs/MAINTENANCE_SOP.md",
+      "source_kind": "cloud_documentation_only",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "source_path": "docs/MAINTENANCE_SOP.md",
+      "source_git_blob": "b71b6674b1193f6df3756da0e3d306c242b35591",
+      "source_git_blob_sha256": "9f90d971da01749c154a8db03610db88451caa802eab364bba0c8e7f535226cb",
+      "sha256": "a602cf42c1a459cff319fb54b923f8b317aa47752cd4a9f49315ae27ab219135",
+      "review_status": "cloud-polish-imported",
+      "review": "Imported from user-reviewed cloud documentation commit a6bca793bc3bcbb04a68c97e8142c2c3a9ab4153; runtime source unchanged.",
+      "prior_staging_sha256": "1d252775f586e3390b5d56e16915695eef5386deb3f53cc3ad48ce9ab3eae40a",
+      "maintenance_base_commit": "11a771b71ff4d87228a2bf0dc0857db604a616d4",
+      "restoration_source_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "restoration_source_path": "docs/MAINTENANCE_SOP.md",
+      "path_layout_refresh_20261106": {
+        "previous_sha256": "f88ec54908210307d4d9986c7ee7c95b6a27b451b3da8f3d1714fb8096081f51",
+        "scope": "Documentation now describes GakuLoader/plugins companion layout; no bridge runtime change."
+      },
+      "documentation_history": [
+        {
+          "date": "2026-11-07",
+          "previous_sha256": "4ea4dfa6bcd43b24c01d8bcb0cb0748ef44baf67f44860ae3ac56780ff5df686"
+        }
+      ],
+      "staging_adapted": true
+    },
+    {
+      "path": "docs/README.md",
+      "source_kind": "cloud_documentation_only",
+      "sha256": "5d310efa5aec747eec4680fdf51139372be5678e29dd6447e593bf5b2f2aad91",
+      "maintenance_base_commit": "11a771b71ff4d87228a2bf0dc0857db604a616d4",
+      "review_status": "cloud-polish-imported",
+      "review": "Imported from user-reviewed cloud documentation commit a6bca793bc3bcbb04a68c97e8142c2c3a9ab4153; runtime source unchanged.",
+      "documentation_history": [
+        {
+          "date": "2026-11-07",
+          "previous_sha256": "33a90b5c205c9cf0e4d2074623f3e57d8ff13e5abac4686ed1d7b6e6e95b380f"
+        }
+      ],
+      "staging_adapted": true
+    },
+    {
+      "path": "docs/TROUBLESHOOTING.md",
+      "source_kind": "cloud_documentation_only",
+      "sha256": "4a8a1e6df6b00ec7569f229d1bd31952ee7d22263e6c9a4f217443af3c23a441",
+      "maintenance_base_commit": "11a771b71ff4d87228a2bf0dc0857db604a616d4",
+      "review_status": "cloud-polish-imported",
+      "review": "Imported from user-reviewed cloud documentation commit a6bca793bc3bcbb04a68c97e8142c2c3a9ab4153; runtime source unchanged.",
+      "path_layout_refresh_20261106": {
+        "previous_sha256": "1703d9efb6aa2980be5d73fd5ded3f95dc925be7e8ea6e3aa2ea8ba92e529b93",
+        "scope": "Documentation now describes GakuLoader/plugins companion layout; no bridge runtime change."
+      }
+    },
+    {
+      "path": "include/GakuBurstBridge.h",
+      "source_kind": "copied_git_blob",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "source_path": "include/GakuBurstBridge.h",
+      "source_git_blob": "115c6aedc95af274f71edd3ce91d1551cfea3ae4",
+      "source_git_blob_sha256": "5dffea9ec568d84bf3f183c0d31a668903e24814df43f8f25814fa27653d9232",
+      "sha256": "5dffea9ec568d84bf3f183c0d31a668903e24814df43f8f25814fa27653d9232",
+      "review_status": "approved_for_local_staging",
+      "review": "Entire project source/test/tool file reviewed; no real asset payload, model weights, recordings, private absolute build dependency or other external implementation bundled. Compatibility profile identifiers/RVA/opcodes are bounded interface gate facts."
+    },
+    {
+      "path": "profiles/supported-build-20261008.json",
+      "source_kind": "copied_git_blob",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "source_path": "profiles/supported-build-20261008.json",
+      "source_git_blob": "a51f708467dad599223dcb67ef38de9179eded34",
+      "source_git_blob_sha256": "7ac16457c8084e7b6ac1801c63f4a57c34ce47496ff4b5d1d87de1857ca788a7",
+      "sha256": "7ac16457c8084e7b6ac1801c63f4a57c34ce47496ff4b5d1d87de1857ca788a7",
+      "review_status": "approved_for_local_staging",
+      "review": "Entire project source/test/tool file reviewed; no real asset payload, model weights, recordings, private absolute build dependency or other external implementation bundled. Compatibility profile identifiers/RVA/opcodes are bounded interface gate facts."
+    },
+    {
+      "path": "src/GakuBurstBridge.cpp",
+      "source_kind": "copied_git_blob",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "source_path": "src/GakuBurstBridge.cpp",
+      "source_git_blob": "60bac2da65efe13ce84691c38de004ea41d094de",
+      "source_git_blob_sha256": "b58f7037972a8220c1015fc87955eec8e242e34280e27cd749666d3a0d384f20",
+      "sha256": "b58f7037972a8220c1015fc87955eec8e242e34280e27cd749666d3a0d384f20",
+      "review_status": "approved_for_local_staging",
+      "review": "Entire project source/test/tool file reviewed; no real asset payload, model weights, recordings, private absolute build dependency or other external implementation bundled. Compatibility profile identifiers/RVA/opcodes are bounded interface gate facts."
+    },
+    {
+      "path": "src/GakuBurstBridge.rc",
+      "source_kind": "staging_authored",
+      "sha256": "76435f5185846154d0cd1fb7e2f01aa30a075ffbbb7a03d46d860fd3f779ed5a",
+      "review_status": "approved_for_local_staging",
+      "review": "Windows product/file version 0.1.0."
+    },
+    {
+      "path": "src/Il2CppAccess.hpp",
+      "source_kind": "copied_git_blob",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "source_path": "src/Il2CppAccess.hpp",
+      "source_git_blob": "deb2bba20fc0e8ed59ea61c3de4e1aa1ed2f9173",
+      "source_git_blob_sha256": "062cd14d3269249570e90b8d77cba49aa06f1d1fa228fb6f41d73817b09c60a9",
+      "sha256": "062cd14d3269249570e90b8d77cba49aa06f1d1fa228fb6f41d73817b09c60a9",
+      "review_status": "approved_for_local_staging",
+      "review": "Entire project source/test/tool file reviewed; no real asset payload, model weights, recordings, private absolute build dependency or other external implementation bundled. Compatibility profile identifiers/RVA/opcodes are bounded interface gate facts."
+    },
+    {
+      "path": "src/NativeProfile.hpp",
+      "source_kind": "copied_git_blob",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "source_path": "src/NativeProfile.hpp",
+      "source_git_blob": "126559cf8354c557862eabedda3621fa30fb985b",
+      "source_git_blob_sha256": "d4b9d16ee9a1840e46f423f98785927c69fc1cc8dd54027283ada4ecccae05a2",
+      "sha256": "d4b9d16ee9a1840e46f423f98785927c69fc1cc8dd54027283ada4ecccae05a2",
+      "review_status": "approved_for_local_staging",
+      "review": "Entire project source/test/tool file reviewed; no real asset payload, model weights, recordings, private absolute build dependency or other external implementation bundled. Compatibility profile identifiers/RVA/opcodes are bounded interface gate facts."
+    },
+    {
+      "path": "src/QuartzExperiment.hpp",
+      "source_kind": "copied_git_blob",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "source_path": "src/QuartzExperiment.hpp",
+      "source_git_blob": "eae7407f77da0a091956820a44fe27fb0fd9924c",
+      "source_git_blob_sha256": "ac918e178f5a01fdb9c19c48f2856b88207e909147c28fc89f2ac6b49420bd05",
+      "sha256": "ac918e178f5a01fdb9c19c48f2856b88207e909147c28fc89f2ac6b49420bd05",
+      "review_status": "approved_for_local_staging",
+      "review": "Entire project source/test/tool file reviewed; no real asset payload, model weights, recordings, private absolute build dependency or other external implementation bundled. Compatibility profile identifiers/RVA/opcodes are bounded interface gate facts."
+    },
+    {
+      "path": "src/QuartzProfile.hpp",
+      "source_kind": "copied_git_blob",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "source_path": "src/QuartzProfile.hpp",
+      "source_git_blob": "d5ceb8a3bc74f0cd6a289dd04a8ddf0b615724a6",
+      "source_git_blob_sha256": "eb84f6cd87c23ba9a4e56f6fd6c62edcf1641f8629db13e301964bb76908f87a",
+      "sha256": "eb84f6cd87c23ba9a4e56f6fd6c62edcf1641f8629db13e301964bb76908f87a",
+      "review_status": "approved_for_local_staging",
+      "review": "Entire project source/test/tool file reviewed; no real asset payload, model weights, recordings, private absolute build dependency or other external implementation bundled. Compatibility profile identifiers/RVA/opcodes are bounded interface gate facts."
+    },
+    {
+      "path": "src/SleeveMuscleProbe.hpp",
+      "source_kind": "copied_git_blob",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "source_path": "src/SleeveMuscleProbe.hpp",
+      "source_git_blob": "831ce87e3bc3bfe1c653740637f2a21b5afc668c",
+      "source_git_blob_sha256": "46b0aa95329937926fd5b2287757a809343806111d67333acc3a7c9c0164b7df",
+      "sha256": "46b0aa95329937926fd5b2287757a809343806111d67333acc3a7c9c0164b7df",
+      "review_status": "approved_for_local_staging",
+      "review": "Entire project source/test/tool file reviewed; no real asset payload, model weights, recordings, private absolute build dependency or other external implementation bundled. Compatibility profile identifiers/RVA/opcodes are bounded interface gate facts."
+    },
+    {
+      "path": "tests/abi_c.c",
+      "source_kind": "copied_git_blob",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "source_path": "tests/abi_c.c",
+      "source_git_blob": "48f68481995786058863761475561baa8090495e",
+      "source_git_blob_sha256": "1cbe2f338704882b0b787ff03cdde9aac02e1a26d849bc37de97d730f8664509",
+      "sha256": "1cbe2f338704882b0b787ff03cdde9aac02e1a26d849bc37de97d730f8664509",
+      "review_status": "approved_for_local_staging",
+      "review": "Entire project source/test/tool file reviewed; no real asset payload, model weights, recordings, private absolute build dependency or other external implementation bundled. Compatibility profile identifiers/RVA/opcodes are bounded interface gate facts."
+    },
+    {
+      "path": "tests/abi_tests.cpp",
+      "source_kind": "copied_git_blob",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "source_path": "tests/abi_tests.cpp",
+      "source_git_blob": "c6dafe2e7496efd96a64bd7d0527f9b897a50100",
+      "source_git_blob_sha256": "107580590c1cb17825c0ae4395db5a8d90c2641d95ab77e6a369857073856247",
+      "sha256": "107580590c1cb17825c0ae4395db5a8d90c2641d95ab77e6a369857073856247",
+      "review_status": "approved_for_local_staging",
+      "review": "Entire project source/test/tool file reviewed; no real asset payload, model weights, recordings, private absolute build dependency or other external implementation bundled. Compatibility profile identifiers/RVA/opcodes are bounded interface gate facts."
+    },
+    {
+      "path": "tests/core_tests.cpp",
+      "source_kind": "copied_git_blob",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "source_path": "tests/core_tests.cpp",
+      "source_git_blob": "a3a65a51eaa3317ad94e6a2c495f2e6c159099a4",
+      "source_git_blob_sha256": "bc84aede023cd7778d8d066d84cdc0397584ccc4275d136e0f627f57d7a57ae1",
+      "sha256": "bc84aede023cd7778d8d066d84cdc0397584ccc4275d136e0f627f57d7a57ae1",
+      "review_status": "approved_for_local_staging",
+      "review": "Entire project source/test/tool file reviewed; no real asset payload, model weights, recordings, private absolute build dependency or other external implementation bundled. Compatibility profile identifiers/RVA/opcodes are bounded interface gate facts."
+    },
+    {
+      "path": "tests/quartz_experiment_tests.cpp",
+      "source_kind": "copied_git_blob",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "source_path": "tests/quartz_experiment_tests.cpp",
+      "source_git_blob": "a2fb845ee21e1aeb1293d90f675642165436f881",
+      "source_git_blob_sha256": "795213f437bd189365307f38aa0e1352b1aac0efbaa8463269df4f80491f9dba",
+      "sha256": "795213f437bd189365307f38aa0e1352b1aac0efbaa8463269df4f80491f9dba",
+      "review_status": "approved_for_local_staging",
+      "review": "Entire project source/test/tool file reviewed; no real asset payload, model weights, recordings, private absolute build dependency or other external implementation bundled. Compatibility profile identifiers/RVA/opcodes are bounded interface gate facts."
+    },
+    {
+      "path": "tests/sleeve_muscle_probe_tests.cpp",
+      "source_kind": "copied_git_blob",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "source_path": "tests/sleeve_muscle_probe_tests.cpp",
+      "source_git_blob": "67751da2c8c9a19904e32ca7954f398215da811f",
+      "source_git_blob_sha256": "7865f3a18e2564aab7591ab4101932a4b0faa8176e890f9e59382ba56001def7",
+      "sha256": "7865f3a18e2564aab7591ab4101932a4b0faa8176e890f9e59382ba56001def7",
+      "review_status": "approved_for_local_staging",
+      "review": "Entire project source/test/tool file reviewed; no real asset payload, model weights, recordings, private absolute build dependency or other external implementation bundled. Compatibility profile identifiers/RVA/opcodes are bounded interface gate facts."
+    },
+    {
+      "path": "tools/.gitignore",
+      "source_kind": "copied_git_blob",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "source_path": "tools/.gitignore",
+      "source_git_blob": "c18dd8d83ceed1806b50b0aaa46beb7e335fff13",
+      "source_git_blob_sha256": "32dae3052f331ee34d628ef535709b301259a45df7c7522c4d35dcf49873f00b",
+      "sha256": "32dae3052f331ee34d628ef535709b301259a45df7c7522c4d35dcf49873f00b",
+      "review_status": "approved_for_local_staging",
+      "review": "Entire project source/test/tool file reviewed; no real asset payload, model weights, recordings, private absolute build dependency or other external implementation bundled. Compatibility profile identifiers/RVA/opcodes are bounded interface gate facts."
+    },
+    {
+      "path": "tools/inspect_burst.py",
+      "source_kind": "copied_git_blob",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "source_path": "tools/inspect_burst.py",
+      "source_git_blob": "4452a4bd52bb51e8446e8d3cdbb8466c05a9a89f",
+      "source_git_blob_sha256": "4e8eedc8c951b90521e39e13008217a063b1514bc2a55211a230ef43479302fa",
+      "sha256": "4e8eedc8c951b90521e39e13008217a063b1514bc2a55211a230ef43479302fa",
+      "review_status": "approved_for_local_staging",
+      "review": "Entire project source/test/tool file reviewed; no real asset payload, model weights, recordings, private absolute build dependency or other external implementation bundled. Compatibility profile identifiers/RVA/opcodes are bounded interface gate facts."
+    },
+    {
+      "path": "tools/inspect_metadata.py",
+      "source_kind": "copied_git_blob",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "source_path": "tools/inspect_metadata.py",
+      "source_git_blob": "93df8d6dfef5d7b0d7549b549517ac6e277b042b",
+      "source_git_blob_sha256": "4d2027cd69aecdf2d474c85a52aad1a39130271cf31f524f1046283275bdc9f3",
+      "sha256": "4d2027cd69aecdf2d474c85a52aad1a39130271cf31f524f1046283275bdc9f3",
+      "review_status": "approved_for_local_staging",
+      "review": "Entire project source/test/tool file reviewed; no real asset payload, model weights, recordings, private absolute build dependency or other external implementation bundled. Compatibility profile identifiers/RVA/opcodes are bounded interface gate facts."
+    },
+    {
+      "path": "tools/tests/test_inspection.py",
+      "source_kind": "copied_git_blob",
+      "source_project_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+      "source_path": "tools/tests/test_inspection.py",
+      "source_git_blob": "6203862293a2aae03581be4ddf1d0457e4384eeb",
+      "source_git_blob_sha256": "7524fe727d1e21eb6879973126edff19bf17f9f546100cbc0c46b65c71e733a1",
+      "sha256": "7524fe727d1e21eb6879973126edff19bf17f9f546100cbc0c46b65c71e733a1",
+      "review_status": "approved_for_local_staging",
+      "review": "Entire project source/test/tool file reviewed; no real asset payload, model weights, recordings, private absolute build dependency or other external implementation bundled. Compatibility profile identifiers/RVA/opcodes are bounded interface gate facts."
+    }
+  ],
+  "vendor_provenance_limit": "Known declared-base mismatch: observed local MinHook implementation differs in 9/13 complete rendered C-token comparisons against declared8af6b4a. Local bytes frozen; no silent dependency update; complete official license text restored. Exact fork/base and modification provenance unresolved for future public source review.",
+  "documentation_maintenance": {
+    "base_staging_commit": "11a771b71ff4d87228a2bf0dc0857db604a616d4",
+    "restoration_source_project": "GakuBurstBridge",
+    "restoration_source_commit": "39427552c030c631a0ddf10edbc12d705b057e3d",
+    "restoration_source_paths": [
+      "README.md",
+      "docs/MAINTENANCE_SOP.md"
+    ],
+    "scope": "restore normal product entry and mature portable user/developer/maintenance documentation",
+    "code_inputs_unchanged": true,
+    "compiled_paths_unchanged": [
+      "build.ps1",
+      "src",
+      "include",
+      "tests",
+      "tools",
+      "profiles",
+      "deps"
+    ],
+    "previous_local_clone_results_retained": true,
+    "new_checks": "local documentation links/membership/hash and four readonly CLI flows on synthetic inputs",
+    "new_full_test_run": false,
+    "matching_product_bundle_available": false,
+    "approval_scope": "author-reviewed documentation maintenance only; not new legal/runtime/visual approval"
+  },
+  "documentation_repair_20261104": {
+    "date": "2026-11-04",
+    "base_staging_commit": "f9fbefc43d01461da943a47ea1048876a2c79d03",
+    "previous_manifest_sha256": "de9ec0dbc0b91354287a71e61632c80681ef8c241af924b6569937d876da17cd",
+    "scope": "Authorized README/documentation corrections and humanizer-zh review against this staged code; no runtime, test, algorithm, parameter or vendor changes.",
+    "runtime_rebuilt": false,
+    "game_acceptance_added": false,
+    "remote_updated": false,
+    "changed_payload_files": [
+      "README.md"
+    ]
+  },
+  "release_version_refresh_20261106": {
+    "previous_manifest_sha256": "639f63950cfaeb966da4dd13582295ab8134c177147613e0ae65c5d70d16da92",
+    "version": "0.1.0",
+    "scope": "Windows version resource only; ABI version remains 2."
+  },
+  "path_layout_refresh_20261106": {
+    "previous_manifest_sha256": "d79f44917860be9e4680dfbef069773bd1dfc94d119ba7cf249b92f08dbee1d3",
+    "changed_files": [
+      "README.md",
+      "docs/INSTALLATION.md",
+      "docs/INTEGRATION.md",
+      "docs/MAINTENANCE_SOP.md",
+      "docs/TROUBLESHOOTING.md"
+    ],
+    "scope": "Documentation only; path ownership verified against paired Motion and Loader source."
+  },
+  "public_doc_alignment_20261107": {
+    "previous_manifest_sha256": "534e7697023818f237974490c7792c9475113dd69829c3884973ced1f63e44ba",
+    "scope": "Public documentation only; no build, runtime, ABI, dependency or license changes.",
+    "changed_payload_files": [
+      "README.md",
+      "docs/COMPATIBILITY.md",
+      "docs/DEVELOPMENT.md",
+      "docs/INSTALLATION.md",
+      "docs/INTEGRATION.md",
+      "docs/MAINTENANCE_SOP.md",
+      "docs/README.md"
+    ],
+    "game_acceptance": "existing user-reported results unchanged",
+    "remote_updated": false
+  },
+  "cloud_document_polish_20261108": {
+    "date": "2026-11-08",
+    "remote_commit": "a6bca793bc3bcbb04a68c97e8142c2c3a9ab4153",
+    "changed": [
+      "README.md",
+      "docs/COMPATIBILITY.md",
+      "docs/INSTALLATION.md",
+      "docs/INTEGRATION.md",
+      "docs/MAINTENANCE_SOP.md",
+      "docs/README.md",
+      "docs/TROUBLESHOOTING.md"
+    ],
+    "deleted": [
+      "docs/VALIDATION.md"
+    ],
+    "runtime_changed": false,
+    "note": "User-reviewed cloud documentation imported identically into the staging tree."
+  }
+}

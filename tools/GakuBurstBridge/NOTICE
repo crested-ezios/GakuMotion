@@ -1,0 +1,15 @@
+GakuBurstBridge local source staging
+
+Project source and maintained contracts were selected from GakuBurstBridge
+commit 39427552c030c631a0ddf10edbc12d705b057e3d.
+The staging README, governance, audit manifest and portable maintainer guide
+were authored for this local snapshot. Historical research logs, game binaries,
+real motions/music/models, captures and build outputs are excluded.
+
+The project MIT license remains in LICENSE. Third-party MinHook/HDE notices
+and source copyright headers are retained separately; the project MIT license
+does not relicense those components. SOURCE_PROVENANCE.json records the exact
+selected bytes and distinguishes project source, staging changes and vendor.
+
+This is a local source staging checkpoint, not a public release or a new game
+compatibility/visual acceptance claim. No remote is configured.

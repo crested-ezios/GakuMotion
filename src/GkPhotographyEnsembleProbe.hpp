@@ -3,6 +3,7 @@
 #include "GkMotionData.hpp"
 #include <array>
 #include <cstdint>
+#include <vector>
 
 namespace GakuMotion::photography_ensemble_probe
 {
@@ -28,6 +29,52 @@ namespace GakuMotion::photography_ensemble_probe
         const float dot = std::fabs(qa.x*qb.x + qa.y*qb.y + qa.z*qb.z + qa.w*qb.w);
         return p.x*p.x + p.y*p.y + p.z*p.z <= 1e-8f && dot >= .999999f;
     }
+    // Extra actors do not have an official PhotographyActor wrapper. Their
+    // callback identity is evidence only within the same verified scene and
+    // roster epoch; a changed rig, owner, or reused address starts over.
+    struct ExtraActorSample
+    {
+        uintptr_t actor{}, root{}, hips{}, rootParent{}, hipsParent{}, owner{};
+        uint64_t token{}, epoch{}, frame{};
+        int scene{}, instance{};
+        Pose rootPose;
+    };
+    class ExtraActorEvidence
+    {
+        struct Entry { ExtraActorSample sample; bool stable{}; };
+        std::vector<Entry> entries_;
+        static bool SameIdentity(const ExtraActorSample& a, const ExtraActorSample& b)
+        {
+            return a.actor && a.actor == b.actor && a.root && a.root == b.root && a.hips && a.hips == b.hips &&
+                a.rootParent == b.rootParent && a.hipsParent == b.hipsParent && a.owner && a.owner == b.owner &&
+                a.token && a.token == b.token && a.epoch && a.epoch == b.epoch && a.scene && a.scene == b.scene &&
+                a.instance && a.instance == b.instance && Near(a.rootPose, b.rootPose);
+        }
+    public:
+        void Reset() { entries_.clear(); }
+        void Observe(const ExtraActorSample& sample)
+        {
+            if (!sample.actor || !sample.frame) return;
+            for (auto& entry : entries_) if (entry.sample.actor == sample.actor)
+            {
+                if (sample.frame == entry.sample.frame)
+                {
+                    if (!SameIdentity(entry.sample, sample)) entry.stable = false;
+                }
+                else entry.stable = sample.frame == entry.sample.frame + 1 && SameIdentity(entry.sample, sample);
+                entry.sample = sample;
+                return;
+            }
+            entries_.push_back({sample, false});
+        }
+        bool Eligible(const ExtraActorSample& sample) const
+        {
+            for (const auto& entry : entries_) if (entry.sample.actor == sample.actor)
+                return entry.stable && entry.sample.frame <= sample.frame && sample.frame - entry.sample.frame <= 1 &&
+                    SameIdentity(entry.sample, sample);
+            return false;
+        }
+    };
     struct Slot
     {
         uintptr_t actor{}, actorRoot{}, hips{}, actorParent{}, hipsParent{}; // Equality tokens only.

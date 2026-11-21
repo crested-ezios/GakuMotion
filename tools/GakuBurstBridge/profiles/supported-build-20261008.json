@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "id": "gakumas-burst-20261008-windows-x64",
+  "status": "measured-reference-not-an-auto-update-manifest",
+  "burst_sha256": "DA3B33767E7FFA356D4C53CBF7A64CE0E8EAB3C50A21F5FB1166CD183B4AEAB6",
+  "delta_slot_rva": "0x1585c0",
+  "variants": [
+    {"name": "sse", "entry_rva": "0x280b0", "end_rva": "0x28e48", "delta_call_rva": "0x281ce", "delta_return_rva": "0x281d4", "campus_wrapper_rva": "0x697d0", "entry_prefix": "55 41 57 41 56 56 57 53 48 81 ec 38 03 00 00"},
+    {"name": "avx", "entry_rva": "0xcc8e0", "end_rva": "0xcd3f3", "delta_call_rva": "0xcc9c2", "delta_return_rva": "0xcc9c8", "campus_wrapper_rva": "0x10ce00", "entry_prefix": "55 41 57 41 56 56 57 53 48 81 ec 38 03 00 00"}
+  ],
+  "abi": {
+    "architecture": "Windows AMD64",
+    "pointer_size": 8,
+    "boxed_header_size": 16,
+    "stream_value_size": 56,
+    "handle_value_size": 12,
+    "stream_fields_unboxed": {"m_AnimatorBindingsVersion": 0, "constant": 8, "input": 16, "output": 24, "workspace": 32, "inputStreamAccessor": 40, "animationHandleBinder": 48},
+    "handle_fields_unboxed": {"m_AnimatorBindingsVersion": 0, "handleIndex": 4, "skeletonIndex": 8},
+    "job_fields_unboxed": {"_quartzDriverHairJobBones": 80, "_quartzDriverHumanoidArmJobBones": 144, "_swingJobSkeleton": 208},
+    "swing_fields_unboxed": {"_time": 556}
+  },
+  "runtime_verification_required": ["IL2CPP value sizes and every accessed field offset", "Win64 Swing ABI: RCX=swing, RDX=real AnimationStream pointer", "Unwind entry and code bytes in executable module memory", "Indirect call slot resolves to the original GetDeltaTime icall entry", "Actor identity from two independently matched NativeArray data pointers", "Source age, generation, finite pose and resolvable handles", "Original Swing is called once even when injection is skipped"]
+}

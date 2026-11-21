@@ -5,6 +5,25 @@ static void TestPhotographyEnsembleProbe()
 {
     using namespace GakuMotion::photography_ensemble_probe;
     BeginTest("bounded read-only Photography ensemble evidence");
+    ExtraActorEvidence extra;
+    ExtraActorSample sample{};
+    sample.actor=101; sample.root=201; sample.hips=301; sample.rootParent=401; sample.hipsParent=501;
+    sample.owner=601; sample.scene=701; sample.instance=801; sample.token=901; sample.epoch=1; sample.frame=10;
+    sample.rootPose.available=true; sample.rootPose.rotation.w=1.0f;
+    extra.Observe(sample);
+    Check(!extra.Eligible(sample), "an extra actor needs more than one callback observation");
+    ++sample.frame; extra.Observe(sample);
+    Check(extra.Eligible(sample), "consecutive matching callbacks certify the extra actor identity");
+    auto changed = sample; changed.instance++;
+    Check(!extra.Eligible(changed), "reused addresses do not inherit an extra actor's evidence");
+    changed = sample; changed.epoch++;
+    Check(!extra.Eligible(changed), "a changed roster epoch invalidates extra actor evidence");
+    changed = sample; changed.hipsParent++;
+    Check(!extra.Eligible(changed), "a changed rig hierarchy invalidates extra actor evidence");
+    changed = sample; changed.frame += 2;
+    Check(!extra.Eligible(changed), "stale callbacks do not authorize an extra actor");
+    extra.Reset();
+    Check(!extra.Eligible(sample), "scene reset clears extra actor evidence");
     Session session; Frame f; f.number=1;f.owner=10;f.scene=20;f.layout=30;f.capacity=3;f.available=true;
     for(unsigned i=0;i<3;++i)
     {

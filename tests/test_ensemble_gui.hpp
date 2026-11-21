@@ -28,13 +28,19 @@ void TestEnsembleGui(const std::filesystem::path& root)
         app.Settle();
         Check(app.ItemWithLabel("##drive_actor_combo") && app.ItemWithLabel("##pos_x"),
             "disabled ensemble leaves the established single actor and placement controls visible");
-        app.Click("多人舞台（最多3人）");
+        app.Click("多人舞台");
+        app.Click("新增角色");
+        Check(app.core.gui.ensembleDraft.slots.size() == 2 && !app.core.gui.ensembleDraft.slots.back().enabled,
+            "adding the first role creates an unbound second slot without enabling it");
+        app.Click("新增角色"); app.Click("新增角色");
+        Check(app.core.gui.ensembleDraft.slots.size() == 4,
+            "repeated additions keep creating new logical roles");
         app.Click("启用多人舞台");
         auto* apply = app.ItemWithLabel("应用多人舞台配置");
-        auto* save = app.ItemWithLabel("保存舞台预设");
         Check(app.core.gui.ensembleDraft.enabled && apply && (apply->flags & ImGuiItemFlags_Disabled) &&
-            save && (save->flags & ImGuiItemFlags_Disabled) && !app.core.EnsembleActive(),
-            "enabling a draft with no slots cannot apply or save an invalid ensemble");
+            !app.core.EnsembleActive(), "enabling a draft with no bound slots cannot apply an invalid ensemble");
+        Check(!app.ItemWithLabel("保存舞台预设") && !app.ItemWithLabel("载入舞台预设"),
+            "the layout preset panel is hidden");
         const auto* probe = app.ItemWithLabel("摄影槽位验证探针");
         Check(probe && !(probe->flags & ImGuiItemFlags_Disabled),
             "the observation probe stays available before a scene has passed verification");
@@ -47,23 +53,20 @@ void TestEnsembleGui(const std::filesystem::path& root)
         auto& draft = app.core.gui.ensembleDraft;
         draft.slots[0].motionKey = "A"; draft.slots[0].actorHint = "仅提示A";
         draft.slots[0].offset = {1.25f, -.04f, .3f};
-        app.Frame(); app.Type("舞台预设名称", "offline-draft");
-        app.Click("保存舞台预设");
         const auto path = app.fixture / "config/ensembles/offline-draft.json";
         ensemble::Settings loaded; std::string error;
-        Check(ensemble::Load(MotionPathToUtf8(path), loaded, error) && loaded.enabled && loaded.slots[0].motionKey == "A" &&
+        Check(ensemble::Save(MotionPathToUtf8(path), draft, error) && ensemble::Load(MotionPathToUtf8(path), loaded, error) && loaded.enabled && loaded.slots[0].motionKey == "A" &&
             loaded.slots[0].actorHint == "仅提示A" && loaded.slots[0].actorToken == 0 && loaded.slots[0].offset.x == 1.25f &&
             !app.core.EnsembleActive() && !app.core.ensembleSnapshot.settings.enabled,
-            "saving an unbound local GUI draft preserves its motion and placement without applying it");
+            "hidden preset storage still preserves an unbound draft without applying it");
         app.Click("复制主槽动作到全部槽");
         Check(draft.slots[1].motionKey == "A" && draft.slots[2].motionKey == "A" && !draft.slots[1].enabled,
             "copying the master motion fills other slots without silently enabling or binding them");
         app.Click("重置各槽站位");
         Check(draft.slots[0].offset.x == 0 && draft.slots[0].offset.y == 0 && draft.slots[0].offset.z == 0 &&
             draft.slots[0].yawDegrees == 0, "the layout reset clears position and yaw together");
-        app.Click("载入舞台预设");
-        Check(app.core.gui.ensembleDraft.slots[0].offset.x == 1.25f && app.core.gui.ensembleDraft.slots[0].actorToken == 0 &&
-            !app.core.EnsembleActive(), "loading a preset reconstructs an unbound draft and never activates the performance");
+        Check(loaded.slots[0].offset.x == 1.25f && loaded.slots[0].actorToken == 0 &&
+            !app.core.EnsembleActive(), "preset storage never activates the performance");
 
         app.core.ensembleSnapshot.available = app.core.ensembleSnapshot.verified = true;
         app.contextPatch = [&](GuiContext& context) {
@@ -86,6 +89,13 @@ void TestEnsembleGui(const std::filesystem::path& root)
         Check(ensembleGuiApplyRequests == 1 && ensembleGuiAppliedDraft == draft && ensembleGuiEpoch == 77 &&
             ensembleGuiRevision == app.core.ensembleSnapshot.revision && actorSelections == 0,
             "a valid actor-bound draft dispatches the ensemble revision and roster epoch without legacy actor selection");
+        draft.slots[3].enabled = true;
+        draft.slots[3].actorToken = 0;
+        ensembleGuiApplyRequests = 0;
+        app.Frame(); app.Click("应用多人舞台配置");
+        Check(ensembleGuiApplyRequests == 1 && !ensembleGuiAppliedDraft.slots[3].enabled &&
+            ensembleGuiAppliedDraft.slots[0].enabled,
+            "an unbound extra slot is skipped while bound actors remain enabled");
         app.core.ensembleSnapshot.active = true; app.core.player.state = PlaybackState::Playing;
         app.Frame();
         Check(!app.ItemWithLabel("##drive_actor_combo") && !app.ItemWithLabel("##pos_x") &&
@@ -95,6 +105,7 @@ void TestEnsembleGui(const std::filesystem::path& root)
         Check(app.core.player.state == PlaybackState::Paused && audioPauses == oldPauses + 1 && actorSelections == 0,
             "pause-before-configure reaches the real queued Pause command without selecting a single actor");
         app.core.ensembleSnapshot.active = false;
+        app.Frame(); app.Click("多人舞台");
     }
     ImGui::GetIO().DisplaySize = originalDisplay;
     audioPlays = originalAudioPlays; audioResumes = originalAudioResumes; audioPauses = originalAudioPauses;

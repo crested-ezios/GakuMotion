@@ -106,9 +106,9 @@ namespace GakuMotion
 		MotionPlayer player;
 		ensemble::Snapshot ensembleSnapshot;
 		ensemble::Settings ensembleActiveSettings;
-		std::array<std::unique_ptr<MotionPlayer>, ensemble::MaxActors> ensembleTracks;
-		std::array<BoneOverrideSet, ensemble::MaxActors> ensembleOverrides;
-		std::array<int, ensemble::MaxActors> ensembleInstanceIds{};
+		std::deque<std::unique_ptr<MotionPlayer>> ensembleTracks{ensemble::InitialSlots};
+		std::deque<BoneOverrideSet> ensembleOverrides{ensemble::InitialSlots};
+		std::deque<int> ensembleInstanceIds = std::deque<int>(ensemble::InitialSlots);
 		uint64_t ensembleLastFrame{0};
 		bool (*fnEnsembleActorEligible)(void*){nullptr};
 		CameraController camera;
@@ -3340,7 +3340,7 @@ namespace GakuMotion
 		{
 			if (EnsembleActive())
 			{
-				for (size_t i = 0; i < ensemble::MaxActors; ++i) if (auto* track = EnsemblePlayer(i))
+				for (size_t i = 0; i < ensembleActiveSettings.slots.size(); ++i) if (auto* track = EnsemblePlayer(i))
 				{
 					BoneOverrideSet local; local.LoadFromFile(track->currentMotionDir + "/bone_overrides.json");
 					BoneOverrideSet::BuildEffective(globalOverrides, local, masterOverridesEnabled, ensembleOverrides[i]);

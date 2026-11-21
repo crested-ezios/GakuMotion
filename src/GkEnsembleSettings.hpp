@@ -3,6 +3,7 @@
 #include "GkJsonLite.hpp"
 #include "GkMotionData.hpp"
 #include <array>
+#include <vector>
 #include <atomic>
 #include <chrono>
 #include <iomanip>
@@ -21,7 +22,7 @@
 
 namespace GakuMotion::ensemble
 {
-    inline constexpr size_t MaxActors = 3;
+    inline constexpr size_t InitialSlots = 1; // Initial slot count; not a capacity limit.
 
     struct Slot
     {
@@ -42,7 +43,7 @@ namespace GakuMotion::ensemble
     {
         bool enabled{false};
         uint32_t masterSlot{0}, cameraSlot{0};
-        std::array<Slot, MaxActors> slots;
+        std::vector<Slot> slots = std::vector<Slot>(InitialSlots);
         bool operator==(const Settings&) const = default;
     };
 
@@ -52,13 +53,13 @@ namespace GakuMotion::ensemble
         uint64_t revision{0}, actorEpoch{0};
         bool available{false}, verified{false}, probeEnabled{false}, active{false};
         std::string notice;
-        std::array<std::string, MaxActors> physics;
+        std::vector<std::string> physics = std::vector<std::string>(InitialSlots);
     };
 
     inline bool Validate(const Settings& settings, std::string& error)
     {
         error.clear();
-        if (settings.masterSlot >= MaxActors || settings.cameraSlot >= MaxActors)
+        if (settings.masterSlot >= settings.slots.size() || settings.cameraSlot >= settings.slots.size())
         { error = "Ensemble slot selection is out of range"; return false; }
         std::set<uint64_t> tokens;
         size_t active = 0;
@@ -114,16 +115,17 @@ namespace GakuMotion::ensemble
         const auto index = [&](const char* field, uint32_t& target) {
             const auto* value = root.Find(field);
             if (!value || !value->IsNumber() || !std::isfinite(value->numberValue) || value->numberValue < 0 ||
-                value->numberValue >= MaxActors || std::floor(value->numberValue) != value->numberValue)
+                value->numberValue >= candidate.slots.size() || std::floor(value->numberValue) != value->numberValue)
             { error = std::string("Invalid ensemble slot index: ") + field; return false; }
             target = static_cast<uint32_t>(value->numberValue); return true;
         };
+        const auto* slots = root.Find("slots");
+        if (!slots || !slots->IsArray() || slots->Size() == 0)
+        { error = "Ensemble preset requires at least one logical slot"; return false; }
+        candidate.slots.resize(slots->Size());
         if (!boolean(root, "enabled", candidate.enabled) || !index("masterSlot", candidate.masterSlot) ||
             !index("cameraSlot", candidate.cameraSlot)) return false;
-        const auto* slots = root.Find("slots");
-        if (!slots || !slots->IsArray() || slots->Size() != MaxActors)
-        { error = "Ensemble preset requires exactly three logical slots"; return false; }
-        for (size_t i = 0; i < MaxActors; ++i)
+        for (size_t i = 0; i < candidate.slots.size(); ++i)
         {
             const auto& object = *slots->At(i);
             auto& slot = candidate.slots[i];
@@ -164,7 +166,7 @@ namespace GakuMotion::ensemble
         out.imbue(std::locale::classic());
         out << std::setprecision(9) << std::boolalpha << "{\n  \"version\": 1,\n  \"enabled\": " << settings.enabled <<
             ",\n  \"masterSlot\": " << settings.masterSlot << ",\n  \"cameraSlot\": " << settings.cameraSlot << ",\n  \"slots\": [";
-        for (size_t i = 0; i < MaxActors; ++i)
+        for (size_t i = 0; i < settings.slots.size(); ++i)
         {
             const auto& slot = settings.slots[i];
             out << (i ? "," : "") << "\n    {\"enabled\": " << slot.enabled << ", \"actorHint\": \"" <<

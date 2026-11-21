@@ -150,9 +150,10 @@ namespace EnsembleRuntimeTest
                 roster.push_back({&actor, static_cast<int>(700 + i), "hski"});
             }
             core.PublishSceneActors(roster); core.currentActor = &actors[0];
+            settings.slots.resize(3);
             const std::array<float, 3> rates{30, 60, 24};
             const std::array<uint32_t, 3> frames{30, 240, 12};
-            for (size_t i = 0; i < ensemble::MaxActors; ++i)
+            for (size_t i = 0; i < size_t{3}; ++i)
             {
                 const std::string key = "motion-" + std::to_string(i);
                 const auto directory = root / "motions" / key;
@@ -203,6 +204,21 @@ namespace EnsembleRuntimeTest
 static void TestEnsembleRuntime(const std::string& repoRoot)
 {
     using namespace EnsembleRuntimeTest;
+    BeginTest("a fourth ensemble actor has an independent track and position");
+    {
+        Fixture fixture(repoRoot); auto& core = fixture.core;
+        fixture.settings.slots.emplace_back();
+        auto& fourth = fixture.settings.slots.back();
+        fourth.enabled = true; fourth.motionKey = fixture.settings.slots[0].motionKey;
+        fourth.actorToken = core.sceneActorRegistry.Find(&fixture.actors[3])->token;
+        fourth.offset = {25.0f, 0.0f, -13.0f};
+        Check(fixture.Apply(), "four bound actors apply with independent slots");
+        Check(core.EnsemblePlayer(3) && core.EnsemblePlayer(3) != core.EnsemblePlayer(0) &&
+            core.EnsemblePlayer(3)->controller.targetActor == &fixture.actors[3],
+            "fourth slot owns its own target and track");
+        fixture.Frame(1, 0.0f);
+        Check(core.EnsembleActorsValid(), "four actor identities stay valid after a frame");
+    }
     BeginTest("ensemble looping belongs to the session, not the single-motion playlist");
     {
         Fixture fixture(repoRoot); auto& core = fixture.core;
@@ -265,7 +281,7 @@ static void TestEnsembleRuntime(const std::string& repoRoot)
         Check(fixture.Apply(), "different FPS and duration sources apply together");
         Check(EnsembleNear(core.player.TimelineDuration(), 8.25f) && core.EnsemblePlayer(1)->clip.fps == 60 &&
             core.EnsemblePlayer(2)->clip.fps == 24, "performance duration includes the delayed slower secondary source");
-        for (size_t i = 1; i < ensemble::MaxActors; ++i)
+        for (size_t i = 1; i < size_t{3}; ++i)
         {
             auto* track = core.EnsemblePlayer(i);
             Check(!track->fnPlayAudio && !track->fnPauseAudio && !track->fnStopAudio && !track->fnResumeAudio &&
@@ -309,7 +325,7 @@ static void TestEnsembleRuntime(const std::string& repoRoot)
             "a backwards paused seek reconstructs each source without retained short-track progress");
         core.StopPerformance();
         bool restored = true;
-        for (size_t i = 0; i < ensemble::MaxActors; ++i)
+        for (size_t i = 0; i < size_t{3}; ++i)
             restored &= fixture.actors[i].animator.enabled && fixture.actors[i].animator.controller == reinterpret_cast<void*>(uintptr_t{0x100} + i) &&
                 EnsembleNear(Position(&fixture.actors[i].hips), fixture.initialHips[i]) && core.EnsemblePlayer(i)->state == PlaybackState::Stopped;
         Check(restored && core.player.currentTime == 0, "Stop restores all three saved poses and original Animator ownership");
@@ -343,7 +359,7 @@ static void TestEnsembleRuntime(const std::string& repoRoot)
     BeginTest("ensemble override reload keeps independent per-motion collections");
     {
         Fixture fixture(repoRoot); auto& core = fixture.core;
-        for (size_t i = 0; i < ensemble::MaxActors; ++i)
+        for (size_t i = 0; i < size_t{3}; ++i)
         {
             const auto path = fixture.root / "motions" / ("motion-" + std::to_string(i)) / "bone_overrides.json";
             WriteTextFile(path, "{\"overrides\":[{\"humanoid_id\":0,\"euler_deg\":[0," + std::to_string(10 + i * 10) + ",0]}]}");
@@ -351,7 +367,7 @@ static void TestEnsembleRuntime(const std::string& repoRoot)
         Check(fixture.Apply(), "each actor loads its own motion override fixture");
         core.LoadOverrides(false);
         bool independent = true;
-        for (size_t i = 0; i < ensemble::MaxActors; ++i)
+        for (size_t i = 0; i < size_t{3}; ++i)
         {
             const auto* track = core.EnsemblePlayer(i);
             const auto* override = track->controller.boneOverrides ? track->controller.boneOverrides->Find(0, "") : nullptr;
@@ -361,7 +377,7 @@ static void TestEnsembleRuntime(const std::string& repoRoot)
         Check(independent, "global reload never redirects all actors to the master's effective override set");
         core.ToggleOverrides();
         bool disabled = true;
-        for (size_t i = 0; i < ensemble::MaxActors; ++i)
+        for (size_t i = 0; i < size_t{3}; ++i)
             disabled &= core.EnsemblePlayer(i)->controller.boneOverrides == &core.ensembleOverrides[i] && !core.ensembleOverrides[i].enabled;
         Check(disabled, "the global override toggle disables each actor while preserving its collection identity");
     }

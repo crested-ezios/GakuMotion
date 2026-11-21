@@ -1,0 +1,12 @@
+build/
+__pycache__/
+*.py[cod]
+*.obj
+*.lib
+*.exp
+*.dll
+*.exe
+*.pdb
+*.ilk
+.vs/
+*.vcxproj.user

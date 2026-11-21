@@ -17,6 +17,8 @@ namespace PhotographyEnsembleProbe
     inline policy::Frame frame;
     inline policy::ReadinessLatch readiness;
     inline policy::Frame previousFrame;
+    inline policy::ExtraActorEvidence extraActors;
+    inline uint64_t extraRosterEpoch{};
     inline void *presenterClass{}, *modelClass{}, *threeDClass{}, *settingClass{}, *photoActorClass{}, *actorInterface{}, *actorClass{};
     inline void *modelField{}, *threeDField{};
     inline const void *getSettings{}, *getCapacity{}, *getLayout{}, *getPhotoActor{}, *getActor{}, *getBuilt{}, *getIndex{};
@@ -130,6 +132,32 @@ namespace PhotographyEnsembleProbe
         pose.position = {p[0], p[1], p[2]}; pose.rotation = {q[0], q[1], q[2], q[3]};
         pose.available = true; pose.available = policy::Finite(pose); return pose;
     }
+    inline bool SampleExtraActor(void* actor, uint64_t number, policy::ExtraActorSample& sample)
+    {
+        auto& registry = GakuMotion::Core::Instance().sceneActorRegistry;
+        const auto* entry = registry.Find(actor);
+        if (!entry || !entry->token || !frame.available || !frame.owner || frame.scene != g_sceneOwner.sceneHandle ||
+            !StageLoader::assignable || !actorClass || !g_faceRuntime.objectClass) return false;
+        Roots roots;
+        void* held = roots.Keep(actor);
+        if (!held || held != actor || !StageLoader::assignable(actorClass, g_faceRuntime.objectClass(held))) return false;
+        int instance{}; void* go{};
+        if (!Int(StageLoader::instanceId, held, instance) || instance != entry->instanceId ||
+            !Call(StageLoader::componentGo, held, nullptr, go) || !go ||
+            StageLoader::SceneOfFreshGo(go) != frame.scene) return false;
+        void* root = HelperGetComponentTransform(held);
+        void* hips = HelperGetBoneTransform(held, 0);
+        if (!root || !hips || !g_getParentNative) return false;
+        sample.actor = reinterpret_cast<uintptr_t>(actor);
+        sample.root = reinterpret_cast<uintptr_t>(root);
+        sample.hips = reinterpret_cast<uintptr_t>(hips);
+        sample.rootParent = reinterpret_cast<uintptr_t>(g_getParentNative(root));
+        sample.hipsParent = reinterpret_cast<uintptr_t>(g_getParentNative(hips));
+        sample.owner = frame.owner; sample.scene = frame.scene; sample.instance = instance;
+        sample.token = entry->token; sample.epoch = registry.Epoch(); sample.frame = number;
+        sample.rootPose = ReadPose(root);
+        return policy::Finite(sample.rootPose);
+    }
     inline bool Eligible()
     {
         return requested.load(std::memory_order_acquire) && ProtectionOnUnityThread() && g_activeSceneVerified &&
@@ -234,7 +262,7 @@ namespace PhotographyEnsembleProbe
     {
         if (!Eligible())
         {
-            if (active) { session.Reset(); readiness.Reset(); frame = {}; previousFrame = {}; active = false; }
+            if (active) { session.Reset(); readiness.Reset(); extraActors.Reset(); extraRosterEpoch = 0; frame = {}; previousFrame = {}; active = false; }
             available.store(false); crossFrameAvailable.store(false); appliedComparisonAvailable.store(false);
             readyForInjection.store(false);
             return;
@@ -242,7 +270,7 @@ namespace PhotographyEnsembleProbe
         const auto generation = requestGeneration.load(std::memory_order_acquire);
         if (!active || activeGeneration != generation)
         {
-            session.Reset(); readiness.Reset(); frame = {}; previousFrame = {};
+            session.Reset(); readiness.Reset(); extraActors.Reset(); extraRosterEpoch = 0; frame = {}; previousFrame = {};
             readyForInjection.store(false); active = true; activeGeneration = generation;
         }
         if (!number) return;
@@ -252,6 +280,16 @@ namespace PhotographyEnsembleProbe
             Capture(number);
         }
         if (!frame.available || !callbackActor) return;
+        const auto epoch = GakuMotion::Core::Instance().sceneActorRegistry.Epoch();
+        if (extraRosterEpoch != epoch) { extraActors.Reset(); extraRosterEpoch = epoch; }
+        bool officialActor = false;
+        for (const auto& slot : frame.slots)
+            if (slot.actor == reinterpret_cast<uintptr_t>(callbackActor)) { officialActor = true; break; }
+        if (!officialActor)
+        {
+            policy::ExtraActorSample extra;
+            if (SampleExtraActor(callbackActor, number, extra)) extraActors.Observe(extra);
+        }
         for (auto& slot : frame.slots)
             if (slot.actor == reinterpret_cast<uintptr_t>(callbackActor))
             {
@@ -289,7 +327,8 @@ namespace PhotographyEnsembleProbe
                     reinterpret_cast<uintptr_t>(HelperGetComponentTransform(actor)) == slot.actorRoot &&
                     reinterpret_cast<uintptr_t>(HelperGetBoneTransform(actor, 0)) == slot.hips;
             }
-        return false;
+        policy::ExtraActorSample extra;
+        return SampleExtraActor(actor, frame.number, extra) && extraActors.Eligible(extra);
     }
     inline void NoteApplied(uint64_t number, void* callbackActor)
     {

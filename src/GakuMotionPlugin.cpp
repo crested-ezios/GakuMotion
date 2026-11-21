@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <string>
 #include <vector>
+#include <deque>
 #include <unordered_map>
 #include <unordered_set>
 #include <chrono>
@@ -158,7 +159,7 @@ namespace
 		std::string motionFile, reason;
 		std::chrono::steady_clock::time_point lastTick{};
 	};
-	std::array<EnsemblePhysicsState, GBB_MAX_CONTEXTS> g_ensemblePhysics;
+	std::deque<EnsemblePhysicsState> g_ensemblePhysics(GakuMotion::ensemble::InitialSlots);
 
 	bool HasEnsemblePhysics()
 	{
@@ -227,9 +228,12 @@ namespace
 	{
 		auto* track = core.PlayerForActor(actor);
 		if (!track) return;
-		size_t index = GBB_MAX_CONTEXTS;
-		for (size_t i = 0; i < GBB_MAX_CONTEXTS; ++i) if (core.EnsemblePlayer(i) == track) { index = i; break; }
-		if (index == GBB_MAX_CONTEXTS) return;
+		const size_t count = core.ensembleActiveSettings.slots.size();
+		size_t index = count;
+		for (size_t i = 0; i < count; ++i) if (core.EnsemblePlayer(i) == track) { index = i; break; }
+		if (index == count) return;
+		if (g_ensemblePhysics.size() <= index) g_ensemblePhysics.resize(index + 1);
+		if (core.ensembleSnapshot.physics.size() <= index) core.ensembleSnapshot.physics.resize(index + 1);
 		auto& slot = g_ensemblePhysics[index];
 		auto& ctrl = track->controller;
 		auto binding = ctrl.bindings.find(actor);
@@ -1679,7 +1683,7 @@ namespace
 		// synchronously cannot consume the previous custom skeleton/rest pose.
 		if (report.body != RestoreState::NotModified || report.gaze != RestoreState::NotModified)
 		{
-			for (size_t slot = 0; slot < GakuMotion::ensemble::MaxActors; ++slot)
+			for (size_t slot = 0; slot < (core.EnsembleActive() ? core.ensembleActiveSettings.slots.size() : 1); ++slot)
 			{
 				auto* track = core.EnsembleActive() ? core.EnsemblePlayer(slot) : slot == 0 ? &core.player : nullptr;
 				if (!track) continue;

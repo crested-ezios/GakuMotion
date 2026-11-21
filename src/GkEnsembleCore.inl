@@ -3,14 +3,14 @@
 		bool EnsembleActive() const { return ensembleSnapshot.active; }
 		MotionPlayer* EnsemblePlayer(size_t slot)
 		{
-			if (slot >= ensemble::MaxActors || !ensembleActiveSettings.slots[slot].enabled) return nullptr;
+			if (slot >= ensembleActiveSettings.slots.size() || !ensembleActiveSettings.slots[slot].enabled) return nullptr;
 			return slot == ensembleActiveSettings.masterSlot ? &player : ensembleTracks[slot].get();
 		}
 		MotionPlayer* PlayerForActor(void* actor)
 		{
 			if (!actor) return nullptr;
 			if (!EnsembleActive()) return IsTargetActor(actor) ? &player : nullptr;
-			for (size_t slot = 0; slot < ensemble::MaxActors; ++slot)
+			for (size_t slot = 0; slot < ensembleActiveSettings.slots.size(); ++slot)
 				if (auto* track = EnsemblePlayer(slot); track && track->controller.IsTargetActor(actor)) return track;
 			return nullptr;
 		}
@@ -44,7 +44,7 @@
 		bool EnsembleActorsValid() const
 		{
 			if (!EnsembleActive()) return true;
-			for (size_t i = 0; i < ensemble::MaxActors; ++i) if (ensembleActiveSettings.slots[i].enabled)
+			for (size_t i = 0; i < ensembleActiveSettings.slots.size(); ++i) if (ensembleActiveSettings.slots[i].enabled)
 			{
 				const auto* track = i == ensembleActiveSettings.masterSlot ? &player : ensembleTracks[i].get();
 				const auto* found = track ? sceneActorRegistry.Find(track->controller.targetActor) : nullptr;
@@ -59,7 +59,7 @@
 		{
 			// Restore surviving identities only. Never invoke Unity on the missing
 			// actor or on a new object reusing its address.
-			for (size_t i = 0; i < ensemble::MaxActors; ++i) if (auto* track = EnsemblePlayer(i))
+			for (size_t i = 0; i < ensembleActiveSettings.slots.size(); ++i) if (auto* track = EnsemblePlayer(i))
 			{
 				const auto* found = sceneActorRegistry.Find(track->controller.targetActor);
 				const auto binding = track->controller.bindings.find(track->controller.targetActor);
@@ -102,11 +102,11 @@
 			if (!ensembleSnapshot.available || !ensembleSnapshot.verified || !InjectionAllowed() || captureSuspended)
 				return fail("多人观察尚未通过：请在摄影场景开启观察探针并确认全部演员");
 			if (!PrepareInjection()) return fail("摄影保护检查未就绪，保留原组合");
-			std::array<MotionClip, ensemble::MaxActors> clips;
-			std::array<MotionEntry, ensemble::MaxActors> entries;
-			std::array<MotionFileVersion, ensemble::MaxActors> versions;
-			std::array<void*, ensemble::MaxActors> actors{};
-			for (size_t i = 0; i < ensemble::MaxActors; ++i) if (settings.slots[i].enabled)
+			std::vector<MotionClip> clips(settings.slots.size());
+			std::vector<MotionEntry> entries(settings.slots.size());
+			std::vector<MotionFileVersion> versions(settings.slots.size());
+			std::vector<void*> actors(settings.slots.size());
+			for (size_t i = 0; i < settings.slots.size(); ++i) if (settings.slots[i].enabled)
 			{
 				actors[i] = sceneActorRegistry.Resolve(settings.slots[i].actorToken, epoch);
 				if (!actors[i] || !player.controller.CanDriveActor(actors[i])) return fail("槽位演员未绑定或已失效");
@@ -121,10 +121,10 @@
 			// Preflight camera as well, before releasing any live actor.
 			CameraTrack cameraCandidate;
 			if (!CameraController::ReadTrack(entries[settings.masterSlot].dir, clips[settings.masterSlot], cameraCandidate)) return fail(cameraCandidate.error);
-			for (size_t i = 0; i < ensemble::MaxActors; ++i) if (settings.slots[i].enabled && versions[i] != ReadMotionFileVersion(entries[i].dir))
+			for (size_t i = 0; i < settings.slots.size(); ++i) if (settings.slots[i].enabled && versions[i] != ReadMotionFileVersion(entries[i].dir))
 				return fail("素材在预检期间发生变化，请重试");
 			if (fnBeforeTargetChange && !fnBeforeTargetChange()) return fail("旧物理恢复未确认，保留原组合");
-			for (size_t i = 0; i < ensemble::MaxActors; ++i)
+			for (size_t i = 0; i < (EnsembleActive() ? ensembleActiveSettings.slots.size() : 1); ++i)
 			{
 				auto* track = EnsembleActive() ? EnsemblePlayer(i) : i == 0 ? &player : nullptr;
 				if (!track) continue;
@@ -134,9 +134,13 @@
 			StopPerformance(); RestoreEnsembleTracks();
 			player.controller.DiscardBindings();
 			for (auto& track : ensembleTracks) track.reset();
+			ensembleTracks.resize(settings.slots.size());
+			ensembleOverrides.resize(settings.slots.size());
+			ensembleInstanceIds.resize(settings.slots.size());
+			ensembleSnapshot.physics.assign(settings.slots.size(), {});
 			ensembleActiveSettings = settings;
 			float duration = 0;
-			for (size_t i = 0; i < ensemble::MaxActors; ++i) if (settings.slots[i].enabled)
+			for (size_t i = 0; i < settings.slots.size(); ++i) if (settings.slots[i].enabled)
 			{
 				MotionPlayer* track = &player;
 				if (i != settings.masterSlot)
