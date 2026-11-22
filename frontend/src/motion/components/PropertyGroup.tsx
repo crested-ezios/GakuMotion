@@ -105,7 +105,7 @@ export function CollapsiblePropertySection({
       >
         <div className="min-w-0 flex-1 space-y-0.5">
           <div className="flex flex-wrap items-center gap-2">
-            <RiArrowRightSFill className="size-4 text-muted-foreground transition-transform duration-150 group-data-[state=open]:rotate-90" />
+            <RiArrowRightSFill className="size-4 text-muted-foreground transition-transform duration-150 group-data-[panel-open]:rotate-90" />
             <span className="text-base font-semibold text-foreground">{title}</span>
             {badge}
           </div>

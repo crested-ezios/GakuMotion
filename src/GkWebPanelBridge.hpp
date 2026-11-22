@@ -183,6 +183,13 @@ namespace GakuMotion::webpanel
 		std::string error;
 	};
 
+	struct AsyncTrackCoverResult
+	{
+		std::string key;
+		bool hasCover{false};
+		std::string coverDataUri;
+	};
+
 	struct HostHooks
 	{
 		// Ordered asset-directory candidates supplied by the plugin (the plugin
@@ -198,6 +205,9 @@ namespace GakuMotion::webpanel
 		std::function<AppearanceInfo()> appearance;
 		std::function<AudioProbeView(const std::string& pathUtf8, bool includeCover)> probeAudio;
 		std::function<std::string(const std::string& trackDirUtf8)> getTrackCoverDataUri;
+		std::function<bool(const std::string& key, const std::string& trackDirUtf8, std::string& outDataUri, bool& outPending)> queryTrackCoverAsync;
+		std::function<std::vector<AsyncTrackCoverResult>(size_t maxCount)> drainReadyCovers;
+		std::function<void(const std::string& key)> invalidateTrackCover;
 		std::function<std::string(const std::string& pathUtf8)> readImagePreviewDataUri;
 		std::function<bool(const std::string& normCharCode, std::string& outDataUri, bool& outCached)> getActorPortraitDataUri;
 		std::function<ScreenshotCapabilitiesView()> getScreenshotCapabilities;
@@ -266,7 +276,7 @@ namespace GakuMotion::webpanel
 	};
 
 	inline constexpr const char* kSupportedEvents[] = {
-		"player.stateChanged", "permission.changed", "library.changed", "loaded.changed",
+		"player.stateChanged", "permission.changed", "library.changed", "library.coverReady", "loaded.changed",
 		"playlist.changed", "actors.changed", "formation.changed", "camera.changed", "stage.changed",
 		"stage.nodesChanged",
 		"facial.changed", "position.changed", "settings.changed",
@@ -624,6 +634,7 @@ namespace GakuMotion::webpanel
 			{
 				std::lock_guard<std::recursive_mutex> lock(core_.stateMutex);
 				if (core_.libraryScan.valid()) return CmdResult::Ok("{\"started\":false}");
+				if (hooks_.invalidateTrackCover) hooks_.invalidateTrackCover("");
 				core_.QueueGui({GuiAction::Refresh});
 				return CmdResult::Ok("{\"started\":true}");
 			}
@@ -663,6 +674,7 @@ namespace GakuMotion::webpanel
 					return CmdResult::Err("invalid_params", "Motion key not found: " + key);
 				GuiCommand command{GuiAction::DeleteFiles, 0, true, key};
 				command.libraryRevision = core_.libraryRevision;
+				if (hooks_.invalidateTrackCover) hooks_.invalidateTrackCover(key);
 				core_.QueueGui(std::move(command));
 				return CmdResult::Ok();
 			}
@@ -1306,7 +1318,7 @@ namespace GakuMotion::webpanel
 			if (key.empty() && directory.empty())
 				return CmdResult::Err("invalid_params", "key or directory is required");
 
-			std::string resolvedDir;
+			std::string resolvedKey, resolvedDir;
 			bool hasCoverHint = false;
 			{
 				std::lock_guard<std::recursive_mutex> lock(core_.stateMutex);
@@ -1315,6 +1327,7 @@ namespace GakuMotion::webpanel
 					if ((!key.empty() && entry.name == key) ||
 						(!directory.empty() && entry.dir == directory))
 					{
+						resolvedKey = entry.name;
 						resolvedDir = entry.dir;
 						hasCoverHint = entry.hasCover || entry.hasAudio;
 						break;
@@ -1325,10 +1338,21 @@ namespace GakuMotion::webpanel
 				return CmdResult::Err("not_found", "Track not found in library");
 
 			std::string dataUri;
-			if (hasCoverHint && hooks_.getTrackCoverDataUri)
-				dataUri = hooks_.getTrackCoverDataUri(resolvedDir);
+			bool pending = false;
+			if (hasCoverHint)
+			{
+				if (hooks_.queryTrackCoverAsync)
+				{
+					hooks_.queryTrackCoverAsync(resolvedKey, resolvedDir, dataUri, pending);
+				}
+				else if (hooks_.getTrackCoverDataUri)
+				{
+					dataUri = hooks_.getTrackCoverDataUri(resolvedDir);
+				}
+			}
 			return CmdResult::Ok("{\"hasCover\":" + JBool(!dataUri.empty()) +
-				",\"coverDataUri\":" + JString(dataUri) + "}");
+				",\"coverDataUri\":" + JString(dataUri) +
+				",\"pending\":" + JBool(pending) + "}");
 		}
 
 		CmdResult LibrarySetCover(const jsonlite::Value& params)
@@ -1359,6 +1383,7 @@ namespace GakuMotion::webpanel
 					return CmdResult::Err("not_found", error);
 				return CmdResult::Err("failed", error.empty() ? "Failed to save track cover" : error);
 			}
+			if (hooks_.invalidateTrackCover) hooks_.invalidateTrackCover(key);
 			forceDomainRefresh_.store(true, std::memory_order_release);
 			uint64_t rev = 0;
 			{
@@ -1866,13 +1891,21 @@ namespace GakuMotion::webpanel
 			command.importCoverSet = hasCoverDataUri && !clearCover;
 			command.importCoverClear = clearCover;
 			command.importCoverDataUri = clearCover ? std::string() : std::move(coverDataUri);
+			const std::string invalidateKey = edit ? editKey : command.import.title;
+			if (!invalidateKey.empty())
+			{
+				if (hooks_.invalidateTrackCover) hooks_.invalidateTrackCover(invalidateKey);
+				std::lock_guard<std::mutex> coverLock(pendingCoverInvalidateMutex_);
+				pendingImportCoverInvalidateKey_ = invalidateKey;
+			}
 			core_.QueueGui(std::move(command));
 			return CmdResult::Ok("{\"started\":true}");
 		}
 
 		void EnsureFormationSyncedLocked()
 		{
-			if (core_.formation.actorEpoch != core_.sceneActorRegistry.Epoch())
+			if (!core_.fnEnsembleActorEligible && !core_.player.controller.fnCanDriveActor &&
+				core_.formation.actorEpoch != core_.sceneActorRegistry.Epoch())
 			{
 				core_.SyncFormationWithRoster();
 			}
@@ -3675,13 +3708,24 @@ namespace GakuMotion::webpanel
 					permission != lastPermission_ ||
 					(lastPermissionAllowed_ && !injectionAllowed) ||
 					(injectionSession != lastInjectionSession_ && lastInjectionSession_ != 0);
+				const bool libraryOrImportChanged =
+					core_.libraryRevision != lastPolledLibraryRevision_ ||
+					core_.formation.revision != lastPolledFormationRevision_ ||
+					core_.importProgress.active != lastPolledImportActive_ ||
+					core_.importProgress.finished != lastPolledImportFinished_ ||
+					core_.importProgress.progress != lastPolledImportProgress_;
 				refreshSlowDomains = baselinePending_ || forceSlowRefresh ||
-					!playing || permissionOrSessionChanged ||
+					permissionOrSessionChanged || libraryOrImportChanged ||
 					(now - lastSlowDomainPoll_ >= std::chrono::milliseconds(100));
 				if (refreshSlowDomains)
 				{
 					EnsureFormationSyncedLocked();
 					lastSlowDomainPoll_ = now;
+					lastPolledLibraryRevision_ = core_.libraryRevision;
+					lastPolledFormationRevision_ = core_.formation.revision;
+					lastPolledImportActive_ = core_.importProgress.active;
+					lastPolledImportFinished_ = core_.importProgress.finished;
+					lastPolledImportProgress_ = core_.importProgress.progress;
 					library = LibraryJsonLocked();
 					loaded = LoadedJsonLocked();
 					playlist = PlaylistJsonLocked();
@@ -3741,6 +3785,26 @@ namespace GakuMotion::webpanel
 			emitChanged("permission.changed", permission, lastPermission_);
 			if (refreshSlowDomains)
 			{
+				if (library != lastLibrary_)
+				{
+					std::string keyToInvalidate;
+					bool importStillBusy = false;
+					{
+						std::lock_guard<std::recursive_mutex> lock(core_.stateMutex);
+						importStillBusy = core_.importBusy;
+					}
+					if (!importStillBusy)
+					{
+						std::lock_guard<std::mutex> coverLock(pendingCoverInvalidateMutex_);
+						if (!pendingImportCoverInvalidateKey_.empty())
+						{
+							keyToInvalidate = std::move(pendingImportCoverInvalidateKey_);
+							pendingImportCoverInvalidateKey_.clear();
+						}
+					}
+					if (!keyToInvalidate.empty() && hooks_.invalidateTrackCover)
+						hooks_.invalidateTrackCover(keyToInvalidate);
+				}
 				emitChanged("library.changed", library, lastLibrary_);
 				emitChanged("loaded.changed", loaded, lastLoaded_);
 				emitChanged("playlist.changed", playlist, lastPlaylist_);
@@ -3795,6 +3859,18 @@ namespace GakuMotion::webpanel
 				forcePlayerEvent_ = false;
 				Emit("player.stateChanged", player);
 			}
+
+			if (hooks_.drainReadyCovers)
+			{
+				const auto ready = hooks_.drainReadyCovers(4);
+				for (const auto& item : ready)
+				{
+					Emit("library.coverReady",
+						"{\"key\":" + JString(item.key) +
+						",\"hasCover\":" + JBool(item.hasCover) +
+						",\"coverDataUri\":" + JString(item.coverDataUri) + "}");
+				}
+			}
 		}
 
 		// Keep an ImGui-started dialog progressing while the WebView panel is
@@ -3847,6 +3923,8 @@ namespace GakuMotion::webpanel
 		DropPeek cachedDropPeek_{};
 		std::vector<std::string> pendingDrops_;
 		std::string boneNotice_, gazeNotice_, solePitchNotice_, experimentsNotice_;
+		std::mutex pendingCoverInvalidateMutex_;
+		std::string pendingImportCoverInvalidateKey_;
 
 		// Event change detection.
 		bool forcePlayerEvent_{false};
@@ -3863,5 +3941,10 @@ namespace GakuMotion::webpanel
 			lastImportProgress_, lastAppearance_, lastGaze_, lastBone_, lastSole_,
 			lastSolePitch_, lastStudio_, lastExperiments_, lastClock_, lastClockMeta_, lastAudioEffect_;
 		int lastPhysicsBackend_{-1};
+		uint64_t lastPolledLibraryRevision_{0};
+		uint64_t lastPolledFormationRevision_{0};
+		bool lastPolledImportActive_{false};
+		bool lastPolledImportFinished_{false};
+		float lastPolledImportProgress_{-1.0f};
 	};
 } // namespace GakuMotion::webpanel

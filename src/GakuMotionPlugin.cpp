@@ -17,6 +17,7 @@
 #include "GkBgmSuppression.hpp"
 #include "GkPhotographyEnsembleProbe.hpp"
 #include "GkPortraitCache.hpp"
+#include "GkCoverCache.hpp"
 #include <cstddef>
 #include "GkFaceRuntime.hpp"
 #include "GkBurstBridgeClient.hpp"
@@ -2031,6 +2032,9 @@ namespace
 	}
 
 	GakuMotion::portrait::PortraitCache g_portraitCache;
+	GakuMotion::TrackCoverCache g_trackCoverCache;
+	std::mutex g_audioProbeMutex;
+	std::string WebPanelGetTrackCoverDataUri(const std::string& trackDirUtf8);
 
 	std::string ResolvePluginGameRootUtf8()
 	{
@@ -2532,6 +2536,7 @@ bool InitializeMotion()
 	core.SetGameRoot(ResolvePluginGameRootUtf8());
 	core.Initialize(localRoot, &selected);
 	g_portraitCache.Configure(core.configRoot, core.gameRoot);
+	g_trackCoverCache.Configure(WebPanelGetTrackCoverDataUri);
 	HelperAudioSetVolume(player.musicVolume);
 	if (g_hostContext.logInfo) g_hostContext.logInfo("[GakuMotion][Paths] layout=%s configs=%s motions=%s",
 		selected.managed ? "gakuloader-v1" : "legacy-unmigrated", core.configRoot.c_str(), core.motionsRoot.c_str());
@@ -3354,11 +3359,12 @@ void MotionActorTick(void*, void* activeActor, float deltaTime)
 	// Fresh typed snapshots remove disabled/destroyed actors even when no actor
 	// callback remains. Never retain an accumulating list of seen scene actors.
 	g_lastActorCallbackFrame = unityFrame;
+	StageLoader::BindContext(sceneHandle, activeActor);
+	// Refresh Photography ensemble observation BEFORE RefreshSceneActors so
+	// ActorEligible sees the current Unity frame number instead of lagging by one frame.
+	TickPhotographyEnsemble(core, unityFrame);
 	RefreshSceneActors(core, sceneChanged, activeActor);
 	if (isNewPhysicalFrame) TickPortraitExtractionOnMainThread();
-	StageLoader::BindContext(sceneHandle, activeActor);
-	// Refresh native identities before admitting a queued ensemble transaction.
-	TickPhotographyEnsemble(core, unityFrame);
 	if (isNewPhysicalFrame) core.ProcessPendingGuiCommands();
 	TickPhotographyEnsemble(core, unityFrame, activeActor);
 	void* anim = g_motionSceneAllowed && player.state != GakuMotion::PlaybackState::Stopped
@@ -3916,6 +3922,7 @@ void MotionShutdown(void*)
 			GakuMotion::bgm::StatusName(g_seLease.GetSnapshot().status));
 	// Join native jobs before plugin code disappears. NativeAOT stays loaded
 	// for the process lifetime; unloading its runtime is unsupported.
+	g_trackCoverCache.Stop();
 	GakuMotion::csharp_import::Shutdown();
 	ClearSecondaryPhysics();
 	const bool multiShutdown = g_multiBurstBridge.Shutdown();
@@ -4229,7 +4236,11 @@ GakuStatus PublishActorApi()
 	GakuMotion::webpanel::AudioProbeView WebPanelProbeAudio(const std::string& pathUtf8, bool includeCover)
 	{
 		GakuMotion::webpanel::AudioProbeView out;
-		const auto probed = g_audioPlugin.ProbeFile(pathUtf8, includeCover);
+		GakuMotion::audio::AudioProbeResult probed;
+		{
+			std::lock_guard<std::mutex> probeLock(g_audioProbeMutex);
+			probed = g_audioPlugin.ProbeFile(pathUtf8, includeCover);
+		}
 		out.valid = probed.valid;
 		out.sampleRate = probed.sampleRate;
 		out.channels = probed.channels;
@@ -4262,8 +4273,12 @@ GakuStatus PublishActorApi()
 		const std::string audioFile = GakuMotion::audio::ResolveTrackAudioFileName(dirPath);
 		if (!audioFile.empty())
 		{
-			const auto probed = g_audioPlugin.ProbeFile(
-				GakuMotion::MotionPathToUtf8(dirPath / GakuMotion::MotionPathFromUtf8(audioFile)), true);
+			GakuMotion::audio::AudioProbeResult probed;
+			{
+				std::lock_guard<std::mutex> probeLock(g_audioProbeMutex);
+				probed = g_audioPlugin.ProbeFile(
+					GakuMotion::MotionPathToUtf8(dirPath / GakuMotion::MotionPathFromUtf8(audioFile)), true);
+			}
 			if (!probed.coverBytes.empty())
 			{
 				return GakuMotion::cover::BytesToThumbnailDataUri(
@@ -4592,6 +4607,28 @@ GakuStatus PublishActorApi()
 		hooks.appearance = WebPanelAppearance;
 		hooks.probeAudio = WebPanelProbeAudio;
 		hooks.getTrackCoverDataUri = WebPanelGetTrackCoverDataUri;
+		hooks.queryTrackCoverAsync = [](const std::string& key, const std::string& trackDirUtf8,
+										std::string& outDataUri, bool& outPending) -> bool {
+			return g_trackCoverCache.QueryOrEnqueue(key, trackDirUtf8, outDataUri, outPending);
+		};
+		hooks.drainReadyCovers = [](size_t maxCount) -> std::vector<GakuMotion::webpanel::AsyncTrackCoverResult> {
+			const auto ready = g_trackCoverCache.DrainCompleted(maxCount);
+			std::vector<GakuMotion::webpanel::AsyncTrackCoverResult> out;
+			out.reserve(ready.size());
+			for (const auto& item : ready)
+			{
+				GakuMotion::webpanel::AsyncTrackCoverResult entry;
+				entry.key = item.key;
+				entry.hasCover = item.hasCover;
+				entry.coverDataUri = item.coverDataUri;
+				out.push_back(std::move(entry));
+			}
+			return out;
+		};
+		hooks.invalidateTrackCover = [](const std::string& key) {
+			if (key.empty()) g_trackCoverCache.InvalidateAll();
+			else g_trackCoverCache.Invalidate(key);
+		};
 		hooks.readImagePreviewDataUri = WebPanelReadImagePreviewDataUri;
 		hooks.getActorPortraitDataUri = [](const std::string& normCharCode, std::string& outDataUri, bool& outCached) -> bool {
 			return g_portraitCache.QueryOrEnqueue(normCharCode, outDataUri, outCached);
@@ -4844,8 +4881,8 @@ void MotionTick(void*, float)
 		RefreshProtectedContext();
 		auto& core = GakuMotion::Core::Instance();
 		std::lock_guard<std::recursive_mutex> lock(core.stateMutex);
-		RefreshSceneActors(core);
 		TickPhotographyEnsemble(core, g_faceUnityFrame ? g_faceUnityFrame() : -1);
+		RefreshSceneActors(core);
 		TickStudio(core);
 		core.RejectObsoleteControlCommands();
 	}

@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { RiDeleteBinLine, RiPauseFill, RiPencilLine, RiEyeLine, RiPlayFill } from '@remixicon/react'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import type { LibraryEntry, PlaybackStatus } from '../../protocol'
 import { motionStore, useMotionStore } from '../../store'
@@ -67,16 +68,43 @@ function LibraryRowCover({
   hasCover: boolean
   hasAudio: boolean
 }) {
+  const buttonRef = React.useRef<HTMLButtonElement>(null)
+  const [visible, setVisible] = React.useState(
+    () => typeof globalThis.IntersectionObserver === 'undefined',
+  )
   const coverUri = useMotionStore((state) => state.coverCache[entryId] ?? '')
   const hasCachedCover = useMotionStore((state) => Object.prototype.hasOwnProperty.call(state.coverCache, entryId))
   const libraryRevision = useMotionStore((state) => state.library.revision)
+  const loadingCover = (hasCover || hasAudio) && !hasCachedCover
+
   React.useEffect(() => {
-    if ((hasCover || hasAudio) && !hasCachedCover) {
+    const el = buttonRef.current
+    if (!el || typeof globalThis.IntersectionObserver === 'undefined') {
+      setVisible(true)
+      return
+    }
+    const observer = new globalThis.IntersectionObserver(
+      (entries) => {
+        if (entries.some((item) => item.isIntersecting)) {
+          setVisible(true)
+          observer.disconnect()
+        }
+      },
+      { rootMargin: '200px' },
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [entryId])
+
+  React.useEffect(() => {
+    if (visible && loadingCover) {
       void motionStore.ensureTrackCover(entryId)
     }
-  }, [entryId, hasCover, hasAudio, hasCachedCover, libraryRevision])
+  }, [visible, loadingCover, entryId, libraryRevision])
+
   return (
     <button
+      ref={buttonRef}
       type="button"
       title="点击编辑封面"
       aria-label={`编辑 ${entryTitle} 封面`}
@@ -85,13 +113,21 @@ function LibraryRowCover({
         motionStore.openCoverEditorForTrack(entryId, 'library')
       }}
       onDoubleClick={(event) => event.stopPropagation()}
-      className="flex size-[var(--gaku-cover-row,42px)] shrink-0 items-center justify-center overflow-hidden rounded-md border border-border/60 bg-muted/40 transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="relative flex size-[var(--gaku-cover-row,42px)] shrink-0 items-center justify-center overflow-hidden rounded-md border border-border/60 bg-muted/40 transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
-      <AlbumCover
-        src={coverUri}
-        imgTestId={`library-cover-${entryId}`}
-        defaultTestId={`library-default-cover-${entryId}`}
-      />
+      {loadingCover ? (
+        <span
+          aria-hidden="true"
+          data-testid={`library-cover-skeleton-${entryId}`}
+          className="h-full w-full animate-pulse bg-muted"
+        />
+      ) : (
+        <AlbumCover
+          src={coverUri}
+          imgTestId={`library-cover-${entryId}`}
+          defaultTestId={`library-default-cover-${entryId}`}
+        />
+      )}
     </button>
   )
 }
@@ -220,9 +256,9 @@ export function LibraryRow({
             </div>
             <div className="flex min-w-0 items-center gap-1.5 text-xs tabular-nums">
               {entry.isGroup && (
-                <span className="inline-flex shrink-0 items-center rounded-lg border border-amber-400/60 bg-amber-500/15 px-1.5 py-0.5 text-micro leading-none text-amber-600 dark:text-amber-300">
+                <Badge variant="group" className="shrink-0 rounded px-1.5 py-0 text-[10px] leading-4">
                   团曲
-                </span>
+                </Badge>
               )}
               <p
                 className={cn(

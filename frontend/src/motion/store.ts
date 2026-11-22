@@ -86,6 +86,7 @@ export class MotionStore {
   private readonly sliceResetters: Array<() => void> = []
   private readonly hooks: {
     onLibraryChangedCovers: ReturnType<typeof createLibrarySlice>['onLibraryChangedCovers']
+    onCoverReady: ReturnType<typeof createLibrarySlice>['onCoverReady']
     maybeAutoSubmitAfterStop: () => void
     maybeFinalizeImportSelection: ReturnType<typeof createImportProgressSlice>['maybeFinalizeImportSelection']
     onImportProgress: ReturnType<typeof createImportProgressSlice>['onImportProgress']
@@ -139,6 +140,7 @@ export class MotionStore {
 
     this.hooks = {
       onLibraryChangedCovers: library.onLibraryChangedCovers,
+      onCoverReady: library.onCoverReady,
       maybeAutoSubmitAfterStop: importForm.maybeAutoSubmitAfterStop,
       maybeFinalizeImportSelection: importProgress.maybeFinalizeImportSelection,
       onImportProgress: importProgress.onImportProgress,
@@ -209,8 +211,11 @@ export class MotionStore {
           ...(nextCoverCache !== null ? { coverCache: nextCoverCache } : {}),
         })
         this.hooks.maybeFinalizeImportSelection(library)
-        this.preloadLibraryCovers(library.entries)
+  
       }),
+      bridge.on('library.coverReady', ({ key, hasCover, coverDataUri }) =>
+        this.hooks.onCoverReady(key, hasCover, coverDataUri),
+      ),
       bridge.on('loaded.changed', (loaded) => {
         const previous = this.state.loaded
         const identityChanged =
@@ -301,7 +306,7 @@ export class MotionStore {
           // Appearance is optional; keep the default theme.
         }
       }
-      this.preloadLibraryCovers(this.state.library.entries)
+
       await this.loadPhase2Domains()
     } catch (error) {
       this.set({ ready: true, connected: false, error: error instanceof Error ? error.message : String(error) })

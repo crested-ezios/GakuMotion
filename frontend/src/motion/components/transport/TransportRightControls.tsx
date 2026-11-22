@@ -19,10 +19,10 @@ import { motionStore } from '../../store'
 import { PrecisionControlPanel } from '../PrecisionControlPanel'
 import { PendingBadge } from '../Unsupported'
 
-function IconTooltip({ label, children }: { label: string; children: React.ReactNode }) {
+function IconTooltip({ label, children }: { label: string; children: React.ReactElement }) {
   return (
     <Tooltip>
-      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipTrigger render={children} />
       <TooltipContent side="top">{label}</TooltipContent>
     </Tooltip>
   )
@@ -78,24 +78,26 @@ export function TransportRightControls({
       {/* Audio Effect Preset Badge */}
       <div className="flex items-center gap-1">
         <Popover open={audioFxOpen} onOpenChange={setAudioFxOpen}>
-          <PopoverTrigger asChild>
-            <button
-              type="button"
-              aria-label="音效预设"
-              data-testid="audio-effect-badge"
-              disabled={!supports('audioEffect.set')}
-              title={audioEffect.available ? `音效：${activeEffectPreset.name}` : '未加载 GakuAudio 音效插件'}
-              className={cn(
-                'inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-[4px] border px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50',
-                effectModified && audioEffect.available
-                  ? 'border-primary/40 bg-primary/10 text-primary hover:border-primary/60'
-                  : 'border-border bg-background/70 text-muted-foreground hover:border-foreground/30 hover:text-foreground',
-              )}
-            >
-              <RiMusic2Fill className="size-3.5 shrink-0" />
-              <span>{activeEffectPreset.name}</span>
-            </button>
-          </PopoverTrigger>
+          <PopoverTrigger
+            render={
+              <button
+                type="button"
+                aria-label="音效预设"
+                data-testid="audio-effect-badge"
+                disabled={!supports('audioEffect.set')}
+                title={audioEffect.available ? `音效：${activeEffectPreset.name}` : '未加载 GakuAudio 音效插件'}
+                className={cn(
+                  'inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-[4px] border px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50',
+                  effectModified && audioEffect.available
+                    ? 'border-primary/40 bg-primary/10 text-primary hover:border-primary/60'
+                    : 'border-border bg-background/70 text-muted-foreground hover:border-foreground/30 hover:text-foreground',
+                )}
+              >
+                <RiMusic2Fill className="size-3.5 shrink-0" />
+                <span>{activeEffectPreset.name}</span>
+              </button>
+            }
+          />
           <PopoverContent side="top" align="end" className="w-60 p-1">
             <div className="flex items-center justify-between px-2.5 py-1.5 text-micro font-medium text-muted-foreground">
               <span>音效环境预设 (GakuAudio)</span>
@@ -136,18 +138,20 @@ export function TransportRightControls({
       {/* Compact Camera Mode Badge (NetEase right-side badge aesthetic) */}
       <div className="flex items-center gap-1">
         <Popover open={cameraOpen} onOpenChange={setCameraOpen}>
-          <PopoverTrigger asChild>
-            <button
-              type="button"
-              aria-label="镜头快捷模式"
-              data-testid="camera-mode-badge"
-              disabled={!supports('camera.set')}
-              className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-[4px] border border-border bg-background/70 px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
-            >
-              <RiCameraFill className="size-3.5 shrink-0" />
-              <span>{CAMERA_MODES[cameraModeIndex] ?? 'VMD'}</span>
-            </button>
-          </PopoverTrigger>
+          <PopoverTrigger
+            render={
+              <button
+                type="button"
+                aria-label="镜头快捷模式"
+                data-testid="camera-mode-badge"
+                disabled={!supports('camera.set')}
+                className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-[4px] border border-border bg-background/70 px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+              >
+                <RiCameraFill className="size-3.5 shrink-0" />
+                <span>{CAMERA_MODES[cameraModeIndex] ?? 'VMD'}</span>
+              </button>
+            }
+          />
           <PopoverContent side="top" align="end" className="w-40 p-1">
             <div className="px-2.5 py-1.5 text-micro font-medium text-muted-foreground">镜头模式</div>
             {CAMERA_MODES.map((label, index) => {
@@ -183,20 +187,22 @@ export function TransportRightControls({
       {/* Speed Icon Only (Tooltip shows current value) */}
       <Popover open={speedOpen} onOpenChange={setSpeedOpen}>
         <IconTooltip label={`播放倍速: ${speed.toFixed(2)}x`}>
-          <PopoverTrigger asChild>
-            <Button
-              type="button"
-              variant={speedModified ? 'secondary' : 'ghost'}
-              size="icon"
-              aria-label="播放速度"
-              className={cn(
-                'size-8 rounded-md',
-                speedModified ? 'text-primary' : 'text-muted-foreground hover:text-foreground',
-              )}
-            >
-              <RiSpeedUpFill className="size-[18px]" />
-            </Button>
-          </PopoverTrigger>
+          <PopoverTrigger
+            render={
+              <Button
+                type="button"
+                variant={speedModified ? 'secondary' : 'ghost'}
+                size="icon"
+                aria-label="播放速度"
+                className={cn(
+                  'size-8 rounded-md',
+                  speedModified ? 'text-primary' : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                <RiSpeedUpFill className="size-[18px]" />
+              </Button>
+            }
+          />
         </IconTooltip>
         <PopoverContent side="top" align="end" className="w-60 space-y-2.5 p-3">
           <div className="flex items-center justify-between text-sm">
@@ -241,20 +247,22 @@ export function TransportRightControls({
       {/* Volume Icon Only + Vertical Volume Popover */}
       <Popover open={volumeOpen} onOpenChange={setVolumeOpen}>
         <IconTooltip label={`音乐音量: ${volumePercent}%`}>
-          <PopoverTrigger asChild>
-            <Button
-              type="button"
-              variant={showVolumeNotice ? 'outline' : 'ghost'}
-              size="icon"
-              aria-label="音量控制"
-              className={cn(
-                'size-8 rounded-md',
-                showVolumeNotice ? 'text-warning' : 'text-muted-foreground hover:text-foreground',
-              )}
-            >
-              <VolumeIcon className="size-[18px]" />
-            </Button>
-          </PopoverTrigger>
+          <PopoverTrigger
+            render={
+              <Button
+                type="button"
+                variant={showVolumeNotice ? 'outline' : 'ghost'}
+                size="icon"
+                aria-label="音量控制"
+                className={cn(
+                  'size-8 rounded-md',
+                  showVolumeNotice ? 'text-warning' : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                <VolumeIcon className="size-[18px]" />
+              </Button>
+            }
+          />
         </IconTooltip>
         <PopoverContent
           side="top"
@@ -306,28 +314,30 @@ export function TransportRightControls({
 
       {/* Precision Control Drawer Trigger */}
       <Popover open={precisionOpen} onOpenChange={(next) => motionStore.setPrecisionPanelOpen(next)}>
-        <PopoverTrigger asChild>
-          <Button
-            type="button"
-            variant={precisionOpen ? 'default' : 'outline'}
-            size="icon"
-            className="relative size-8 rounded-md"
-            aria-label="精细控制"
-            title="精细控制与专业定位面板"
-            data-testid="precision-control-trigger"
-          >
-            <RiEqualizerFill className="size-4" />
-            {(precisionPinned || navigationError) && !precisionOpen && (
-              <span
-                aria-hidden="true"
-                className={cn(
-                  'absolute -right-0.5 -top-0.5 size-2 rounded-full',
-                  navigationError ? 'bg-destructive' : 'bg-primary',
-                )}
-              />
-            )}
-          </Button>
-        </PopoverTrigger>
+        <PopoverTrigger
+          render={
+            <Button
+              type="button"
+              variant={precisionOpen ? 'default' : 'outline'}
+              size="icon"
+              className="relative size-8 rounded-md"
+              aria-label="精细控制"
+              title="精细控制与专业定位面板"
+              data-testid="precision-control-trigger"
+            >
+              <RiEqualizerFill className="size-4" />
+              {(precisionPinned || navigationError) && !precisionOpen && (
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    'absolute -right-0.5 -top-0.5 size-2 rounded-full',
+                    navigationError ? 'bg-destructive' : 'bg-primary',
+                  )}
+                />
+              )}
+            </Button>
+          }
+        />
         <PopoverContent side="top" align="end" pinned={precisionPinned} className="p-3.5">
           <PrecisionControlPanel onClose={() => motionStore.setPrecisionPanelOpen(false)} />
         </PopoverContent>

@@ -1,4 +1,4 @@
-import { RiLockFill, RiMapPin2Fill } from '@remixicon/react'
+import { RiArrowDownSLine, RiArrowUpSLine, RiLockFill, RiMapPin2Fill } from '@remixicon/react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -53,29 +53,61 @@ export function ImportPositionCards({
                 ) : null}
               </div>
 
-              {posIndex >= 1 && (
+              {(form.positions.length > 1 || posIndex >= 1) && (
                 <div className="flex items-center gap-1.5">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-7 px-2.5 text-xs"
-                    onClick={() => onOpenPlacementModal(posIndex)}
-                  >
-                    <RiMapPin2Fill className="size-3.5" />
-                    编辑初始位置
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 w-7 p-0 text-base text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                    aria-label={`删除 ${slotNum}号位`}
-                    title={`删除 ${slotNum}号位`}
-                    onClick={() => motionStore.removeImportPosition(posIndex)}
-                  >
-                    ×
-                  </Button>
+                  {form.positions.length > 1 && (
+                    <div className="flex items-center gap-0.5">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground disabled:opacity-35"
+                        disabled={busy || posIndex === 0}
+                        aria-label={`${slotNum}号位上移`}
+                        title="与上一号位交换动作与表情"
+                        onClick={() => motionStore.moveImportPosition(posIndex, -1)}
+                      >
+                        <RiArrowUpSLine className="size-4" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground disabled:opacity-35"
+                        disabled={busy || posIndex === form.positions.length - 1}
+                        aria-label={`${slotNum}号位下移`}
+                        title="与下一号位交换动作与表情"
+                        onClick={() => motionStore.moveImportPosition(posIndex, 1)}
+                      >
+                        <RiArrowDownSLine className="size-4" />
+                      </Button>
+                    </div>
+                  )}
+                  {posIndex >= 1 && (
+                    <>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-2.5 text-xs"
+                        onClick={() => onOpenPlacementModal(posIndex)}
+                      >
+                        <RiMapPin2Fill className="size-3.5" />
+                        编辑初始位置
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 w-7 p-0 text-base text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                        aria-label={`删除 ${slotNum}号位`}
+                        title={`删除 ${slotNum}号位`}
+                        onClick={() => motionStore.removeImportPosition(posIndex)}
+                      >
+                        ×
+                      </Button>
+                    </>
+                  )}
                 </div>
               )}
             </div>

@@ -107,6 +107,7 @@ export function CameraPage() {
         }
         actions={
           <Select
+            items={Object.fromEntries(CAMERA_MODES.map((label, index) => [String(index), label]))}
             value={String(selection)}
             disabled={disabled}
             onValueChange={(value) => selectMode(Number(value))}
@@ -254,6 +255,15 @@ export function CameraPage() {
                 <>
                   <PropertyRow label="跟随槽位" description="追踪全员舞台几何中心或指定编号槽位">
                     <Select
+                      items={{
+                        '-1': '全部',
+                        ...Object.fromEntries(
+                          Array.from(
+                            { length: Math.max(slotCount, (draft.followSlotIndex ?? -1) + 1) },
+                            (_, idx) => [String(idx), `${idx + 1}号位`],
+                          ),
+                        ),
+                      }}
                       value={String(draft.followSlotIndex ?? -1)}
                       disabled={disabled}
                       onValueChange={(value) => patch({ followSlotIndex: Number(value) })}
@@ -278,6 +288,7 @@ export function CameraPage() {
                   </PropertyRow>
                   <PropertyRow label="跟随部位" description="决定自动跟踪的角色骨骼焦点">
                     <Select
+                      items={Object.fromEntries(CAMERA_FOLLOW_TARGETS.map((label, index) => [String(index), label]))}
                       value={String(draft.followTarget)}
                       disabled={disabled}
                       onValueChange={(value) => patch({ followTarget: Number(value) })}

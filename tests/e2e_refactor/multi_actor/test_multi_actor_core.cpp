@@ -2017,6 +2017,59 @@ void Test_T4_M3_02(gke2e::CaseContext& ctx) {
     core.AbandonScene();
 }
 
+void Test_T2_F7_07(gke2e::CaseContext& ctx) {
+    if (!probes::RequireM3CoreOrPending(ctx, "F7 solo Preview/Paused retention & ensemble probe miss hysteresis")) return;
+    TempWorkspace ws("t2_f7_07");
+    Core core;
+    InitCoreWorkspace(core, ws, 3);
+    std::vector<FakeActor> actors(2);
+    actors[0].Init(795, "hski", "Saki", {0.0f, 0.0f, 0.0f});
+    actors[1].Init(796, "ttmr", "Temari", {1.5f, 0.0f, 0.0f});
+
+    // Case 1: Solo actor in group-song Preview and solo Paused must NOT be evicted when fnEnsembleActorEligible returns false.
+    core.fnEnsembleActorEligible = [](void*) -> bool { return false; };
+    core.PublishSceneActors({MakeRoster(actors)[0]});
+    GKE2E_CHECK(ctx, core.SelectMotionByIndex(0, false));
+    GKE2E_CHECK_EQ(ctx, static_cast<int>(core.player.state), static_cast<int>(PlaybackState::Preview));
+    RunFrameAll(core, actors, 1, 0.0f, {0});
+    const auto sessionAfterBind = core.injectionSession;
+    GKE2E_CHECK(ctx, !core.player.controller.bindings.empty());
+    GKE2E_CHECK(ctx, core.player.controller.targetActor == &actors[0]);
+
+    for (int scan = 0; scan < 5; ++scan) {
+        core.PublishSceneActors({MakeRoster(actors)[0]});
+    }
+    GKE2E_CHECK_EQ(ctx, core.injectionSession, sessionAfterBind);
+    GKE2E_CHECK(ctx, !core.player.controller.bindings.empty());
+    GKE2E_CHECK(ctx, core.player.controller.targetActor == &actors[0]);
+    GKE2E_CHECK(ctx, core.formation.slots[0].occupied);
+    GKE2E_CHECK_EQ(ctx, core.formation.slots[0].actorInstanceId, 795);
+
+    // Case 2: Multi-actor formation survives up to 3 transient fnEnsembleActorEligible misses while actors stay registered.
+    core.fnEnsembleActorEligible = [](void*) -> bool { return true; };
+    core.PublishSceneActors(MakeRoster(actors));
+    GKE2E_CHECK(ctx, core.SelectMotionByIndex(0, true));
+    RunFrameAll(core, actors, 1, 0.016f, {0, 1});
+    GKE2E_CHECK(ctx, core.formation.active);
+    const size_t trackCountBefore = core.formationTracks.size();
+    GKE2E_CHECK_EQ(ctx, static_cast<int>(trackCountBefore), 2);
+
+    core.fnEnsembleActorEligible = [](void*) -> bool { return false; };
+    for (int miss = 0; miss < 3; ++miss) {
+        core.PublishSceneActors(MakeRoster(actors));
+        GKE2E_CHECK(ctx, core.formation.active);
+        GKE2E_CHECK_EQ(ctx, core.formationTracks.size(), trackCountBefore);
+    }
+
+    // Immediate removal from sceneActorRegistry must still retire immediately even during hysteresis.
+    core.PublishSceneActors({MakeRoster(actors)[0]});
+    GKE2E_CHECK(ctx, !core.formation.active);
+    GKE2E_CHECK_EQ(ctx, static_cast<int>(core.formationTracks.size()), 0);
+
+    core.fnEnsembleActorEligible = nullptr;
+    core.AbandonScene();
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -2035,6 +2088,7 @@ int main(int argc, char** argv) {
     runner.Add("T2-F7-04", 2, "F7", "Actor removal & pointer-reuse safety", Test_T2_F7_04);
     runner.Add("T2-F7-05", 2, "F7", "Capture suspend/resume across 3+ actors", Test_T2_F7_05);
     runner.Add("T2-F7-06", 2, "F7", "Un-drivable actor exclusion (fnCanDriveActor == false)", Test_T2_F7_06);
+    runner.Add("T2-F7-07", 2, "F7", "Solo binding retention & ensemble probe miss hysteresis", Test_T2_F7_07);
 
     // F8: 6 T1 + 5 T2
     runner.Add("T1-F8-01", 1, "F8", "Anchor origin + identity rotation local +X", Test_T1_F8_01);

@@ -7,6 +7,7 @@
 
 #include "GkWebPanelBridge.hpp"
 #include "GkAudioPluginClient.hpp"
+#include "GkCoverCache.hpp"
 
 #include <cstdio>
 #include <fstream>
@@ -1633,6 +1634,162 @@ static void TestM4PortraitsAndFormation()
 		"formation.swapSlots rejects out-of-range index");
 }
 
+static void TestAsyncTrackCoverCache()
+{
+	BeginTest("async_track_cover_cache");
+	Core core;
+	core.enforceInjectionPolicy = true;
+	core.injectionPolicy.SetSceneAllowed(true);
+	core.injectionPolicy.SetCaptureHooksReady(true);
+
+	MotionEntry withCover;
+	withCover.name = "track-with-cover";
+	withCover.dir = "synthetic/dir-with-cover";
+	withCover.hasCover = true;
+	withCover.hasAudio = true;
+
+	MotionEntry noCover;
+	noCover.name = "track-no-cover";
+	noCover.dir = "synthetic/dir-no-cover";
+	noCover.hasAudio = true;
+
+	core.motions.push_back(withCover);
+	core.motions.push_back(noCover);
+	core.libraryRevision = 1;
+
+	std::atomic<int> resolveCalls{0};
+	TrackCoverCache cache;
+	cache.Configure([&](const std::string& dir) -> std::string {
+		resolveCalls.fetch_add(1, std::memory_order_relaxed);
+		if (dir == "synthetic/dir-with-cover")
+			return "data:image/png;base64,AAA=";
+		return "";
+	});
+
+	HostHooks hooks;
+	hooks.releaseFileDialog = [] {};
+	hooks.queryTrackCoverAsync = [&](const std::string& key, const std::string& dir,
+									 std::string& outDataUri, bool& outPending) -> bool {
+		return cache.QueryOrEnqueue(key, dir, outDataUri, outPending);
+	};
+	hooks.drainReadyCovers = [&](size_t maxCount) -> std::vector<AsyncTrackCoverResult> {
+		const auto items = cache.DrainCompleted(maxCount);
+		std::vector<AsyncTrackCoverResult> out;
+		out.reserve(items.size());
+		for (const auto& item : items)
+		{
+			out.push_back(AsyncTrackCoverResult{item.key, item.hasCover, item.coverDataUri});
+		}
+		return out;
+	};
+	hooks.invalidateTrackCover = [&](const std::string& key) {
+		if (key.empty()) cache.InvalidateAll();
+		else cache.Invalidate(key);
+	};
+
+	Bridge bridge(core, hooks);
+	std::vector<std::string> events;
+	bridge.SetEventSink(
+		[](void* userData, const char* json) {
+			static_cast<std::vector<std::string>*>(userData)->push_back(json);
+		},
+		&events);
+	bridge.OnShow();
+
+	const auto hello = ParseJson(bridge.HandleMessageForTest(
+		"{\"v\":1,\"id\":1,\"type\":\"request\",\"method\":\"motion.hello\",\"params\":{\"client\":\"test\",\"protocol\":1}}"));
+	const auto* supportedEv = hello.Find("result") ? hello.Find("result")->Find("supportedEvents") : nullptr;
+	bool advertisesCoverReady = false;
+	if (supportedEv && supportedEv->IsArray())
+	{
+		for (size_t i = 0; i < supportedEv->Size(); ++i)
+			if (supportedEv->At(i)->stringValue == "library.coverReady") advertisesCoverReady = true;
+	}
+	Check(advertisesCoverReady, "motion.hello advertises library.coverReady");
+
+	// 1. Positive lookup returns pending=true immediately, then emits library.coverReady.
+	const auto firstMiss = ParseJson(bridge.HandleMessageForTest(
+		"{\"v\":1,\"id\":2,\"type\":\"request\",\"method\":\"library.getCover\",\"params\":{\"key\":\"track-with-cover\"}}"));
+	Check(firstMiss.Find("ok")->boolValue &&
+		firstMiss.Find("result")->Find("pending")->boolValue &&
+		!firstMiss.Find("result")->Find("hasCover")->boolValue,
+		"uncached cover returns pending=true immediately");
+
+	cache.WaitForIdleForTest();
+	events.clear();
+	bridge.OnUiTick();
+
+	bool sawWithCoverReady = false;
+	for (const auto& evText : events)
+	{
+		const auto ev = ParseJson(evText);
+		if (ev.Find("name") && ev.Find("name")->stringValue == "library.coverReady")
+		{
+			const auto* d = ev.Find("payload");
+			if (d && d->Find("key")->stringValue == "track-with-cover" &&
+				d->Find("hasCover")->boolValue &&
+				d->Find("coverDataUri")->stringValue == "data:image/png;base64,AAA=")
+			{
+				sawWithCoverReady = true;
+			}
+		}
+	}
+	Check(sawWithCoverReady, "OnUiTick emits library.coverReady for completed cover");
+
+	const auto firstHit = ParseJson(bridge.HandleMessageForTest(
+		"{\"v\":1,\"id\":3,\"type\":\"request\",\"method\":\"library.getCover\",\"params\":{\"key\":\"track-with-cover\"}}"));
+	Check(firstHit.Find("ok")->boolValue &&
+		!firstHit.Find("result")->Find("pending")->boolValue &&
+		firstHit.Find("result")->Find("hasCover")->boolValue &&
+		firstHit.Find("result")->Find("coverDataUri")->stringValue == "data:image/png;base64,AAA=",
+		"second cover lookup returns cached data URI synchronously");
+	const int callsAfterPositive = resolveCalls.load();
+
+	// 2. Negative lookup is also cached so repeated requests do not re-probe.
+	const auto negMiss = ParseJson(bridge.HandleMessageForTest(
+		"{\"v\":1,\"id\":4,\"type\":\"request\",\"method\":\"library.getCover\",\"params\":{\"key\":\"track-no-cover\"}}"));
+	Check(negMiss.Find("ok")->boolValue && negMiss.Find("result")->Find("pending")->boolValue,
+		"uncached track without cover starts as pending=true");
+	cache.WaitForIdleForTest();
+	events.clear();
+	bridge.OnUiTick();
+	bool sawNoCoverReady = false;
+	for (const auto& evText : events)
+	{
+		const auto ev = ParseJson(evText);
+		if (ev.Find("name") && ev.Find("name")->stringValue == "library.coverReady")
+		{
+			const auto* d = ev.Find("payload");
+			if (d && d->Find("key")->stringValue == "track-no-cover" &&
+				!d->Find("hasCover")->boolValue &&
+				d->Find("coverDataUri")->stringValue.empty())
+			{
+				sawNoCoverReady = true;
+			}
+		}
+	}
+	Check(sawNoCoverReady, "library.coverReady reports negative cache result");
+
+	const auto negHit = ParseJson(bridge.HandleMessageForTest(
+		"{\"v\":1,\"id\":5,\"type\":\"request\",\"method\":\"library.getCover\",\"params\":{\"key\":\"track-no-cover\"}}"));
+	Check(negHit.Find("ok")->boolValue &&
+		!negHit.Find("result")->Find("pending")->boolValue &&
+		!negHit.Find("result")->Find("hasCover")->boolValue,
+		"repeated lookup for missing cover returns cached negative hit");
+	Check(resolveCalls.load() == callsAfterPositive + 1,
+		"negative cache avoids redundant resolver invocations");
+
+	// 3. library.refresh invalidates cached entries.
+	bridge.HandleMessageForTest(
+		"{\"v\":1,\"id\":6,\"type\":\"request\",\"method\":\"library.refresh\",\"params\":{}}");
+	const auto afterRefresh = ParseJson(bridge.HandleMessageForTest(
+		"{\"v\":1,\"id\":7,\"type\":\"request\",\"method\":\"library.getCover\",\"params\":{\"key\":\"track-with-cover\"}}"));
+	Check(afterRefresh.Find("ok")->boolValue && afterRefresh.Find("result")->Find("pending")->boolValue,
+		"library.refresh invalidates cached cover entries");
+	cache.WaitForIdleForTest();
+	cache.Stop();
+}
+
 int main()
 {
 	std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -1663,6 +1820,7 @@ int main()
 	TestPlayingTickThrottlingAndClockEvents();
 	TestCoverEditingScreenshotAndDuplicateTitleImport();
 	TestM4PortraitsAndFormation();
+	TestAsyncTrackCoverCache();
 	std::printf("\nweb-panel bridge contracts: %d passed, %d failed\n", g_pass, g_fail);
 	return g_fail == 0 ? 0 : 1;
 }

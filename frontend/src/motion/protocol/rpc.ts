@@ -106,7 +106,10 @@ export interface MotionMethods {
   }
   'library.startEdit': { params: { key: string; revision: number }; result: EditEntryInfo }
   'library.probeAudio': { params: { path: string; includeCover?: boolean }; result: AudioProbeInfo }
-  'library.getCover': { params: { key?: string; directory?: string }; result: { hasCover: boolean; coverDataUri: string } }
+  'library.getCover': {
+    params: { key?: string; directory?: string }
+    result: { hasCover: boolean; coverDataUri: string; pending?: boolean }
+  }
   'library.setCover': {
     params: { key: string; coverDataUri?: string; clear?: boolean }
     result: { hasCover: boolean; coverDataUri: string; revision: number }
@@ -163,6 +166,7 @@ export interface MotionEvents {
   'player.stateChanged': PlayerState
   'permission.changed': PermissionState
   'library.changed': LibraryState
+  'library.coverReady': { key: string; hasCover: boolean; coverDataUri: string }
   'loaded.changed': LoadedState
   'playlist.changed': { mode: number; notice: string }
   'actors.changed': ActorsState

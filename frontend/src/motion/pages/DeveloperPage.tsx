@@ -115,7 +115,11 @@ function ExperimentsTab() {
             {!supports('gaze.set') && <PendingBadge />}
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Select value={String(gaze.settings.mode)} onValueChange={(value) => void motionStore.setGazeSettings({ mode: Number(value) })}>
+            <Select
+              items={Object.fromEntries(GAZE_MODES.map((mode, index) => [String(index), mode]))}
+              value={String(gaze.settings.mode)}
+              onValueChange={(value) => void motionStore.setGazeSettings({ mode: Number(value) })}
+            >
               <SelectTrigger className="h-8 w-80"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {GAZE_MODES.map((mode, index) => (
@@ -337,7 +341,11 @@ export function StageReplacementTab() {
   const notice = useMotionStore((state) => state.stageLoadNotice)
   return (
     <div className="space-y-2" data-testid="stage-replacement-tab">
-      <Select value={stage.settings.loadReplacementKey || 'native'} onValueChange={(value) => void motionStore.setStageLoadReplacement(value === 'native' ? '' : value)}>
+      <Select
+        items={Object.fromEntries(STAGE_REPLACEMENT_OPTIONS.map((option) => [option.key || 'native', option.label]))}
+        value={stage.settings.loadReplacementKey || 'native'}
+        onValueChange={(value) => void motionStore.setStageLoadReplacement(value === 'native' ? '' : value)}
+      >
         <SelectTrigger className="h-8 w-80"><SelectValue /></SelectTrigger>
         <SelectContent>
           {STAGE_REPLACEMENT_OPTIONS.map((option) => (

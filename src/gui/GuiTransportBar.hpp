@@ -471,13 +471,6 @@ namespace GakuMotion
 				else
 					ImGui::TextDisabled("当前位置：帧间 %.3f / %u · %.6g fps", framePosition,
 						ctx.player->clip.total_frames - 1, ctx.player->clip.fps);
-				if (TransportDurationMismatch(ctx.player->clip.total_frames, ctx.player->clip.fps, ctx.player->clip.duration_seconds))
-				{
-					ImGui::PushStyleColor(ImGuiCol_Text, GuiTheme::WarningColor());
-					ImGui::TextWrapped("源动作头部时长与采样帧不一致：头部 %.3f 秒；末采样 %.3f 秒。",
-						ctx.player->clip.duration_seconds, TransportLastFrameTime(ctx.player->clip.total_frames, ctx.player->clip.fps));
-					ImGui::PopStyleColor();
-				}
 			}
 			if (ctx.loadedSourceChanged || ctx.loadedSourceMissing)
 			{

@@ -12,6 +12,7 @@ import {
   RiSave3Fill,
   RiUserUnfollowLine,
 } from '@remixicon/react'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -126,9 +127,9 @@ export function MotionPage() {
                   {loadedEntry?.title ?? (loaded.motionKey ? player.title : '尚未加载动作素材')}
                 </h1>
                 {loadedEntry?.isGroup && (
-                  <span className="inline-flex shrink-0 items-center rounded-[4px] border border-amber-400/60 bg-amber-500/15 px-1.5 py-0.5 text-micro font-semibold leading-none text-amber-600 dark:text-amber-300">
+                  <Badge variant="group" className="shrink-0 rounded px-1.5 py-0 text-[10px] leading-4">
                     团曲
-                  </span>
+                  </Badge>
                 )}
                 {loadedEntry && (
                   <span className="rounded-[4px] border border-border bg-muted/60 px-2 py-0.5 text-xs tabular-nums text-muted-foreground">
@@ -212,6 +213,12 @@ export function MotionPage() {
               {formation.isGroupSong && selectedSlot.isOverflow && (
                 <PropertyRow label="动作来源复用" description="超出团曲编制时选择复用的动作与表情轨道">
                   <Select
+                    items={Object.fromEntries(
+                      Array.from({ length: Math.max(1, formation.trackPositionCount) }, (_, idx) => [
+                        String(idx),
+                        `${idx + 1}号位`,
+                      ]),
+                    )}
                     value={String(selectedSlot.sourceSlotIndex)}
                     disabled={!supports('formation.setSlotSource')}
                     onValueChange={(value) => void motionStore.setFormationSlotSource(selectedSlot.slotIndex, Number(value))}

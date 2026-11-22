@@ -1,5 +1,5 @@
 import * as React from 'react'
-import * as SliderPrimitive from '@radix-ui/react-slider'
+import { Slider as BaseSlider } from '@base-ui/react/slider'
 import { RiAlertFill } from '@remixicon/react'
 import { cn } from '@/lib/utils'
 import { motionStore } from '../../store'
@@ -18,7 +18,6 @@ export function TransportScrubber({
   sourceMissing,
   navigationError,
   precisionOpen,
-  hasDurationMismatch,
 }: {
   hasClip: boolean
   duration: number
@@ -32,7 +31,6 @@ export function TransportScrubber({
   sourceMissing: boolean
   navigationError: string | null
   precisionOpen: boolean
-  hasDurationMismatch: boolean
 }) {
   const [hoverInfo, setHoverInfo] = React.useState<{ ratio: number; seconds: number } | null>(null)
 
@@ -52,7 +50,7 @@ export function TransportScrubber({
         onPointerMove={handleTrackPointerMove}
         onPointerLeave={() => setHoverInfo(null)}
       >
-        <SliderPrimitive.Root
+        <BaseSlider.Root
           aria-label="播放进度"
           className="relative flex h-full w-full touch-none select-none items-center data-[disabled]:cursor-not-allowed data-[disabled]:opacity-55"
           min={0}
@@ -60,27 +58,36 @@ export function TransportScrubber({
           step={0.001}
           disabled={!scrubEnabled}
           value={[Math.min(Math.max(displayTime, 0), duration > 0 ? duration : 1)]}
-          onValueChange={([value]) => {
+          onValueChange={(raw) => {
+            const value = Array.isArray(raw) ? raw[0] : (raw as number)
             if (!motionStore.getState().scrub.active) motionStore.scrubStart(value)
             else motionStore.scrubMove(value)
           }}
-          onValueCommit={([value]) => {
+          onValueCommitted={(raw) => {
+            const value = Array.isArray(raw) ? raw[0] : (raw as number)
             setTimeout(() => motionStore.scrubCommit(value), 0)
           }}
         >
-          <SliderPrimitive.Track className="relative h-[2px] w-full grow overflow-hidden bg-border transition-[height] duration-150 group-hover:h-[4px]">
-            <SliderPrimitive.Range className="absolute h-full bg-primary transition-colors" />
-          </SliderPrimitive.Track>
-          <SliderPrimitive.Thumb
-            aria-label="播放进度"
-            className={cn(
-              'block size-3 rounded-full border-2 border-primary bg-background shadow-sm transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none',
-              scrubActive
-                ? 'scale-100 opacity-100'
-                : 'scale-75 opacity-0 group-hover:scale-100 group-hover:opacity-100 focus-visible:scale-100 focus-visible:opacity-100',
-            )}
-          />
-        </SliderPrimitive.Root>
+          <BaseSlider.Control className="relative flex h-full w-full items-center">
+            <BaseSlider.Track className="relative h-[2px] w-full grow overflow-hidden bg-border transition-[height] duration-150 group-hover:h-[4px]">
+              <BaseSlider.Indicator className="absolute h-full bg-primary transition-colors" />
+              <BaseSlider.Thumb
+                aria-label="播放进度"
+                inputRef={(el) => {
+                  if (!el) return
+                  if (!scrubEnabled) el.setAttribute('data-disabled', '')
+                  else el.removeAttribute('data-disabled')
+                }}
+                className={cn(
+                  'block size-3 rounded-full border-2 border-primary bg-background shadow-sm transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none',
+                  scrubActive
+                    ? 'scale-100 opacity-100'
+                    : 'scale-75 opacity-0 group-hover:scale-100 group-hover:opacity-100 focus-visible:scale-100 focus-visible:opacity-100',
+                )}
+              />
+            </BaseSlider.Track>
+          </BaseSlider.Control>
+        </BaseSlider.Root>
 
         {hoverInfo && hasClip && (
           <div
@@ -95,7 +102,7 @@ export function TransportScrubber({
       </div>
 
       {/* Inline diagnostic strip when critical notices/errors are present */}
-      {(actionError || showSourceNotice || (navigationError && !precisionOpen) || (hasDurationMismatch && !precisionOpen)) && (
+      {(actionError || showSourceNotice || (navigationError && !precisionOpen)) && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border/60 bg-muted/40 px-5 py-1.5 text-xs">
           {showSourceNotice && (
             <span className="flex items-center gap-1 text-warning">
@@ -104,16 +111,6 @@ export function TransportScrubber({
                 ? '曲目源文件已移除：请先恢复文件，再到曲库重新加载当前曲目。'
                 : '曲目文件已更新：请到曲库重新加载当前曲目；音乐更新后需要重新加载才能开播。'}
             </span>
-          )}
-          {hasDurationMismatch && !precisionOpen && (
-            <button
-              type="button"
-              onClick={() => motionStore.setPrecisionPanelOpen(true)}
-              className="text-left text-warning underline-offset-2 hover:underline"
-              data-testid="transport-duration-warning"
-            >
-              源动作头部时长与采样帧不一致（点击查看详情）
-            </button>
           )}
           {navigationError && !precisionOpen && (
             <span className="text-destructive" role="alert" data-testid="transport-navigation-error">

@@ -70,22 +70,17 @@ export function ImportDialog() {
     <>
       <Dialog
         open={open}
-        onOpenChange={(next) => {
-          if (!next && placementModalIndex === null) motionStore.closeImportForm()
+        onOpenChange={(next, eventDetails) => {
+          if (!next && placementModalIndex !== null) {
+            eventDetails?.cancel?.()
+            return
+          }
+          if (!next) motionStore.closeImportForm()
         }}
       >
         <DialogContent
           className="flex max-h-[85vh] w-[calc(100vw-2rem)] max-w-3xl flex-col gap-0 overflow-hidden p-0"
           data-testid="import-dialog"
-          onPointerDownOutside={(event) => {
-            if (placementModalIndex !== null) event.preventDefault()
-          }}
-          onInteractOutside={(event) => {
-            if (placementModalIndex !== null) event.preventDefault()
-          }}
-          onEscapeKeyDown={(event) => {
-            if (placementModalIndex !== null) event.preventDefault()
-          }}
         >
           <DialogHeader className="shrink-0 border-b border-border/60 px-5 pt-5 pb-3 pr-10">
             <DialogTitle>{editing ? '管理选中曲目' : '添加到曲库'}</DialogTitle>
@@ -234,6 +229,12 @@ export function ImportDialog() {
                 <div className="space-y-1.5">
                   <Label htmlFor="import-source-fps" className="text-xs">源动作帧率</Label>
                   <Select
+                    items={{
+                      '0': '自动检测',
+                      '25': '25 fps',
+                      '30': '30 fps',
+                      '60': '60 fps',
+                    }}
                     value={String(form.sourceFps)}
                     onValueChange={(value) => motionStore.setImportSourceFps(Number(value))}
                   >
@@ -251,6 +252,11 @@ export function ImportDialog() {
                 <div className="space-y-1.5">
                   <Label htmlFor="import-output-fps" className="text-xs">输出采样帧率</Label>
                   <Select
+                    items={{
+                      '0': '自动（保持原有）',
+                      '30': '30 fps',
+                      '60': '60 fps',
+                    }}
                     value={String(form.fps)}
                     onValueChange={(value) => motionStore.setImportOutputFps(Number(value))}
                   >

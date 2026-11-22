@@ -70,6 +70,7 @@ export interface ImportPositionFormState {
   z: number
   yawDegrees: number
   preserveExisting: boolean
+  sourceSlot?: number
 }
 
 export type ImportCoverMode = 'auto' | 'custom' | 'clear'

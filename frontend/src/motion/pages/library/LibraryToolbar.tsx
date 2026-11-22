@@ -113,18 +113,20 @@ export function LibraryToolbar({
           </Button>
 
           <Popover open={moreMenuOpen} onOpenChange={setMoreMenuOpen}>
-            <PopoverTrigger asChild>
-              <Button
-                type="button"
-                variant="secondary"
-                size="icon"
-                className="size-[var(--gaku-control-height,34px)]"
-                aria-label="更多曲库操作"
-                title="刷新、文件夹与重载"
-              >
-                <RiMoreFill className="size-4" />
-              </Button>
-            </PopoverTrigger>
+            <PopoverTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="icon"
+                  className="size-[var(--gaku-control-height,34px)]"
+                  aria-label="更多曲库操作"
+                  title="刷新、文件夹与重载"
+                >
+                  <RiMoreFill className="size-4" />
+                </Button>
+              }
+            />
             <PopoverContent side="bottom" align="end" className="w-48 p-1">
               <button
                 type="button"
@@ -230,24 +232,26 @@ export function LibraryToolbar({
         </div>
 
         <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              type="button"
-              variant={filter !== 'all' ? 'secondary' : 'ghost'}
-              size="icon"
-              className={cn(
-                'relative size-[var(--gaku-control-height,34px)]',
-                filter !== 'all' ? 'text-primary' : 'text-muted-foreground hover:text-foreground',
-              )}
-              aria-label="轨道筛选"
-              title="轨道筛选"
-            >
-              <RiFilter2Fill className="size-4" />
-              {filter !== 'all' && (
-                <span aria-hidden="true" className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-primary" />
-              )}
-            </Button>
-          </DropdownMenuTrigger>
+          <DropdownMenuTrigger
+            render={
+              <Button
+                type="button"
+                variant={filter !== 'all' ? 'secondary' : 'ghost'}
+                size="icon"
+                className={cn(
+                  'relative size-[var(--gaku-control-height,34px)]',
+                  filter !== 'all' ? 'text-primary' : 'text-muted-foreground hover:text-foreground',
+                )}
+                aria-label="轨道筛选"
+                title="轨道筛选"
+              >
+                <RiFilter2Fill className="size-4" />
+                {filter !== 'all' && (
+                  <span aria-hidden="true" className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-primary" />
+                )}
+              </Button>
+            }
+          />
           <DropdownMenuContent align="end">
             <DropdownMenuLabel>按轨道筛选</DropdownMenuLabel>
             <DropdownMenuSeparator />

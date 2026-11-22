@@ -1,19 +1,12 @@
 import * as React from 'react'
+import { Popover as BasePopover } from '@base-ui/react/popover'
 import { cn } from '@/lib/utils'
 
-interface PopoverContextValue {
-  open: boolean
-  setOpen: (next: boolean) => void
-  containerRef: React.RefObject<HTMLDivElement | null>
+interface PopoverPinnedContextValue {
+  setPinned: (pinned: boolean) => void
 }
 
-const PopoverContext = React.createContext<PopoverContextValue | null>(null)
-
-function usePopoverContext(): PopoverContextValue {
-  const ctx = React.useContext(PopoverContext)
-  if (!ctx) throw new Error('Popover components must be used inside <Popover>')
-  return ctx
-}
+const PopoverPinnedContext = React.createContext<PopoverPinnedContextValue | null>(null)
 
 export interface PopoverProps {
   open?: boolean
@@ -23,138 +16,89 @@ export interface PopoverProps {
   children: React.ReactNode
 }
 
-/**
- * Anchor-relative popover compatible with WebView2 CSS `zoom` and Radix Portal overlays.
- */
-export function Popover({ open: controlledOpen, defaultOpen = false, onOpenChange, className, children }: PopoverProps) {
-  const [uncontrolledOpen, setUncontrolledOpen] = React.useState(defaultOpen)
-  const isControlled = controlledOpen !== undefined
-  const open = isControlled ? controlledOpen : uncontrolledOpen
-  const containerRef = React.useRef<HTMLDivElement | null>(null)
-
-  const setOpen = React.useCallback(
-    (next: boolean) => {
-      if (!isControlled) setUncontrolledOpen(next)
-      onOpenChange?.(next)
-    },
-    [isControlled, onOpenChange],
-  )
-
-  return (
-    <PopoverContext.Provider value={{ open, setOpen, containerRef }}>
-      <div ref={containerRef} className={cn('relative inline-flex', className)}>
-        {children}
-      </div>
-    </PopoverContext.Provider>
-  )
-}
-
-export interface PopoverTriggerProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-  asChild?: boolean
-}
-
-export const PopoverTrigger = React.forwardRef<HTMLButtonElement, PopoverTriggerProps>(
-  ({ asChild = false, onClick, children, ...props }, ref) => {
-    const { open, setOpen } = usePopoverContext()
-
-    const handleClick = (event: React.MouseEvent<HTMLButtonElement>) => {
-      onClick?.(event)
-      if (!event.defaultPrevented) setOpen(!open)
-    }
-
-    if (asChild && React.isValidElement(children)) {
-      const child = children as React.ReactElement<Record<string, unknown>>
-      const childOnClick = child.props.onClick as ((e: React.MouseEvent<HTMLButtonElement>) => void) | undefined
-      return React.cloneElement(child, {
-        ...props,
-        'aria-expanded': open,
-        'data-state': open ? 'open' : 'closed',
-        onClick: (event: React.MouseEvent<HTMLButtonElement>) => {
-          childOnClick?.(event)
-          handleClick(event)
-        },
-      })
-    }
-
-    return (
-      <button
-        ref={ref}
-        type="button"
-        aria-expanded={open}
-        data-state={open ? 'open' : 'closed'}
-        onClick={handleClick}
-        {...props}
-      >
-        {children}
-      </button>
-    )
-  },
-)
-PopoverTrigger.displayName = 'PopoverTrigger'
-
-export interface PopoverContentProps extends React.HTMLAttributes<HTMLDivElement> {
-  side?: 'top' | 'bottom'
-  align?: 'start' | 'center' | 'end'
-  pinned?: boolean
-}
-
 function isProtectedOverlayTarget(target: Node): boolean {
   if (!(target instanceof Element)) return false
   return (
-    target.closest('[data-radix-popper-content-wrapper]') !== null ||
     target.closest('[role="listbox"]') !== null ||
     target.closest('[data-popover-ignore-outside]') !== null
   )
 }
 
+/**
+ * Popover built on `@base-ui/react/popover`, preserving pinned drawer
+ * semantics and ignoring outside presses inside nested portaled listboxes.
+ */
+export function Popover({ open, defaultOpen = false, onOpenChange, className, children }: PopoverProps) {
+  const pinnedRef = React.useRef(false)
+  const ctxValue = React.useMemo<PopoverPinnedContextValue>(
+    () => ({
+      setPinned: (next) => {
+        pinnedRef.current = next
+      },
+    }),
+    [],
+  )
+
+  return (
+    <PopoverPinnedContext.Provider value={ctxValue}>
+      <BasePopover.Root
+        open={open}
+        defaultOpen={defaultOpen}
+        modal={false}
+        onOpenChange={(next, eventDetails) => {
+          if (!next && pinnedRef.current && (eventDetails.reason === 'outside-press' || eventDetails.reason === 'focus-out')) {
+            eventDetails.cancel()
+            return
+          }
+          if (!next && eventDetails.reason === 'outside-press') {
+            const rawEvent = eventDetails.event as { target?: EventTarget | null } | undefined
+            const target = rawEvent?.target as Node | null | undefined
+            if (target && isProtectedOverlayTarget(target)) {
+              eventDetails.cancel()
+              return
+            }
+          }
+          onOpenChange?.(next)
+        }}
+      >
+        {className ? <div className={cn('relative inline-flex', className)}>{children}</div> : children}
+      </BasePopover.Root>
+    </PopoverPinnedContext.Provider>
+  )
+}
+
+export const PopoverTrigger = BasePopover.Trigger
+
+export interface PopoverContentProps extends React.ComponentPropsWithoutRef<typeof BasePopover.Popup> {
+  side?: React.ComponentPropsWithoutRef<typeof BasePopover.Positioner>['side']
+  align?: React.ComponentPropsWithoutRef<typeof BasePopover.Positioner>['align']
+  sideOffset?: number
+  pinned?: boolean
+}
+
 export const PopoverContent = React.forwardRef<HTMLDivElement, PopoverContentProps>(
-  ({ side = 'top', align = 'end', pinned = false, className, children, ...props }, ref) => {
-    const { open, setOpen, containerRef } = usePopoverContext()
-
+  ({ side = 'top', align = 'end', sideOffset = 8, pinned = false, className, children, ...props }, ref) => {
+    const ctx = React.useContext(PopoverPinnedContext)
     React.useEffect(() => {
-      if (!open || pinned) return
-      const onPointerDown = (event: PointerEvent) => {
-        const target = event.target as Node | null
-        if (!target) return
-        if (containerRef.current?.contains(target)) return
-        if (isProtectedOverlayTarget(target)) return
-        setOpen(false)
-      }
-      const onKeyDown = (event: KeyboardEvent) => {
-        if (event.key === 'Escape') {
-          event.stopPropagation()
-          setOpen(false)
-        }
-      }
-      document.addEventListener('pointerdown', onPointerDown, true)
-      document.addEventListener('keydown', onKeyDown)
-      return () => {
-        document.removeEventListener('pointerdown', onPointerDown, true)
-        document.removeEventListener('keydown', onKeyDown)
-      }
-    }, [open, pinned, setOpen, containerRef])
-
-    if (!open) return null
-
-    const sideClass = side === 'top' ? 'bottom-full mb-2' : 'top-full mt-2'
-    const alignClass =
-      align === 'start' ? 'left-0' : align === 'center' ? 'left-1/2 -translate-x-1/2' : 'right-0'
+      ctx?.setPinned(pinned)
+      return () => ctx?.setPinned(false)
+    }, [ctx, pinned])
 
     return (
-      <div
-        ref={ref}
-        role="dialog"
-        data-state="open"
-        className={cn(
-          'absolute z-50 rounded-lg border bg-popover p-3 text-popover-foreground shadow-lg animate-fade-in',
-          sideClass,
-          alignClass,
-          className,
-        )}
-        {...props}
-      >
-        {children}
-      </div>
+      <BasePopover.Portal>
+        <BasePopover.Positioner side={side} align={align} sideOffset={sideOffset} className="z-50 outline-none">
+          <BasePopover.Popup
+            ref={ref}
+            className={cn(
+              'rounded-lg border bg-popover p-3 text-popover-foreground shadow-lg animate-fade-in outline-none',
+              className,
+            )}
+            {...props}
+          >
+            {children}
+          </BasePopover.Popup>
+        </BasePopover.Positioner>
+      </BasePopover.Portal>
     )
   },
 )

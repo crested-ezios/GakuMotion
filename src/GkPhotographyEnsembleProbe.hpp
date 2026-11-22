@@ -180,6 +180,11 @@ namespace GakuMotion::photography_ensemble_probe
         {
             if (Exhausted()) { Evidence e; e.frames = frames_; return e; }
             auto e = Compare(previous_, next);
+            if (!next.available)
+            {
+                e.frames = frames_;
+                return e;
+            }
             e.frames = ++frames_;
             previous_ = next;
             return e;

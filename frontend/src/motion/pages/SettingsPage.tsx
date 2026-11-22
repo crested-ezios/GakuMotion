@@ -50,6 +50,7 @@ export function SettingsPage() {
       >
         <PropertyRow label="物理引擎" description="控制裙摆、发丝与饰品布料物理的计算后端">
           <Select
+            items={Object.fromEntries(PHYSICS_BACKENDS.map((label, index) => [String(index), label]))}
             value={String(physicsBackend)}
             disabled={!physicsSupported}
             onValueChange={(value) => void motionStore.setPhysicsBackend(Number(value))}

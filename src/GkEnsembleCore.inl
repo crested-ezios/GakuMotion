@@ -208,14 +208,19 @@
 				                            : (!player.currentMotionDir.empty()
 					                               ? ResolveMotionSlotDirectory(player.currentMotionDir, slot.sourceSlotIndex + 1)
 					                               : std::string());
-			cust.actorMotionOverrides.Clear();
-			if (!slotDir.empty())
+			if (!cust.overridesLoaded || cust.loadedSlotDir != slotDir)
 			{
-				const std::string overridePath = slotDir + "/bone_overrides.json";
-				if (std::filesystem::exists(MotionPathFromUtf8(overridePath)))
+				cust.actorMotionOverrides.Clear();
+				if (!slotDir.empty())
 				{
-					cust.actorMotionOverrides.LoadFromFile(overridePath);
+					const std::string overridePath = slotDir + "/bone_overrides.json";
+					if (std::filesystem::exists(MotionPathFromUtf8(overridePath)))
+					{
+						cust.actorMotionOverrides.LoadFromFile(overridePath);
+					}
 				}
+				cust.loadedSlotDir = slotDir;
+				cust.overridesLoaded = true;
 			}
 			BoneOverrideSet::BuildEffective(globalOverrides, cust.actorMotionOverrides,
 			                                masterOverridesEnabled, cust.effectiveOverrides);
@@ -304,17 +309,34 @@
 			return true;
 		}
 
-		std::vector<SceneActorEntry> CollectEligibleSceneActors() const
+		std::vector<SceneActorEntry> CollectDrivableSceneActors() const
 		{
-			std::vector<SceneActorEntry> eligible;
+			std::vector<SceneActorEntry> drivable;
 			for (const auto& entry : sceneActorRegistry.Entries())
 			{
 				if (!entry.actor) continue;
 				if (player.controller.fnCanDriveActor && !player.controller.fnCanDriveActor(entry.actor)) continue;
+				drivable.push_back(entry);
+			}
+			return drivable;
+		}
+
+		std::vector<SceneActorEntry> CollectEnsembleEligibleActors(const std::vector<SceneActorEntry>& drivable) const
+		{
+			std::vector<SceneActorEntry> eligible;
+			for (const auto& entry : drivable)
+			{
 				if (fnEnsembleActorEligible && !fnEnsembleActorEligible(entry.actor)) continue;
 				eligible.push_back(entry);
 			}
 			return eligible;
+		}
+
+		std::vector<SceneActorEntry> CollectEligibleSceneActors() const
+		{
+			const auto drivable = CollectDrivableSceneActors();
+			auto eligible = CollectEnsembleEligibleActors(drivable);
+			return !eligible.empty() ? eligible : drivable;
 		}
 
 		void StopAndReleaseFormationTracks(bool abandonOnly)
@@ -346,9 +368,13 @@
 		void RebuildFormationForTrack(const MotionEntry* motion)
 		{
 			SyncSelectedFacialWeightsFromPlayer();
-			const auto eligible = CollectEligibleSceneActors();
+			const auto drivable = CollectDrivableSceneActors();
+			const auto ensembleEligible = CollectEnsembleEligibleActors(drivable);
+			const auto& eligible = !ensembleEligible.empty() ? ensembleEligible : drivable;
 			const bool wasActive = formation.active;
-			formation.active = eligible.size() >= 2;
+			formation.active = ensembleEligible.size() >= 2;
+			if (formation.active) ensembleProbeMissStreak = 0;
+			else if (drivable.size() < 2) ensembleProbeMissStreak = 0;
 			if (!enforceInjectionPolicy)
 			{
 				formation.available = !eligible.empty();
@@ -453,6 +479,10 @@
 
 			CaptureFormationAnchorFromScene(eligible);
 
+			for (auto& kv : actorCustomizations)
+			{
+				kv.second.overridesLoaded = false;
+			}
 			for (auto& slot : formation.slots)
 			{
 				if (!slot.occupied) continue;
@@ -512,10 +542,95 @@
 		// Called from PublishSceneActors when scene actors arrive, depart, or reuse addresses.
 		void SyncFormationWithRoster()
 		{
+			const auto slotsEqual = [](const StageFormation& lhs, const std::vector<StageSlotState>& prevSlots,
+			                           bool prevActive, bool prevAvailable, bool prevVerified, bool prevIsGroupSong,
+			                           int prevTrackPositionCount, int prevSlotCount, int prevSelectedSlotIndex,
+			                           uint64_t prevActorEpoch) noexcept -> bool
+			{
+				if (lhs.active != prevActive || lhs.available != prevAvailable || lhs.verified != prevVerified ||
+					lhs.isGroupSong != prevIsGroupSong || lhs.trackPositionCount != prevTrackPositionCount ||
+					lhs.slotCount != prevSlotCount || lhs.selectedSlotIndex != prevSelectedSlotIndex ||
+					lhs.actorEpoch != prevActorEpoch || lhs.slots.size() != prevSlots.size())
+				{
+					return false;
+				}
+				for (size_t i = 0; i < lhs.slots.size(); ++i)
+				{
+					const auto& a = lhs.slots[i];
+					const auto& b = prevSlots[i];
+					if (a.slotIndex != b.slotIndex || a.actorToken != b.actorToken ||
+						a.actorInstanceId != b.actorInstanceId || a.occupied != b.occupied ||
+						a.isOverflow != b.isOverflow || a.sourceSlotIndex != b.sourceSlotIndex ||
+						a.placementDirty != b.placementDirty || a.hasActorBoneOverrides != b.hasActorBoneOverrides ||
+						a.offset.x != b.offset.x || a.offset.y != b.offset.y || a.offset.z != b.offset.z ||
+						a.yawDegrees != b.yawDegrees || a.character != b.character ||
+						a.displayName != b.displayName || a.shortName != b.shortName ||
+						a.facialWeights.overall != b.facialWeights.overall ||
+						a.facialWeights.brow != b.facialWeights.brow ||
+						a.facialWeights.eye != b.facialWeights.eye ||
+						a.facialWeights.mouth != b.facialWeights.mouth)
+					{
+						return false;
+					}
+				}
+				return true;
+			};
+
+			const auto prevSlots = formation.slots;
+			const bool prevActive = formation.active;
+			const bool prevAvailable = formation.available;
+			const bool prevVerified = formation.verified;
+			const bool prevIsGroupSong = formation.isGroupSong;
+			const int prevTrackPositionCount = formation.trackPositionCount;
+			const int prevSlotCount = formation.slotCount;
+			const int prevSelectedSlotIndex = formation.selectedSlotIndex;
+			const uint64_t prevActorEpoch = formation.actorEpoch;
+
 			SyncSelectedFacialWeightsFromPlayer();
 			const MotionEntry* motion = CurrentMotion();
 			const bool hasLoadedMotion = !player.currentMotionDir.empty() || motion != nullptr;
-			const auto eligible = CollectEligibleSceneActors();
+			const auto drivable = CollectDrivableSceneActors();
+			const auto ensembleEligible = CollectEnsembleEligibleActors(drivable);
+			std::unordered_map<uint64_t, SceneActorEntry> drivableByToken;
+			for (const auto& item : drivable)
+			{
+				drivableByToken[item.token] = item;
+			}
+
+			const bool wasActive = formation.active;
+			bool keepActiveByHysteresis = false;
+			if (ensembleEligible.size() >= 2)
+			{
+				ensembleProbeMissStreak = 0;
+			}
+			else if (wasActive && drivable.size() >= 2 && ensembleEligible.empty())
+			{
+				bool allOccupiedDrivable = true;
+				int occupiedCount = 0;
+				for (const auto& s : formation.slots)
+				{
+					if (!s.occupied) continue;
+					++occupiedCount;
+					const auto found = drivableByToken.find(s.actorToken);
+					if (found == drivableByToken.end() || found->second.instanceId != s.actorInstanceId)
+					{
+						allOccupiedDrivable = false;
+						break;
+					}
+				}
+				if (allOccupiedDrivable && occupiedCount >= 2 && ensembleProbeMissStreak < 3)
+				{
+					++ensembleProbeMissStreak;
+					keepActiveByHysteresis = true;
+				}
+			}
+			else if (drivable.size() < 2)
+			{
+				ensembleProbeMissStreak = 0;
+			}
+
+			const std::vector<SceneActorEntry>& eligible =
+				(!ensembleEligible.empty() && !keepActiveByHysteresis) ? ensembleEligible : drivable;
 			std::unordered_map<uint64_t, SceneActorEntry> eligibleByToken;
 			for (const auto& item : eligible)
 			{
@@ -566,22 +681,21 @@
 				}
 			}
 
-			// If any actor tracked by solo player died or left, AbandonScene safely without touching it.
+			// Solo actors remain bound as long as they are present in the registry and drivable;
+			// Photography ensemble gating must never evict a single-actor controller binding.
 			if (player.controller.targetActor)
 			{
 				const auto* reg = sceneActorRegistry.Find(player.controller.targetActor);
 				const bool canDrive = !player.controller.fnCanDriveActor ||
 					(reg && player.controller.fnCanDriveActor(player.controller.targetActor));
-				const bool eligibleTarget = reg && (!fnEnsembleActorEligible || fnEnsembleActorEligible(reg->actor));
-				if (!reg || !canDrive || !eligibleTarget)
+				if (!reg || !canDrive)
 				{
 					player.controller.DiscardBindings();
 					player.controller.SetTargetActor(nullptr);
 				}
 			}
 
-			const bool wasActive = formation.active;
-			formation.active = eligible.size() >= 2;
+			formation.active = (ensembleEligible.size() >= 2) || keepActiveByHysteresis;
 			if (!enforceInjectionPolicy)
 			{
 				formation.available = !eligible.empty();
@@ -653,7 +767,7 @@
 			{
 				CaptureFormationAnchorFromScene(eligible);
 			}
-			else
+			else if (formation.active)
 			{
 				RefreshFormationAnchorPose();
 			}
@@ -706,8 +820,15 @@
 					if (idx >= 0)
 					{
 						const auto& s = formation.slots[static_cast<size_t>(idx)];
-						if (!player.controller.targetActor || !sceneActorRegistry.Find(player.controller.targetActor))
+						const bool needFilterSwitch = !ensembleEligible.empty() && drivable.size() > ensembleEligible.size() &&
+							player.controller.targetActor != eligible.front().actor;
+						if (!player.controller.targetActor || !sceneActorRegistry.Find(player.controller.targetActor) ||
+							needFilterSwitch)
 						{
+							if (needFilterSwitch && !player.controller.bindings.empty())
+							{
+								player.controller.DiscardBindings();
+							}
 							player.controller.SetTargetActor(eligible.front().actor);
 						}
 						player.controller.SetInitialPositionOffset(s.offset);
@@ -729,9 +850,16 @@
 			{
 				player.controller.SetBoneOverrides(&effectiveOverrides);
 			}
-			formationFrameWrittenActors.clear();
-			formationCameraTicked = false;
-			++formation.revision;
+
+			const bool changed = !slotsEqual(formation, prevSlots, prevActive, prevAvailable, prevVerified,
+			                                 prevIsGroupSong, prevTrackPositionCount, prevSlotCount,
+			                                 prevSelectedSlotIndex, prevActorEpoch);
+			if (changed)
+			{
+				formationFrameWrittenActors.clear();
+				formationCameraTicked = false;
+				++formation.revision;
+			}
 		}
 
 		// ---- Public Formation API (M3) ------------------------------------------

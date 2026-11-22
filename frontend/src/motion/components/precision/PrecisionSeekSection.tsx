@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import type { LoadedState, PlayerState } from '../../protocol'
 import { motionStore } from '../../store'
-import { durationMismatch, formatTransportTime, framePosition, lastFrameTime } from '../../time'
+import { formatTransportTime, framePosition } from '../../time'
 import { PendingBadge } from '../Unsupported'
 
 const SEEK_STEP_OPTIONS = [1, 5, 10, 15] as const
@@ -76,12 +76,6 @@ export function PrecisionSeekSection({
           </div>
         ) : (
           <span className="text-muted-foreground">尚未加载演出曲目</span>
-        )}
-        {hasClip && durationMismatch(player.totalFrames, player.fps, player.duration) && (
-          <p className="mt-1.5 text-xs text-warning" data-testid="transport-duration-warning">
-            源动作头部时长与采样帧不一致：头部 {player.duration.toFixed(3)} 秒；末采样{' '}
-            {lastFrameTime(player.totalFrames, player.fps).toFixed(3)} 秒。
-          </p>
         )}
       </div>
 

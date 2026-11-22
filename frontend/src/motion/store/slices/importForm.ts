@@ -187,6 +187,7 @@ export function createImportFormSlice(
               z: pos.z,
               yawDegrees: pos.yawDegrees,
               preserveExisting: true,
+              sourceSlot: pos.slot,
             }))
           } else {
             form.positions = [
@@ -201,6 +202,7 @@ export function createImportFormSlice(
                 z: 0,
                 yawDegrees: 0,
                 preserveExisting: true,
+                sourceSlot: 1,
               },
             ]
           }
@@ -392,6 +394,7 @@ export function createImportFormSlice(
             const disableMorph = fPick === IMPORT_SLOT.clear || fPick === IMPORT_SLOT.skip
             return {
               slot: idx + 1,
+              ...(preserveExisting && pos.sourceSlot && pos.sourceSlot > 0 ? { sourceSlot: pos.sourceSlot } : {}),
               ...(isDisk(mPick) ? { motionFile: mPick, motionVmd: mPick } : {}),
               ...(isDisk(fPick) ? { facialFile: fPick, morphVmd: fPick } : {}),
               disableMorph,

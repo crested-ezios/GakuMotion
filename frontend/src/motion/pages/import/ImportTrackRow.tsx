@@ -74,7 +74,13 @@ export function ImportTrackRow({
 
       <div className="min-w-0 space-y-1">
         <div className="flex min-w-0 gap-1.5">
-          <Select value={String(slotState.selection)} onValueChange={(value) => onSelectChange(Number(value))}>
+          <Select
+            items={Object.fromEntries(
+              slotState.candidates.map((candidate, candidateIndex) => [String(candidateIndex), candidate]),
+            )}
+            value={String(slotState.selection)}
+            onValueChange={(value) => onSelectChange(Number(value))}
+          >
             <SelectTrigger
               className="h-8 min-w-0 flex-1 overflow-hidden text-xs [&>span]:min-w-0 [&>span]:truncate"
               aria-label={slotAriaLabel}

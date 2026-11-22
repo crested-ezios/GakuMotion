@@ -1,7 +1,6 @@
 import * as React from 'react'
 import {
   RiFlaskFill,
-  RiLoader4Fill,
   RiPlugFill,
   RiRefreshFill,
   RiUploadCloud2Fill,
@@ -35,31 +34,101 @@ import { StagePage } from '../pages/StagePage'
 import { SettingsPage } from '../pages/SettingsPage'
 import { DeveloperPage } from '../pages/DeveloperPage'
 
+function MotionBootSkeleton() {
+  return (
+    <div
+      data-testid="motion-boot-skeleton"
+      aria-busy="true"
+      aria-label="正在连接 GakuMotion"
+      className="flex h-full w-full flex-col overflow-hidden bg-background text-foreground"
+    >
+      {/* Top header skeleton */}
+      <div className="flex h-11 shrink-0 items-center justify-between border-b border-border/70 bg-card/70 px-4">
+        <div className="flex items-center gap-2.5">
+          <div className="h-4 w-24 animate-pulse rounded bg-muted" />
+          <div className="h-4 w-28 animate-pulse rounded-full bg-muted/80" />
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">正在连接 GakuMotion…</span>
+          <div className="h-7 w-7 animate-pulse rounded-md bg-muted" />
+        </div>
+      </div>
+
+      {/* Main body: sidebar + content skeleton */}
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <aside className="hidden w-[200px] shrink-0 flex-col gap-2 border-r border-border/70 bg-card/40 p-3 sm:flex">
+          {Array.from({ length: 6 }, (_, idx) => (
+            <div key={idx} className="h-8 w-full animate-pulse rounded-md bg-muted/75" />
+          ))}
+        </aside>
+
+        <main className="flex min-w-0 flex-1 flex-col gap-3 p-4">
+          <div className="flex items-center justify-between gap-2">
+            <div className="h-8 flex-1 max-w-sm animate-pulse rounded-md bg-muted" />
+            <div className="flex items-center gap-2">
+              <div className="h-8 w-20 animate-pulse rounded-md bg-muted" />
+              <div className="h-8 w-24 animate-pulse rounded-md bg-muted/90" />
+            </div>
+          </div>
+
+          <div className="flex flex-1 flex-col divide-y divide-border/50 overflow-hidden rounded-xl border border-border/60 bg-card/50">
+            {Array.from({ length: 6 }, (_, idx) => (
+              <div key={idx} className="flex items-center gap-3 px-3.5 py-2.5">
+                <div className="size-[42px] shrink-0 animate-pulse rounded-md bg-muted" />
+                <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                  <div className="h-4 w-48 max-w-[60%] animate-pulse rounded bg-muted" />
+                  <div className="h-3 w-32 max-w-[40%] animate-pulse rounded bg-muted/70" />
+                </div>
+                <div className="h-3.5 w-12 shrink-0 animate-pulse rounded bg-muted/70" />
+              </div>
+            ))}
+          </div>
+        </main>
+      </div>
+
+      {/* Bottom transport bar skeleton */}
+      <div className="flex h-16 shrink-0 items-center justify-between border-t border-border/70 bg-card/85 px-4">
+        <div className="flex items-center gap-3">
+          <div className="size-10 animate-pulse rounded-md bg-muted" />
+          <div className="space-y-1.5">
+            <div className="h-3.5 w-28 animate-pulse rounded bg-muted" />
+            <div className="h-3 w-20 animate-pulse rounded bg-muted/70" />
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="size-8 animate-pulse rounded-full bg-muted" />
+          <div className="h-2 w-48 animate-pulse rounded-full bg-muted/80" />
+        </div>
+        <div className="hidden items-center gap-2 sm:flex">
+          <div className="h-7 w-16 animate-pulse rounded-md bg-muted" />
+          <div className="h-7 w-7 animate-pulse rounded-md bg-muted" />
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function BootScreen({ error, canReconnect }: { error: string | null; canReconnect: boolean }) {
+  if (!error) {
+    return <MotionBootSkeleton />
+  }
   return (
     <div className="flex h-full w-full flex-col items-center justify-center gap-4 bg-background p-6 text-muted-foreground">
-      {error ? (
-        <div className="flex max-w-md flex-col items-center gap-3 rounded-xl border bg-card/85 p-6 text-center shadow-sm">
-          <div className="flex size-11 items-center justify-center rounded-full bg-destructive/15 text-destructive">
-            <RiPlugFill className="size-5" />
-          </div>
-          <div className="space-y-1">
-            <p className="text-base font-medium text-foreground">GakuMotion 原生桥接不可用</p>
-            <p className="text-xs leading-relaxed text-muted-foreground">{error}</p>
-          </div>
-          {canReconnect && (
-            <Button type="button" variant="outline" size="sm" onClick={() => void motionStore.restart()}>
-              <RiRefreshFill className="size-3.5" />
-              重新连接
-            </Button>
-          )}
+      <div className="flex max-w-md flex-col items-center gap-3 rounded-xl border bg-card/85 p-6 text-center shadow-sm">
+        <div className="flex size-11 items-center justify-center rounded-full bg-destructive/15 text-destructive">
+          <RiPlugFill className="size-5" />
         </div>
-      ) : (
-        <div className="flex flex-col items-center gap-2.5">
-          <RiLoader4Fill className="size-7 animate-spin text-primary" />
-          <p className="text-base">正在连接 GakuMotion…</p>
+        <div className="space-y-1">
+          <p className="text-base font-medium text-foreground">GakuMotion 原生桥接不可用</p>
+          <p className="text-xs leading-relaxed text-muted-foreground">{error}</p>
         </div>
-      )}
+        {canReconnect && (
+          <Button type="button" variant="outline" size="sm" onClick={() => void motionStore.restart()}>
+            <RiRefreshFill className="size-3.5" />
+            重新连接
+          </Button>
+        )}
+      </div>
     </div>
   )
 }
@@ -193,18 +262,20 @@ function PreviewToolbar({
         </select>
       </label>
       <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-6 px-2 text-xs"
-            data-testid="preview-special-modals-trigger"
-          >
-            <RiWindowFill className="size-3" />
-            特殊弹窗
-          </Button>
-        </DropdownMenuTrigger>
+        <DropdownMenuTrigger
+          render={
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-6 px-2 text-xs"
+              data-testid="preview-special-modals-trigger"
+            >
+              <RiWindowFill className="size-3" />
+              特殊弹窗
+            </Button>
+          }
+        />
         <DropdownMenuContent align="end" className="w-64">
           <DropdownMenuLabel>导入流程弹窗（Issue #5）</DropdownMenuLabel>
           <DropdownMenuItem onClick={() => motionStore.previewImportFlow('success')}>

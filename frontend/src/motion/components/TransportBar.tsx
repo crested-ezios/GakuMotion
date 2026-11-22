@@ -15,17 +15,17 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { cn } from '@/lib/utils'
 import { PLAY_MODES } from '../protocol'
 import { motionStore, useMotionStore } from '../store'
-import { durationMismatch, validTimeline } from '../time'
+import { validTimeline } from '../time'
 import { AlbumCover } from './AlbumCover'
 import { CoverEditorModal } from './CoverEditorModal'
 import { PendingBadge } from './Unsupported'
 import { TransportRightControls } from './transport/TransportRightControls'
 import { TransportScrubber } from './transport/TransportScrubber'
 
-function IconTooltip({ label, children }: { label: string; children: React.ReactNode }) {
+function IconTooltip({ label, children }: { label: string; children: React.ReactElement }) {
   return (
     <Tooltip>
-      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipTrigger render={children} />
       <TooltipContent side="top">{label}</TooltipContent>
     </Tooltip>
   )
@@ -98,7 +98,6 @@ export function TransportBar() {
   const currentPlayModeLabel = playModeLabels[normalizedPlayMode] ?? playModeLabels[0]
   const PlayModeIcon = playModeIcon(normalizedPlayMode)
 
-  const hasDurationMismatch = hasClip && durationMismatch(player.totalFrames, player.fps, player.duration)
   const showSourceNotice = loaded.sourceMissing || loaded.sourceChanged
 
   return (
@@ -117,7 +116,6 @@ export function TransportBar() {
           sourceMissing={loaded.sourceMissing}
           navigationError={navigationError}
           precisionOpen={precisionOpen}
-          hasDurationMismatch={hasDurationMismatch}
         />
 
         {/* Main 3-Zone Player Bar */}

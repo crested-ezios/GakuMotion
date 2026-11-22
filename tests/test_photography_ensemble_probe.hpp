@@ -71,4 +71,12 @@ static void TestPhotographyEnsembleProbe()
     Check(session.Exhausted()&&e.frames==FrameBudget,"a probe session has a hard physical-frame budget");
     session.Reset();++f.number;e=session.Observe(f);
     Check(e.frames==1&&!e.crossFrameAvailable,"explicit restart clears all previous evidence");
+
+    session.Reset();
+    Frame unavailable;
+    for(unsigned i=0;i<FrameBudget+20;++i){unavailable.number=i+1;unavailable.available=false;e=session.Observe(unavailable);}
+    Check(!session.Exhausted()&&e.frames==0,"unavailable scene-load frames do not consume ensemble probe budget");
+    Frame available = f; available.number = FrameBudget + 100; available.available = true;
+    e = session.Observe(available);
+    Check(e.frames==1&&e.snapshotAvailable,"first available frame starts at budget count 1 after load");
 }

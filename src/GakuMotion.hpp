@@ -120,6 +120,7 @@ namespace GakuMotion
 		uint64_t formationCameraFrame{0};
 		std::unordered_set<void*> formationFrameWrittenActors;
 		bool formationCameraTicked{false};
+		unsigned ensembleProbeMissStreak{0};
 		bool (*fnEnsembleActorEligible)(void*){nullptr};
 		CameraController camera;
 		LookAtManager lookAt;
@@ -1434,6 +1435,7 @@ namespace GakuMotion
 			formationCameraFrame = 0;
 			formationFrameWrittenActors.clear();
 			formationCameraTicked = false;
+			ensembleProbeMissStreak = 0;
 			player.additionalPerformanceDuration = 0;
 			player.controller.ClearReferenceAnchor();
 			player.controller.SetPlacementYawDegrees(0);
@@ -3732,6 +3734,8 @@ namespace GakuMotion
 						cust.actorMotionOverrides.LoadFromFile(slotPath);
 					}
 				}
+				cust.loadedSlotDir = slotDir;
+				cust.overridesLoaded = true;
 				slot.hasActorBoneOverrides = !cust.actorMotionOverrides.Empty();
 			}
 
@@ -3978,6 +3982,7 @@ namespace GakuMotion
 				cust.actorMotionOverrides = motionOverrides;
 				cust.actorMotionOverrides.enabled = true;
 				cust.actorMotionOverrides.RebuildIndex();
+				cust.overridesLoaded = true;
 				RebuildSlotActorOverrides(*sel);
 			}
 		}
@@ -4006,6 +4011,7 @@ namespace GakuMotion
 				auto& cust = actorCustomizations[sel->actorToken];
 				cust.actorMotionOverrides = motionOverrides;
 				cust.actorMotionOverrides.RebuildIndex();
+				cust.overridesLoaded = true;
 				RebuildSlotActorOverrides(*sel);
 			}
 		}
@@ -4022,6 +4028,7 @@ namespace GakuMotion
 				auto& cust = actorCustomizations[sel->actorToken];
 				cust.actorMotionOverrides.offsets.clear();
 				cust.actorMotionOverrides.RebuildIndex();
+				cust.overridesLoaded = true;
 				RebuildSlotActorOverrides(*sel);
 			}
 		}

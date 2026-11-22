@@ -49,6 +49,8 @@ namespace GakuMotion
 		BoneOverrideSet actorMotionOverrides;
 		BoneOverrideSet effectiveOverrides;
 		bool facialCustomized{false};
+		bool overridesLoaded{false};
+		std::string loadedSlotDir;
 	};
 
 	inline Vector3 ComputeDefaultSlotOffset(const MotionEntry* motion, int slotIndex,

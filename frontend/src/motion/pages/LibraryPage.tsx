@@ -76,13 +76,6 @@ export function LibraryPage() {
     [library.entries, search, filter, sort],
   )
 
-  React.useEffect(() => {
-    motionStore.preloadLibraryCovers(
-      library.entries,
-      visibleEntries.slice(0, 24).map((entry) => entry.id),
-    )
-  }, [library.entries, library.revision, visibleEntries, capabilities])
-
   // Lightweight windowing for large libraries.
   const scrollRef = React.useRef<HTMLDivElement>(null)
   const [scrollTop, setScrollTop] = React.useState(0)
@@ -346,20 +339,18 @@ export function LibraryPage() {
             <AlertDialogTitle>删除选中确认</AlertDialogTitle>
           </AlertDialogHeader>
           <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-            <AlertDialogDescription asChild>
-              <div className="min-w-0 space-y-2.5 text-sm text-muted-foreground">
-                <p className="min-w-0 break-all [overflow-wrap:anywhere]">
-                  删除曲目：<span className="font-medium text-foreground">{pendingDelete?.key}</span>
+            <AlertDialogDescription render={<div />} className="min-w-0 space-y-2.5 text-sm text-muted-foreground">
+              <p className="min-w-0 break-all [overflow-wrap:anywhere]">
+                删除曲目：<span className="font-medium text-foreground">{pendingDelete?.key}</span>
+              </p>
+              <div className="min-w-0 space-y-1">
+                <p>将永久删除整个曲目目录及其中全部文件：</p>
+                <p className="min-w-0 rounded-md border border-border/60 bg-muted/40 px-2.5 py-1.5 font-mono text-xs text-foreground break-all [overflow-wrap:anywhere]">
+                  {pendingDelete?.directory}
                 </p>
-                <div className="min-w-0 space-y-1">
-                  <p>将永久删除整个曲目目录及其中全部文件：</p>
-                  <p className="min-w-0 rounded-md border border-border/60 bg-muted/40 px-2.5 py-1.5 font-mono text-xs text-foreground break-all [overflow-wrap:anywhere]">
-                    {pendingDelete?.directory}
-                  </p>
-                </div>
-                <p>此操作无法撤销，文件不会进入回收站。确定删除选中曲目？</p>
-                {deleteChanged && <p className="text-warning">曲库已变化，请取消后重新选择曲目。</p>}
               </div>
+              <p>此操作无法撤销，文件不会进入回收站。确定删除选中曲目？</p>
+              {deleteChanged && <p className="text-warning">曲库已变化，请取消后重新选择曲目。</p>}
             </AlertDialogDescription>
           </div>
           <AlertDialogFooter className="shrink-0 border-t border-border/60 bg-background px-5 py-3.5">

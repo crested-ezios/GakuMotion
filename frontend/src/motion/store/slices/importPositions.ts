@@ -309,6 +309,48 @@ export function createImportPositionsSlice(
           void helpers.probeImportAudio(appendedAudio)
         }
       },
+
+      moveImportPosition: (posIndex: number, direction: -1 | 1): void => {
+        const next = ctx.getState().importForm
+        const targetIndex = posIndex + direction
+        if (
+          posIndex < 0 ||
+          posIndex >= next.positions.length ||
+          targetIndex < 0 ||
+          targetIndex >= next.positions.length
+        ) {
+          return
+        }
+        const positions = [...next.positions]
+        const current = positions[posIndex]
+        const target = positions[targetIndex]
+        // Swap only the motion/facial track pair & preserveExisting/sourceSlot; keep x/y/z/yaw anchored to each slot index.
+        positions[posIndex] = {
+          ...current,
+          motion: target.motion,
+          facial: target.facial,
+          preserveExisting: target.preserveExisting,
+          sourceSlot: target.sourceSlot,
+        }
+        positions[targetIndex] = {
+          ...target,
+          motion: current.motion,
+          facial: current.facial,
+          preserveExisting: current.preserveExisting,
+          sourceSlot: current.sourceSlot,
+        }
+        ctx.set({
+          importForm: {
+            ...next,
+            positions,
+            slots: {
+              ...next.slots,
+              motion: positions[0].motion,
+              facial: positions[0].facial,
+            },
+          },
+        })
+      },
     }
   }
 
