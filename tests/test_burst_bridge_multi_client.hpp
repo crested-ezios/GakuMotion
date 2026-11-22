@@ -1,5 +1,9 @@
 #pragma once
 #include "GkBurstBridgeMultiClient.hpp"
+#include "GkBurstBridgeClient.hpp"
+#include "GkFallbackPhysics.hpp"
+#include "GkGmlClient.hpp"
+#include "GakuPhysicsDiagnostics.h"
 namespace MultiBridgeFixture {
     struct Context { GbbContext token{}; GbbStatus status{}; unsigned publishes{},clears{},destroys{}; };
     inline std::array<Context,8> contexts;
@@ -20,6 +24,12 @@ namespace MultiBridgeFixture {
         auto* c=Find(token); if (!c) return GBB_E_CONTEXT;
         const auto index=static_cast<int>(c-contexts.data()); ++c->publishes;
         if (index==fail) return GBB_E_FAULT;
+        for (const auto& other : contexts) {
+            if (&other == c || !other.token || other.status.actor != frame->actor) continue;
+            c->status.last_result = GBB_E_BINDING;
+            std::snprintf(c->status.detail, sizeof(c->status.detail), "Actor double fingerprint aliases another context");
+            return GBB_E_BINDING;
+        }
         if (index!=stale) {
             c->status.actor=frame->actor; c->status.injected=1; c->status.writes=frame->bone_count;
             c->status.state=GBB_STATE_INJECTING; c->status.source_frame=frame->unity_frame;
@@ -71,6 +81,10 @@ static void TestBurstBridgeMultiClient() {
     }
     const auto a=client.State(0).token,b=client.State(1).token,c=client.State(2).token;
     Check(a && b && c && a!=b && b!=c && a!=c,"three actors have distinct opaque context tokens");
+    Check(!client.Publish(5,bindings[2],ctrl,1.f,60) && client.State(5).faulted &&
+        client.State(5).reason.find("Actor double fingerprint aliases another context") != std::string::npos,
+        "duplicate native ownership fails closed and keeps the bridge rejection detail");
+    client.Clear(5);
     Check(client.State(3).token && client.State(4).token &&
         client.State(3).token != client.State(4).token && client.State(3).token != a && client.State(4).token != c,
         "additional actors acquire separate native contexts beyond the legacy three slots");
@@ -99,4 +113,77 @@ static void TestBurstBridgeMultiClient() {
     Check(client.ClearForCapture() && !client.HasCaptureInput(),"capture checks cancellation generation for every actor");
     Check(client.Shutdown() && shutdowns==1,"one module shutdown covers all contexts");
     Check(!client.Shutdown() && shutdowns==1,"repeated client shutdown never repeats the module call");
+}
+
+namespace EnsemblePhysicsRuntimeFixture {
+#include "plugin/GkPluginContextAndPhysics.inl"
+
+    static void TestSwappingNativeSlots() {
+        using namespace GakuMotion;
+        using namespace MultiBridgeFixture;
+        BeginTest("ensemble native physics ownership follows formation slot changes");
+        Core core;
+        std::array<int, 4> actors{}, animators{};
+        const std::vector<SceneActorObservation> roster{
+            {&actors[0], 1}, {&actors[1], 2}, {&actors[2], 3}, {&actors[3], 4},
+        };
+        core.player.controller.fnGetLocalRotation = [](void*, float* q) {
+            q[0] = q[1] = q[2] = 0.f; q[3] = 1.f;
+        };
+        core.player.controller.fnGetLocalPosition = [](void*, float* p) {
+            p[0] = p[1] = p[2] = 0.f;
+        };
+        core.PublishSceneActors(roster);
+        core.config.secondaryPhysicsBackend = 2;
+        core.player.state = PlaybackState::Paused;
+        for (size_t i = 0; i < actors.size(); ++i) {
+            const auto& slot = core.formation.slots[i];
+            core.ConfigureFormationTrackForSlot(slot, nullptr, false);
+            auto& binding = core.TrackForSlot(static_cast<int>(i))->controller.bindings[&actors[i]];
+            binding.actor = &actors[i];
+            binding.cachedAnimator = &animators[i];
+            binding.boneTransforms = {&actors[i]};
+            binding.boneHids = {0};
+            binding.bindPoseCaptured = true;
+        }
+        BurstBridgeMultiClientTestAccess::Install(g_multiBurstBridge);
+        const auto publish = [&](size_t actorIndex, int frame) {
+            DispatchEnsemblePhysics(core, &actors[actorIndex], frame, 1.f / 60.f, std::chrono::steady_clock::now());
+        };
+        for (size_t i = 0; i < actors.size(); ++i) publish(i, 60);
+        const auto slot1 = g_multiBurstBridge.State(0).token;
+        const auto slot2 = g_multiBurstBridge.State(1).token;
+        const auto slot3 = g_multiBurstBridge.State(2).token;
+        const auto slot4 = g_multiBurstBridge.State(3).token;
+        Check(slot1 && slot2 && slot3 && slot4, "every occupied slot publishes a native context");
+
+        Check(core.SwapSlots(1, 2), "swap the second and third actors while paused");
+        publish(2, 61);
+        Check(!Find(slot2) && !Find(slot3) && g_ensemblePhysics[1].actual == 2,
+            "both old contexts retire before the first displaced actor can publish");
+        publish(1, 61);
+        Check(g_ensemblePhysics[2].actual == 2 && g_multiBurstBridge.State(0).token == slot1 &&
+            g_multiBurstBridge.State(3).token == slot4 && !g_capturePhysicsUnconfirmed,
+            "both moved actors retain native physics and unaffected actors retain their contexts");
+
+        core.PublishSceneActors({roster[0], roster[1], roster[2]});
+        Check(core.formation.slots.size() == 3 && ReconcileEnsemblePhysicsSlots(core) && !Find(slot4),
+            "roster reconciliation retires a removed overflow slot without its callback");
+
+        Check(core.SwapSlots(1, 2), "restore the original formation");
+        const auto priorToken = g_multiBurstBridge.State(1).token;
+        refuseDestroy = true;
+        publish(1, 62);
+        Check(g_multiBurstBridge.State(1).token == priorToken && g_capturePhysicsUnconfirmed,
+            "failed retirement keeps the old context and prevents an ambiguous publication");
+        publish(0, 62);
+        Check(g_multiBurstBridge.State(0).token == slot1 && g_multiBurstBridge.State(0).status.source_frame == 62,
+            "an unchanged slot continues publishing while a displaced context awaits retirement");
+        refuseDestroy = false;
+        publish(1, 63);
+        publish(2, 63);
+        Check(!Find(priorToken) && g_ensemblePhysics[1].actual == 2 && g_ensemblePhysics[2].actual == 2,
+            "successful retirement retry admits both actors");
+        ClearSecondaryPhysics(true);
+    }
 }

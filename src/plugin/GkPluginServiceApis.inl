@@ -231,6 +231,7 @@ void MotionTick(void*, float)
 		std::lock_guard<std::recursive_mutex> lock(core.stateMutex);
 		TickPhotographyEnsemble(core, g_faceUnityFrame ? g_faceUnityFrame() : -1);
 		RefreshSceneActors(core);
+		ReconcileEnsemblePhysicsSlots(core);
 		TickStudio(core);
 		core.RejectObsoleteControlCommands();
 	}

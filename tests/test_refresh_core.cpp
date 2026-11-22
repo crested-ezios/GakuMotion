@@ -3260,6 +3260,7 @@ int main(int argc, char** argv)
  TestEnsembleRuntime(repoRoot);
 #ifdef _WIN32
  TestBurstBridgeMultiClient();
+ EnsemblePhysicsRuntimeFixture::TestSwappingNativeSlots();
 #endif
  TestEnsemblePlacement();
  TestPhotographyEnsembleProbe();

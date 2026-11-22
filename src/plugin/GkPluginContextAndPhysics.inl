@@ -103,14 +103,17 @@
 		GakuMotion::FallbackPhysics fallback;
 		GakuPhysicsDiagnosticSnapshot diagnostic{};
 		void* actor{};
+		uint64_t actorToken{};
 		int backend{-1}, actual{}, frame{-1}, seeks{-1};
 		uint64_t session{};
 		float time{-1};
 		bool beforeQuartz{}, sleeveDiagnostics{}, legacyOwner{};
+		int pausedSampleBackend{-1};
 		std::string motionFile, reason;
 		std::chrono::steady_clock::time_point lastTick{};
 	};
 	std::deque<EnsemblePhysicsState> g_ensemblePhysics(3);
+	uint64_t g_ensemblePhysicsFormationRevision{};
 
 	bool HasEnsemblePhysics()
 	{
@@ -138,6 +141,41 @@
 		slot = EnsemblePhysicsState{};
 		return true;
 	}
+	bool ReconcileEnsemblePhysicsSlots(GakuMotion::Core& core)
+	{
+		const auto& formation = core.formation;
+		if (g_ensemblePhysicsFormationRevision == formation.revision) return true;
+		bool clean = true;
+		// A slot swap takes effect for the whole formation before the next
+		// Actor callback. Retire every displaced input before any new owner
+		// publishes so the same native rig cannot appear in two contexts.
+		for (size_t i = 0; i < g_ensemblePhysics.size(); ++i)
+		{
+			auto& slot = g_ensemblePhysics[i];
+			if (!slot.actor) continue;
+			const auto* observed = core.sceneActorRegistry.Find(slot.actor);
+			const bool live = observed && observed->token == slot.actorToken;
+			if (live && formation.active && i < formation.slots.size() &&
+				formation.slots[i].occupied && formation.slots[i].actorToken == slot.actorToken)
+				continue;
+
+			if (live)
+			{
+				if (slot.fallback.HasCaptureWrites())
+				{
+					auto* track = core.PlayerForActor(slot.actor);
+					if (track && track->controller.targetActor == slot.actor && track->controller.CanDriveActor(slot.actor))
+						g_capturePhysicsUnconfirmed |= !slot.fallback.RestoreForCapture(track->controller);
+				}
+				const bool bridgeClean = slot.legacyOwner ? g_burstBridge.ClearForCapture() : g_multiBurstBridge.ClearForCapture(i);
+				g_capturePhysicsUnconfirmed |= !bridgeClean;
+			}
+			clean = ClearEnsemblePhysicsSlot(i, !live) && clean;
+		}
+		// Retry failed destruction before allowing a new context to publish.
+		if (clean) g_ensemblePhysicsFormationRevision = formation.revision;
+		return clean;
+	}
 	bool RestoreSecondaryPhysics()
 	{
 		auto& core = GakuMotion::Core::Instance();
@@ -164,6 +202,7 @@
 		g_burstBridge.Clear();
 		g_fallbackPhysics.Clear();
 		for (size_t i = 0; i < g_ensemblePhysics.size(); ++i) ClearEnsemblePhysicsSlot(i, abandonedScene);
+		g_ensemblePhysicsFormationRevision = 0;
 		g_physicsDiagnostic = {};
 		g_physicsActual = 0;
 		g_physicsFrame = -1;
@@ -203,6 +242,13 @@
 		const int slotIndex = core.SlotIndexForActor(actor);
 		if (slotIndex < 0 || static_cast<size_t>(slotIndex) >= core.formation.slots.size()) return;
 		const size_t index = static_cast<size_t>(slotIndex);
+		const auto actorToken = core.formation.slots[index].actorToken;
+		if (!ReconcileEnsemblePhysicsSlots(core) &&
+			(index >= g_ensemblePhysics.size() || g_ensemblePhysics[index].actorToken != actorToken))
+		{
+			core.formation.slots[index].physicsBackend = "capture_destroy_unconfirmed";
+			return;
+		}
 		if (g_ensemblePhysics.size() <= index) g_ensemblePhysics.resize(index + 1);
 		auto& slot = g_ensemblePhysics[index];
 		auto& ctrl = track->controller;
@@ -266,7 +312,8 @@
 			}
 			if (!ClearEnsemblePhysicsSlot(index, slot.actor != actor))
 			{ core.formation.slots[index].physicsBackend = "capture_destroy_unconfirmed"; return; }
-			slot.actor = actor; slot.session = core.injectionSession; slot.backend = requested;
+			slot.actor = actor; slot.actorToken = actorToken;
+			slot.session = core.injectionSession; slot.backend = requested;
 			slot.beforeQuartz = core.config.beforeQuartzExperiment; slot.sleeveDiagnostics = core.config.sleeveMuscleDiagnostics;
 			slot.motionFile = track->loadedMotionFile; slot.legacyOwner = legacyOwner;
 			if (legacyOwner) g_burstBridge.RetryUnavailable();
@@ -315,6 +362,19 @@
 		const std::string reason = requested == 0 ? "off" : requested == 1 ? "fallback" :
 			useV3 ? g_multiBurstBridge.State(index).reason : legacyOwner ? g_burstBridge.reason : multiUnavailableReason;
 		SyncFallbackAnimatorMute(ctrl, actor, binding->second, requested, native, reason);
+		const bool paused = core.player.state == GakuMotion::PlaybackState::Paused && !core.player.scrubbing;
+		if (!paused || timelineDiscontinuity) slot.pausedSampleBackend = -1;
+		// The last worker pass can still refer to a playing frame when Pause arrives.
+		if (paused && slot.pausedSampleBackend != slot.actual && g_hostContext.logInfo &&
+			(!native || std::abs(bridgeStatus.clip_time - slot.time) < 0.001f))
+		{
+			g_hostContext.logInfo(
+				"[GakuMotion][Physics] paused slot=%zu clip=%.3f actual=%d simulation_dt=%.6f "
+				"stream_frame=%d stream_dt=%.6f animator_muted=%d",
+				index, slot.time, slot.actual, dt, native ? bridgeStatus.source_frame : -1,
+				native ? bridgeStatus.delta_time : 0.f, ctrl.IsAnimatorMuted(actor) ? 1 : 0);
+			slot.pausedSampleBackend = slot.actual;
+		}
 		core.formation.slots[index].physicsBackend = native ? "native" : slot.actual == 0 ? "off" : "fallback: " + reason;
 		if (slot.reason != reason)
 		{

@@ -60,10 +60,10 @@ private:
     static int DumpApi(const GbbApiV3& api,const wchar_t* path) {
         __try { return api.dump_traces(path); } __except(EXCEPTION_EXECUTE_HANDLER) { return GBB_E_FAULT; }
     }
-    bool Fail(size_t index,const char* why) {
+    bool Fail(size_t index,std::string why) {
         auto& slot=slots_[index];
         if (slot.token && api_.clear_context) ClearApi(api_,slot.token,0);
-        slot.faulted=true; slot.reason=why; slot.status.state=GBB_STATE_FAULTED;
+        slot.faulted=true; slot.reason=std::move(why); slot.status.state=GBB_STATE_FAULTED;
         slot.status.injection_fault=1; return false;
     }
 public:
@@ -141,7 +141,13 @@ public:
             slot.status.size!=sizeof(slot.status) || slot.status.version!=GBB_API_VERSION || slot.status.state>GBB_STATE_SHUTDOWN ||
             slot.status.writes>GBB_MAX_BONES || slot.perf.size!=sizeof(slot.perf) || slot.perf.version!=GBB_API_VERSION)
             return Fail(index,"context_observer_fault");
-        if (result!=GBB_OK && result!=GBB_PENDING) return Fail(index,"context_publish_rejected");
+        if (result!=GBB_OK && result!=GBB_PENDING) {
+            std::string why="context_publish_rejected result="+std::to_string(result);
+            const auto* detail=slot.status.detail;
+            const auto* end=std::find(detail,detail+sizeof(slot.status.detail),'\0');
+            if (end!=detail) why+=" detail="+std::string(detail,end);
+            return Fail(index,std::move(why));
+        }
         if (slot.status.injection_fault || slot.status.state==GBB_STATE_FAULTED) return Fail(index,"context_faulted");
         if (slot.status.generation<slot.generation) return Fail(index,"context_generation_regressed");
         if (slot.status.generation!=slot.generation) {

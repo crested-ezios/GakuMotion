@@ -116,6 +116,7 @@ void MotionActorTick(void*, void* activeActor, float deltaTime)
 	// managed by the fresh typed snapshot below, decoupled from Windows wall-clock.
 	static int s_lastUnityFrame = -1, s_lastRenderedFrame = -1, s_fallbackFrame = 0;
 	static float s_cameraFrameDelta = 0.0333f;
+	static float s_unscaledFrameDelta = 0.0333f;
 	static uint64_t s_cameraPhysicalFrame = 0;
 	const int renderedFrame = g_unityRenderedFrameCount ? g_unityRenderedFrameCount() : -1;
 	if (renderedFrame >= 0 && renderedFrame != s_lastRenderedFrame)
@@ -132,9 +133,10 @@ void MotionActorTick(void*, void* activeActor, float deltaTime)
 		s_lastUnityFrame = unityFrame;
 		++s_fallbackFrame;
 		const float unscaledDt = g_unityUnscaledDeltaTime ? g_unityUnscaledDeltaTime() : deltaTime;
-		realDeltaTime = (std::isfinite(unscaledDt) && unscaledDt > 0.0f)
+		s_unscaledFrameDelta = (std::isfinite(unscaledDt) && unscaledDt > 0.0f)
 			? (std::min)(unscaledDt, 0.1f)
 			: (realDeltaTime > 0.0f ? realDeltaTime : 0.0333f);
+		realDeltaTime = s_unscaledFrameDelta;
 		const float simDt = core.EffectiveSimulationDelta(realDeltaTime);
 		s_cameraFrameDelta = s_cameraPhysicalFrame == 0 ? 0.0333f : (std::max)(0.0f, simDt);
 		// Zero is reserved by CameraController for callers without a frame ID.
@@ -224,7 +226,9 @@ void MotionActorTick(void*, void* activeActor, float deltaTime)
 			core.stageManager.RescanCandidates(activeActor); // Read-only discovery while GM stage controls are inactive.
 		core.RefreshSceneNodes();
 	}
+	// Every actor in the frame must integrate its fallback springs with the same
+	// delta, even when later callbacks receive a scaled or zero engine delta.
 	RunActorPhysicsAndProbes(core, player, activeActor, sceneHandle, unityFrame, s_fallbackFrame,
-	                         realDeltaTime, bodyBegin, poseSerialBefore,
+	                         s_unscaledFrameDelta, bodyBegin, poseSerialBefore,
 	                         ensembleProbeTrack, ensembleProbePoseBefore);
 }
