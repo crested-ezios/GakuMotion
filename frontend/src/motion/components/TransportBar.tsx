@@ -5,6 +5,7 @@ import {
   RiCameraFill,
   RiCheckFill,
   RiEqualizerFill,
+  RiEyeFill,
   RiMusic2Fill,
   RiOrderPlayFill,
   RiPauseFill,
@@ -368,6 +369,19 @@ export function TransportBar() {
               onClick={() => void motionStore.stop()}
             >
               <RiStopFill className="size-[18px]" />
+            </Button>
+          </IconTooltip>
+          <IconTooltip label="预览第一帧：暂停并定位到当前动作的起始帧">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-8 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+              aria-label="预览第一帧"
+              disabled={!hasClip || !supports('player.seekFrame') || scrub.active}
+              onClick={() => void motionStore.seekFrame('0')}
+            >
+              <RiEyeFill className="size-4" />
             </Button>
           </IconTooltip>
           {!transportSupported && <PendingBadge />}

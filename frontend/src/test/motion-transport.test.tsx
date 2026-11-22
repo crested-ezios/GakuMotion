@@ -36,6 +36,7 @@ describe('TransportBar', () => {
     renderBar()
     expect(screen.getByTestId('transport-title')).toHaveTextContent('未加载曲目')
     expect(screen.getByRole('button', { name: '播放' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '预览第一帧' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '快退' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '快进' })).toBeDisabled()
     expect(screen.getByRole('slider', { name: '播放进度' })).toHaveAttribute('data-disabled', '')
@@ -62,6 +63,18 @@ describe('TransportBar', () => {
 
     await user.click(screen.getByRole('button', { name: '停止' }))
     await waitFor(() => expect(motionStore.getState().player.state).toBe('stopped'))
+  })
+
+  it('previews frame zero of the current motion without reloading it', async () => {
+    await motionStore.selectMotion('hikari-no-saki', false)
+    await motionStore.play()
+    await motionStore.seekRelative(5)
+    const spy = vi.spyOn(bridge, 'request')
+    renderBar()
+    await userEvent.setup().click(screen.getByRole('button', { name: '预览第一帧' }))
+    await waitFor(() => expect(motionStore.getState().player).toMatchObject({ state: 'paused', time: 0 }))
+    expect(spy.mock.calls).toEqual([['player.seekFrame', { frame: 0 }]])
+    expect(motionStore.getState().loaded.motionKey).toBe('hikari-no-saki')
   })
 
   it('runs the three-stage scrub from the full-width slider keyboard interaction', async () => {
