@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CameraPage } from '@/motion/pages/CameraPage'
@@ -172,5 +172,86 @@ describe('MotionPage', () => {
 
     rerender(<StagePage />)
     expect(screen.queryByText('舞台角色阵容')).not.toBeInTheDocument()
+  })
+
+  it('uses pointer events (without draggable attribute) in ActorSlotStrip for click select, >5px swap, and cancel/<5px/self/outside guards', async () => {
+    const user = userEvent.setup()
+    const spy = vi.spyOn(bridge, 'request')
+    render(<MotionPage />)
+    await waitFor(() => expect(screen.getByTestId('actor-slot-card-0')).toBeInTheDocument())
+
+    const card0 = screen.getByTestId('actor-slot-card-0')
+    const card1 = screen.getByTestId('actor-slot-card-1')
+    const viewport = screen.getByTestId('actor-slot-strip-viewport')
+
+    expect(card0).not.toHaveAttribute('draggable')
+    expect(card1).not.toHaveAttribute('draggable')
+    expect(card0.className).toContain('cursor-grab')
+
+    const makeRect = (left: number, width = 136): DOMRect =>
+      ({ left, right: left + width, top: 10, bottom: 160, width, height: 150, x: left, y: 10, toJSON: () => {} }) as DOMRect
+    vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(makeRect(0, 500))
+    vi.spyOn(card0, 'getBoundingClientRect').mockReturnValue(makeRect(0, 136))
+    vi.spyOn(card1, 'getBoundingClientRect').mockReturnValue(makeRect(144, 136))
+
+    // <5px movement does not swap; click selects slot
+    fireEvent.pointerDown(card0, { button: 0, clientX: 40, clientY: 50 })
+    fireEvent.pointerMove(window, { clientX: 42, clientY: 52 })
+    fireEvent.pointerUp(window, { button: 0, clientX: 42, clientY: 52 })
+    expect(spy.mock.calls.some((c) => c[0] === 'formation.swapSlots')).toBe(false)
+    await user.click(card1)
+    await waitFor(() =>
+      expect(spy.mock.calls.some((c) => c[0] === 'formation.selectSlot' && (c[1] as { slotIndex?: number }).slotIndex === 1)).toBe(true),
+    )
+
+    // >5px drag to self or outside strip does not swap
+    fireEvent.pointerDown(card0, { button: 0, clientX: 40, clientY: 50 })
+    fireEvent.pointerMove(window, { clientX: 60, clientY: 50 })
+    expect(document.body.style.cursor).toBe('grabbing')
+    fireEvent.pointerUp(window, { button: 0, clientX: 60, clientY: 50 })
+    expect(document.body.style.cursor).toBe('')
+    expect(spy.mock.calls.some((c) => c[0] === 'formation.swapSlots')).toBe(false)
+
+    // pointercancel restores cursor and does not swap
+    fireEvent.pointerDown(card0, { button: 0, clientX: 40, clientY: 50 })
+    fireEvent.pointerMove(window, { clientX: 200, clientY: 50 })
+    expect(document.body.style.cursor).toBe('grabbing')
+    fireEvent.pointerCancel(window)
+    expect(document.body.style.cursor).toBe('')
+    expect(spy.mock.calls.some((c) => c[0] === 'formation.swapSlots')).toBe(false)
+
+    // Release outside viewport does not swap even after hovering card1
+    fireEvent.pointerDown(card0, { button: 0, clientX: 40, clientY: 50 })
+    fireEvent.pointerMove(window, { clientX: 200, clientY: 50 })
+    fireEvent.pointerUp(window, { button: 0, clientX: 800, clientY: 50 })
+    expect(spy.mock.calls.some((c) => c[0] === 'formation.swapSlots')).toBe(false)
+
+    // >5px drag from card0 onto card1 swaps slots and suppresses ensuing synthetic click
+    const selectCountBefore = spy.mock.calls.filter((c) => c[0] === 'formation.selectSlot').length
+    fireEvent.pointerDown(card0, { button: 0, clientX: 40, clientY: 50 })
+    fireEvent.pointerMove(window, { clientX: 200, clientY: 50 })
+    expect(card0.className).toContain('opacity-50')
+    expect(card1.className).toContain('ring-primary/60')
+    fireEvent.pointerUp(window, { button: 0, clientX: 200, clientY: 50 })
+    fireEvent.click(card0)
+
+    await waitFor(() =>
+      expect(
+        spy.mock.calls.some(
+          (c) =>
+            c[0] === 'formation.swapSlots' &&
+            (c[1] as { fromSlotIndex?: number; toSlotIndex?: number }).fromSlotIndex === 0 &&
+            (c[1] as { toSlotIndex?: number }).toSlotIndex === 1,
+        ),
+      ).toBe(true),
+    )
+    expect(spy.mock.calls.filter((c) => c[0] === 'formation.selectSlot').length).toBe(selectCountBefore)
+
+    // Subsequent real click after drag macrotask still works normally
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    await user.click(card0)
+    await waitFor(() =>
+      expect(spy.mock.calls.filter((c) => c[0] === 'formation.selectSlot').length).toBe(selectCountBefore + 1),
+    )
   })
 })

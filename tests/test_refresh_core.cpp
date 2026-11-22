@@ -28,6 +28,7 @@
 #include "GkFaceRuntime.hpp"
 #include "GakuMotion.hpp"
 #ifdef _WIN32
+#include "GkCsharpImport.hpp"
 #endif
 
 #include <cmath>
@@ -2290,6 +2291,82 @@ static void TestSecondaryPhysicsConfig()
 	fs::remove(file);
 }
 
+static void TestFallbackMuteAnimatorLifecycle()
+{
+	BeginTest("per-actor fallbackMuteAnimator mutes Animator cleanly without leaking");
+	using namespace animatorFake;
+	states.clear();
+	directorPauses = 0;
+	auto actor = reinterpret_cast<void*>(0x91);
+	auto animator = reinterpret_cast<void*>(0x92);
+	auto director = reinterpret_cast<void*>(0x93);
+	states[animator] = State{};
+
+	MotionPlayer player;
+	Wire(player);
+	player.controller.preserveAnimatorForSecondaryPhysics = true;
+	player.controller.SetTargetActor(actor);
+	player.Tick(1.0f / 60.0f, actor, animator, director);
+	Check(states[animator].enabled && states[animator].controller == reinterpret_cast<void*>(0x700) &&
+	      !player.controller.IsAnimatorMuted(actor) && directorPauses == 0,
+	      "native preserve mode starts with Animator live and unmuted");
+
+	// Simulating definitive native failure on this actor flips fallbackMuteAnimator to true
+	player.controller.fallbackMuteAnimator = true;
+	player.controller.DefensiveMute(actor, animator, director);
+	Check(!states[animator].enabled && states[animator].controller == nullptr &&
+	      player.controller.IsAnimatorMuted(actor) && directorPauses == 1,
+	      "fallbackMuteAnimator=true immediately detaches/disables Animator and pauses PlayableDirector");
+
+	// CopyRuntimeConfigurationFrom must NOT leak fallbackMuteAnimator to another actor's controller
+	IdolController otherCtrl;
+	otherCtrl.fallbackMuteAnimator = false;
+	otherCtrl.CopyRuntimeConfigurationFrom(player.controller);
+	Check(otherCtrl.preserveAnimatorForSecondaryPhysics && !otherCtrl.fallbackMuteAnimator,
+	      "CopyRuntimeConfigurationFrom copies global preserveAnimator policy without leaking fallbackMuteAnimator");
+
+	// Flipping fallbackMuteAnimator back to false restores Animator without Rebind
+	player.controller.fallbackMuteAnimator = false;
+	player.controller.DefensiveMute(actor, animator, nullptr);
+	Check(states[animator].enabled && states[animator].controller == reinterpret_cast<void*>(0x700) &&
+	      !player.controller.IsAnimatorMuted(actor) && states[animator].rebinds == 0,
+	      "clearing fallbackMuteAnimator restores Animator without Rebind");
+
+	// RestoreForCapture still recognizes the paused PlayableDirector when fallbackMuteAnimator is active
+	player.controller.fallbackMuteAnimator = true;
+	player.controller.DefensiveMute(actor, animator, director);
+	player.controller.captureCheckEnforced = true;
+	const auto capFail = player.controller.RestoreForCapture();
+	Check(capFail.bodyModified && !capFail.bodyConfirmed,
+	      "RestoreForCapture refuses to certify body when fallbackMuteAnimator paused PlayableDirector");
+	player.controller.captureCheckEnforced = false;
+
+	// Stop() and DiscardBindings() reset fallbackMuteAnimator
+	player.controller.fallbackMuteAnimator = true;
+	player.Stop();
+	Check(!player.controller.fallbackMuteAnimator && !player.controller.IsAnimatorMuted(actor),
+	      "MotionPlayer::Stop resets fallbackMuteAnimator");
+
+	player.controller.fallbackMuteAnimator = true;
+	player.controller.DiscardBindings();
+	Check(!player.controller.fallbackMuteAnimator,
+	      "IdolController::DiscardBindings resets fallbackMuteAnimator");
+
+	// BindActor with fallbackMuteAnimator=true from the start mutes on bind
+	states[animator] = State{};
+	MotionPlayer preMuted;
+	Wire(preMuted);
+	preMuted.controller.preserveAnimatorForSecondaryPhysics = true;
+	preMuted.controller.fallbackMuteAnimator = true;
+	preMuted.Tick(1.0f / 60.0f, actor, animator);
+	Check(!states[animator].enabled && states[animator].controller == nullptr &&
+	      preMuted.controller.IsAnimatorMuted(actor),
+	      "BindActor with fallbackMuteAnimator=true mutes even when preserveAnimatorForSecondaryPhysics=true");
+	preMuted.Stop();
+	Check(!preMuted.controller.fallbackMuteAnimator && states[animator].enabled,
+	      "Stop restores muted Animator and clears fallbackMuteAnimator");
+}
+
 
 #include "test_library_safety.hpp"
 
@@ -3157,6 +3234,7 @@ int main(int argc, char** argv)
  TestSecondaryPhysicsAnimatorLifecycle();
  TestSecondaryPhysicsMultiActorRestore();
  TestSecondaryPhysicsConfig();
+ TestFallbackMuteAnimatorLifecycle();
  TestOrderedPlaybackCommands();
  TestInitialPosition();
  TestOverrideInjection();

@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
-import { IMPORT_SLOT, isSlotPlaceholder, vmdBadgeText } from '../../protocol'
+import { IMPORT_SLOT, isSlotPlaceholder, vmdBadgeText, type TrackTiming } from '../../protocol'
 import { motionStore, useMotionStore, type ImportSlotKey, type ImportSlotState } from '../../store'
 import { DragFloat } from '../../components/DragFloat'
 
@@ -35,26 +35,32 @@ export function ImportTrackRow({
   slotState,
   slotAriaLabel,
   timing,
+  timingAriaPrefix,
   showTiming,
   busy,
   dialogSupported,
   onSelectChange,
   onBrowse,
+  onTimingChange,
 }: {
   slotKey: ImportSlotKey
   slotState: ImportSlotState
   slotAriaLabel: string
-  timing?: { speed: number; offsetSeconds: number }
+  timing?: TrackTiming
+  timingAriaPrefix?: string
   showTiming: boolean
   busy: boolean
   dialogSupported: boolean
   onSelectChange: (selection: number) => void
   onBrowse: () => void
+  onTimingChange?: (patch: Partial<TrackTiming>) => void
 }) {
   const meta = SLOT_META[slotKey]
   const SlotIcon = meta.icon
   const pick = slotState.candidates[slotState.selection] ?? ''
   const hasDiskPath = !isSlotPlaceholder(pick)
+  const timingPrefix = timingAriaPrefix ?? meta.label
+  const handleTimingChange = onTimingChange ?? ((patch: Partial<TrackTiming>) => motionStore.setImportTiming(slotKey, patch))
 
   return (
     <div
@@ -117,29 +123,29 @@ export function ImportTrackRow({
           <div className="space-y-0.5 text-xs text-muted-foreground">
             <span>速率 (倍)</span>
             <DragFloat
-              ariaLabel={`${meta.label}速率`}
+              ariaLabel={`${timingPrefix}速率`}
               inputClassName="h-8 w-full px-2 text-xs"
               value={timing.speed}
               min={0}
               max={10}
               step={0.01}
               decimals={2}
-              onChange={(next) => motionStore.setImportTiming(slotKey, { speed: next })}
-              onCommit={(next) => motionStore.setImportTiming(slotKey, { speed: next })}
+              onChange={(next) => handleTimingChange({ speed: next })}
+              onCommit={(next) => handleTimingChange({ speed: next })}
             />
           </div>
           <div className="space-y-0.5 text-xs text-muted-foreground">
             <span>偏移 (秒)</span>
             <DragFloat
-              ariaLabel={`${meta.label}偏移`}
+              ariaLabel={`${timingPrefix}偏移`}
               inputClassName="h-8 w-full px-2 text-xs"
               value={timing.offsetSeconds}
               min={-3600}
               max={3600}
               step={0.01}
               decimals={2}
-              onChange={(next) => motionStore.setImportTiming(slotKey, { offsetSeconds: next })}
-              onCommit={(next) => motionStore.setImportTiming(slotKey, { offsetSeconds: next })}
+              onChange={(next) => handleTimingChange({ offsetSeconds: next })}
+              onCommit={(next) => handleTimingChange({ offsetSeconds: next })}
             />
           </div>
         </div>

@@ -1,13 +1,10 @@
-import type { LibraryPositionEntry, Vector3 } from './coreTypes'
+import type { LibraryPositionEntry, TrackTiming, Vector3 } from './coreTypes'
+
+export type { TrackTiming }
 
 // Phase 2 domain types (library import / drop / bone / gaze / stage nodes /
 // experiments / telemetry / sole / solePitch / studio). Shapes mirror the ImGui
 // reference (GakuMotion dev src/gui + Core headers); see motion-bridge-protocol.md.
-
-export interface TrackTiming {
-  speed: number
-  offsetSeconds: number
-}
 
 export interface PerformanceTiming {
   motion: TrackTiming
@@ -28,6 +25,8 @@ export interface VmdProbe {
   eyeBoneFrames: number
   morphFrames: number
   cameraFrames: number
+  hasRootOrigin?: boolean
+  rootOrigin?: Vector3
 }
 
 export interface ImportClassification {
@@ -52,6 +51,11 @@ export interface ImportPositionRequest {
   sourceFps?: number
   rebakeOutput?: boolean
   preserveExisting?: boolean
+  hasExplicitPlacement?: boolean
+  timing?: {
+    motion?: TrackTiming
+    facial?: TrackTiming
+  }
   x?: number
   y?: number
   z?: number

@@ -7,6 +7,7 @@ import {
   type ImportRequest,
   type LibraryEntry,
   type LibraryPositionEntry,
+  type SlotPerformanceTiming,
 } from '../../protocol'
 import { classifyImportFiles } from '../../validation'
 import type { MockHandlerContext, MockHandlerMap } from '../context'
@@ -106,7 +107,17 @@ export function createLibraryHandlers(ctx: MockHandlerContext): MockHandlerMap {
         hasCover: entry.hasCover,
         isGroup: entry.isGroup,
         positionCount: entry.positionCount,
-        positions: entry.positions.map((pos) => ({ ...pos })),
+        positions: entry.positions.map((pos) => ({
+          ...pos,
+          ...(pos.timing
+            ? {
+                timing: {
+                  motion: { ...pos.timing.motion },
+                  facial: { ...pos.timing.facial },
+                },
+              }
+            : {}),
+        })),
         timing: state.timings.get(entry.id) ?? defaultPerformanceTiming(),
       }
       return result
@@ -211,15 +222,30 @@ export function createLibraryHandlers(ctx: MockHandlerContext): MockHandlerMap {
         const customCover = req.coverDataUri && !req.clearCover ? req.coverDataUri : ''
         const audioEmbeddedCover = hasAudioTrack && !audioFile.toLowerCase().endsWith('.wav')
         const rawPositions = Array.isArray(req.positions) ? req.positions : []
-        const builtPositions: LibraryPositionEntry[] = rawPositions.map((pos, idx) => ({
-          slot: pos.slot ?? idx + 1,
-          x: pos.x ?? 0,
-          y: pos.y ?? 0,
-          z: pos.z ?? 0,
-          yawDegrees: pos.yawDegrees ?? 0,
-          hasMotion: true,
-          hasFacial: !pos.disableMorph && Boolean(pos.facialFile || pos.morphVmd || facialFile),
-        }))
+        const defaultTiming = defaultPerformanceTiming()
+        const reqTiming = req.timing ?? defaultTiming
+        const existingEntry = isEdit && existingIndex >= 0 ? state.entries[existingIndex] : undefined
+        const builtPositions: LibraryPositionEntry[] = rawPositions.map((pos, idx) => {
+          const fallbackMotion = idx === 0 ? reqTiming.motion : defaultTiming.motion
+          const fallbackFacial = idx === 0 ? reqTiming.facial : defaultTiming.facial
+          const posTiming: SlotPerformanceTiming = {
+            motion: { ...(pos.timing?.motion ?? fallbackMotion) },
+            facial: { ...(pos.timing?.facial ?? fallbackFacial) },
+          }
+          const sourcePos = existingEntry?.positions.find((p) => p.slot === (pos.sourceSlot ?? pos.slot ?? idx + 1))
+          return {
+            slot: pos.slot ?? idx + 1,
+            x: pos.x ?? 0,
+            y: pos.y ?? 0,
+            z: pos.z ?? 0,
+            yawDegrees: pos.yawDegrees ?? 0,
+            hasMotion: true,
+            hasFacial:
+              !pos.disableMorph &&
+              Boolean(pos.facialFile || pos.morphVmd || facialFile || (pos.preserveExisting && sourcePos?.hasFacial)),
+            timing: posTiming,
+          }
+        })
         const nextIsGroup = builtPositions.length >= 2
         const nextPositionCount = Math.max(1, builtPositions.length)
         if (isEdit && existingIndex >= 0) {
@@ -274,7 +300,12 @@ export function createLibraryHandlers(ctx: MockHandlerContext): MockHandlerMap {
           }
           state.entries.unshift(created)
         }
-        state.timings.set(id, req.timing ?? defaultPerformanceTiming())
+        state.timings.set(id, {
+          motion: { ...reqTiming.motion },
+          facial: { ...reqTiming.facial },
+          camera: { ...reqTiming.camera },
+          audio: { ...reqTiming.audio },
+        })
         state.libraryRevision += 1
         state.libraryNotice = isEdit ? `已更新曲目：${req.title}` : `已导入曲目：${req.title}`
         if (!isEdit && state.player.state !== 'playing') {

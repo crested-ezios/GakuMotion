@@ -215,6 +215,7 @@ namespace GakuMotion
 	{
 		guiMikuFitSnapshot.store(0, std::memory_order_relaxed);
 		captureRestoreUnconfirmed = false;
+		fallbackMuteAnimator = false;
 		bindings.clear();
 		currentBinding.Reset();
 		cachedAnimator = nullptr;

@@ -382,34 +382,32 @@ namespace GakuMotion
 			std::string metadataError;
 			const bool hasMetadata = ParseTrackInfoJsonFile(MotionPathFromUtf8(trackDirectory) / "info.json", metadata, metadataError);
 			const jsonlite::Value* mouthMetadata = nullptr;
+			const jsonlite::Value* slotMeta = nullptr;
 			if (hasMetadata)
 			{
 				mouthMetadata = &metadata;
-				if (normalizedSlot >= 2)
+				if (const auto* positions = metadata.Find("positions"); positions && positions->IsArray())
 				{
-					if (const auto* positions = metadata.Find("positions"); positions && positions->IsArray())
+					for (const auto& item : positions->arrayItems)
 					{
-						const jsonlite::Value* slotMeta = nullptr;
-						for (const auto& item : positions->arrayItems)
+						if (!item.IsObject()) continue;
+						const auto* slotField = item.Find("slot");
+						if (slotField && slotField->IsNumber() &&
+							static_cast<int>(std::llround(slotField->numberValue)) == normalizedSlot)
 						{
-							if (!item.IsObject()) continue;
-							const auto* slotField = item.Find("slot");
-							if (slotField && slotField->IsNumber() &&
-								static_cast<int>(std::llround(slotField->numberValue)) == normalizedSlot)
-							{
-								slotMeta = &item;
-								break;
-							}
+							slotMeta = &item;
+							break;
 						}
-						if (!slotMeta && static_cast<size_t>(normalizedSlot - 1) < positions->arrayItems.size())
-						{
-							const auto& candidate = positions->arrayItems[static_cast<size_t>(normalizedSlot - 1)];
-							if (candidate.IsObject() && candidate.Find("slot") == nullptr)
-								slotMeta = &candidate;
-						}
-						if (slotMeta && (slotMeta->Find("source_fps") || slotMeta->Find("source_morph_fps")))
-							mouthMetadata = slotMeta;
 					}
+					if (!slotMeta && static_cast<size_t>(normalizedSlot - 1) < positions->arrayItems.size())
+					{
+						const auto& candidate = positions->arrayItems[static_cast<size_t>(normalizedSlot - 1)];
+						if (candidate.IsObject() && candidate.Find("slot") == nullptr)
+							slotMeta = &candidate;
+					}
+					if (normalizedSlot >= 2 && slotMeta &&
+						(slotMeta->Find("source_fps") || slotMeta->Find("source_morph_fps")))
+						mouthMetadata = slotMeta;
 				}
 			}
 			mouthSourceStatus = mouth_source::Restore(
@@ -432,6 +430,10 @@ namespace GakuMotion
 			audioStarted = false;
 			audioWaitingForTiming = false;
 			timing = hasMetadata ? ReadPerformanceTiming(metadata) : PerformanceTiming{};
+			if (hasMetadata && slotMeta)
+			{
+				ReadSlotTrackTimings(*slotMeta, timing, timing.motion, timing.facial);
+			}
 			cameraSourceDuration = 0.0f;
 			const std::string hintedAudio = hasMetadata ? metadata.StringPath("audio_file", "") : std::string();
 			const std::string resolvedAudio = audio::ResolveTrackAudioFileName(
@@ -469,7 +471,7 @@ namespace GakuMotion
 		{
 			if (index < 0 || index >= static_cast<int>(library.size())) return false;
 			if (!LoadMotion(library[index].dir)) return false;
-			timing = library[index].timing;
+			timing = ResolveSlotPerformanceTiming(&library[index], 1, library[index].timing);
 			return true;
 		}
 
@@ -553,6 +555,7 @@ namespace GakuMotion
 			if (fnStopAudio) fnStopAudio();
 			// 保留 clip 剪辑缓存，杜绝下次播放必须重新读盘
 			controller.RestoreMute();
+			controller.fallbackMuteAnimator = false;
 		}
 
 		void OnActorChanged(void* newActor)

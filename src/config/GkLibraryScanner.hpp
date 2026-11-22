@@ -171,6 +171,9 @@ namespace GakuMotion
 				slot1.bones = m.boneCount;
 				slot1.motionFile = m.motionFile;
 				slot1.hasOverrides = m.hasOverrides;
+				slot1.motionTiming = m.timing.motion;
+				slot1.facialTiming = m.timing.facial;
+				slot1.hasTiming = true;
 				posMap[1] = std::move(slot1);
 			}
 
@@ -222,6 +225,9 @@ namespace GakuMotion
 					const float infoSourceFps = info.FloatPath("source_fps", m.fps);
 					if (std::isfinite(infoSourceFps) && infoSourceFps > 0.0f) posMap[1].sourceFps = infoSourceFps;
 					posMap[1].hasFacial = m.hasFacial;
+					posMap[1].motionTiming = m.timing.motion;
+					posMap[1].facialTiming = m.timing.facial;
+					posMap[1].hasTiming = true;
 
 					infoIsGroup = info.BoolPath("is_group", false);
 					if (const auto* positionsArr = info.Find("positions"); positionsArr && positionsArr->IsArray())
@@ -267,6 +273,7 @@ namespace GakuMotion
 							if (pf > 0) pe.frames = static_cast<uint32_t>(pf);
 							const int pb = item.IntPath("bones", slot == 1 ? static_cast<int>(m.boneCount) : 0);
 							if (pb > 0) pe.bones = static_cast<uint32_t>(pb);
+							ReadSlotTrackTimings(item, m.timing, pe.motionTiming, pe.facialTiming, &pe.hasTiming);
 						}
 					}
 					m.metadataLoaded = true;
@@ -305,8 +312,15 @@ namespace GakuMotion
 							ec.clear();
 						}
 
+						const bool isNewPos = (posMap.find(slotIndex) == posMap.end());
 						auto& pe = posMap[slotIndex];
 						pe.slot = slotIndex;
+						if (isNewPos)
+						{
+							pe.motionTiming = m.timing.motion;
+							pe.facialTiming = m.timing.facial;
+							pe.hasTiming = false;
+						}
 						pe.hasOverrides = std::filesystem::exists(slotEntry.path() / "bone_overrides.json", ec);
 						ec.clear();
 
@@ -345,6 +359,11 @@ namespace GakuMotion
 			for (auto& [slotKey, pe] : posMap)
 			{
 				(void)slotKey;
+				if (!pe.hasTiming)
+				{
+					pe.motionTiming = m.timing.motion;
+					pe.facialTiming = m.timing.facial;
+				}
 				if (pe.sourceFps <= 0.0f)
 					pe.sourceFps = (std::isfinite(m.fps) && m.fps > 0.0f) ? m.fps : 30.0f;
 				if (!hasFacialExplicit && pe.hasFacial) m.hasFacial = true;

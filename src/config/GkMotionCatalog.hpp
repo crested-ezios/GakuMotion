@@ -74,6 +74,9 @@ namespace GakuMotion
 		uint32_t bones{0};
 		std::string motionFile;
 		bool hasOverrides{false};
+		TrackTiming motionTiming;
+		TrackTiming facialTiming;
+		bool hasTiming{false};
 	};
 
 	struct TrackPositionPlacementUpdate
@@ -137,6 +140,37 @@ namespace GakuMotion
 			return std::string(buf);
 		}
 	};
+
+	/// <summary>Resolves slot-specific motion/facial timing while keeping camera and audio track-global.</summary>
+	inline PerformanceTiming ResolveSlotPerformanceTiming(const MotionEntry* motion, int slot1Based,
+	                                                      const PerformanceTiming& fallback)
+	{
+		PerformanceTiming result = motion ? motion->timing : fallback;
+		if (!motion || slot1Based < 1) return result;
+		const MotionPositionEntry* matched = nullptr;
+		for (const auto& pos : motion->positions)
+		{
+			if (pos.slot == slot1Based)
+			{
+				matched = &pos;
+				break;
+			}
+		}
+		if (!matched && static_cast<size_t>(slot1Based - 1) < motion->positions.size())
+		{
+			const auto& candidate = motion->positions[static_cast<size_t>(slot1Based - 1)];
+			if (candidate.slot <= 0 || (slot1Based > 1 && candidate.slot == 1))
+			{
+				matched = &candidate;
+			}
+		}
+		if (matched && matched->hasTiming)
+		{
+			result.motion = matched->motionTiming;
+			result.facial = matched->facialTiming;
+		}
+		return result;
+	}
 
 	// Compare complete lexical paths rather than matching a directory-name substring.
 	// Missing sources remain comparable; canonical() would require the file to exist.

@@ -17,6 +17,7 @@ import {
   ensureReadyOrSkip,
   loadCppBridgeFixture,
   motionFileExists,
+  pointerDragSlotCard,
   probeCrossLayerReady,
 } from './helpers'
 
@@ -144,11 +145,9 @@ describe('Tier 3 — Cross-Layer & Pairwise Interactions (F13, F14, F15, F16)', 
     render(<MotionApp />)
 
     await user.click(screen.getByRole('button', { name: '动作' }))
-    const slot1 = (await screen.findByText('1号位')).closest('[draggable="true"]') ?? screen.getByText('1号位').parentElement!
-    const slot3 = screen.getByText('3号位').closest('[draggable="true"], [data-slot-index]') ?? screen.getByText('3号位').parentElement!
-    fireEvent.dragStart(slot1)
-    fireEvent.dragOver(slot3)
-    fireEvent.drop(slot3)
+    const slot1 = (await screen.findByText('1号位')).closest('[data-slot-index]') as HTMLElement
+    const slot3 = screen.getByText('3号位').closest('[data-slot-index]') as HTMLElement
+    pointerDragSlotCard(slot1, slot3)
     await waitFor(() => expect(spy.mock.calls.some((c) => (c[0] as string) === 'formation.swapSlots')).toBe(true))
 
     await user.click(screen.getByRole('button', { name: '镜头' }))

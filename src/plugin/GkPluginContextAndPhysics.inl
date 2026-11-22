@@ -174,6 +174,27 @@
 		g_physicsTime = -1.0f;
 		g_physicsLastTick = {};
 	}
+	bool IsTransientNativePhysicsPendingReason(int requested, bool native, const std::string& reason)
+	{
+		return requested == 2 && (native ||
+			reason == "native_pending" || reason == "native_pending_stale" ||
+			reason == "body_binding_pending" || reason == "discovering");
+	}
+	void SyncFallbackAnimatorMute(GakuMotion::IdolController& ctrl, void* actor,
+		const GakuMotion::IdolBoneBinding& binding, int requested, bool native, const std::string& reason)
+	{
+		const bool shouldMute = !native && !IsTransientNativePhysicsPendingReason(requested, native, reason);
+		const bool prevMute = ctrl.fallbackMuteAnimator;
+		ctrl.fallbackMuteAnimator = shouldMute;
+		if (shouldMute && !ctrl.IsAnimatorMuted(actor))
+		{
+			ctrl.DefensiveMute(actor, binding.cachedAnimator, binding.cachedPlayableDirector);
+		}
+		else if (!shouldMute && prevMute && ctrl.IsAnimatorMuted(actor))
+		{
+			ctrl.DefensiveMute(actor, binding.cachedAnimator, binding.cachedPlayableDirector);
+		}
+	}
 	void DispatchEnsemblePhysics(GakuMotion::Core& core, void* actor, int frame,
 		float realDeltaTime, std::chrono::steady_clock::time_point bodyBegin)
 	{
@@ -189,6 +210,7 @@
 		const bool canDrive = binding != ctrl.bindings.end() && binding->second.bindPoseCaptured && ctrl.CanDriveActor(actor);
 		if (!canDrive || core.player.state == GakuMotion::PlaybackState::Stopped)
 		{
+			ctrl.fallbackMuteAnimator = false;
 			if (slot.actor && canDrive)
 			{
 				const bool fallbackClean = slot.fallback.RestoreForCapture(ctrl);
@@ -204,10 +226,37 @@
 		const int requested = core.config.secondaryPhysicsBackend;
 		const bool useV3 = requested == 2 && g_multiBurstBridge.Ensure();
 		const bool legacyOwner = requested == 2 && !useV3 && index == 0;
-		if (slot.actor != actor || slot.session != core.injectionSession || slot.backend != requested ||
-			slot.beforeQuartz != core.config.beforeQuartzExperiment || slot.sleeveDiagnostics != core.config.sleeveMuscleDiagnostics ||
-			slot.motionFile != track->loadedMotionFile || slot.seeks != core.player.SeekCount() || core.player.scrubbing ||
-			core.player.currentTime + .001f < slot.time)
+		{
+			static std::string s_lastMultiUnavailableReason;
+			if (requested == 2 && !useV3)
+			{
+				if (s_lastMultiUnavailableReason != g_multiBurstBridge.reason)
+				{
+					s_lastMultiUnavailableReason = g_multiBurstBridge.reason;
+					if (g_hostContext.logWarn)
+					{
+						g_hostContext.logWarn(
+							"[GakuMotion][Physics] multi-actor native physics unavailable (%s); slots > 0 using fallback",
+							g_multiBurstBridge.reason.c_str());
+					}
+				}
+			}
+			else if (useV3)
+			{
+				s_lastMultiUnavailableReason.clear();
+			}
+		}
+		const bool structuralChange =
+			slot.actor != actor || slot.session != core.injectionSession || slot.backend != requested ||
+			slot.beforeQuartz != core.config.beforeQuartzExperiment ||
+			slot.sleeveDiagnostics != core.config.sleeveMuscleDiagnostics ||
+			slot.motionFile != track->loadedMotionFile || slot.legacyOwner != legacyOwner;
+		const bool timelineDiscontinuity =
+			slot.seeks != core.player.SeekCount() || core.player.scrubbing ||
+			core.player.currentTime + .001f < slot.time;
+		const bool clearOnTimelineBoundary =
+			timelineDiscontinuity && (slot.beforeQuartz || !(useV3 || legacyOwner));
+		if (structuralChange || clearOnTimelineBoundary)
 		{
 			if (slot.actor == actor)
 			{
@@ -221,6 +270,10 @@
 			slot.beforeQuartz = core.config.beforeQuartzExperiment; slot.sleeveDiagnostics = core.config.sleeveMuscleDiagnostics;
 			slot.motionFile = track->loadedMotionFile; slot.legacyOwner = legacyOwner;
 			if (legacyOwner) g_burstBridge.RetryUnavailable();
+		}
+		else if (timelineDiscontinuity)
+		{
+			slot.fallback.Clear();
 		}
 		slot.seeks = core.player.SeekCount(); slot.time = core.player.currentTime; slot.frame = frame;
 		const auto dispatchBegin = std::chrono::steady_clock::now();
@@ -256,8 +309,12 @@
 		d.native_solver_calls = bridgePerf.solver_calls; d.native_solver_total_ns = bridgePerf.solver_total_ns;
 		d.bridge_failures = bridgePerf.failed_passes; d.bridge_expired_skips = bridgePerf.expired_skips;
 		d.bridge_identity_skips = bridgePerf.identity_skips;
+		const std::string multiUnavailableReason = g_multiBurstBridge.reason.empty()
+			? std::string("fallback_legacy_bridge_master_only")
+			: ("fallback_legacy_bridge_master_only (" + g_multiBurstBridge.reason + ")");
 		const std::string reason = requested == 0 ? "off" : requested == 1 ? "fallback" :
-			useV3 ? g_multiBurstBridge.State(index).reason : legacyOwner ? g_burstBridge.reason : "fallback_legacy_bridge_master_only";
+			useV3 ? g_multiBurstBridge.State(index).reason : legacyOwner ? g_burstBridge.reason : multiUnavailableReason;
+		SyncFallbackAnimatorMute(ctrl, actor, binding->second, requested, native, reason);
 		core.formation.slots[index].physicsBackend = native ? "native" : slot.actual == 0 ? "off" : "fallback: " + reason;
 		if (slot.reason != reason)
 		{

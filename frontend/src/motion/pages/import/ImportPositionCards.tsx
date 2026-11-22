@@ -117,23 +117,27 @@ export function ImportPositionCards({
                 slotKey="motion"
                 slotState={pos.motion}
                 slotAriaLabel={posIndex === 0 ? '动作槽位' : `${slotNum}号位动作槽位`}
-                timing={form.timing.motion}
-                showTiming={posIndex === 0}
+                timing={pos.timing.motion}
+                timingAriaPrefix={posIndex === 0 ? undefined : `${slotNum}号位动作`}
+                showTiming
                 busy={busy}
                 dialogSupported={dialogSupported}
                 onSelectChange={(sel) => motionStore.setImportPositionSelection(posIndex, 'motion', sel)}
                 onBrowse={() => void motionStore.browseFiles(`position-motion:${posIndex}`)}
+                onTimingChange={(patch) => motionStore.setImportPositionTiming(posIndex, 'motion', patch)}
               />
               <ImportTrackRow
                 slotKey="facial"
                 slotState={pos.facial}
                 slotAriaLabel={posIndex === 0 ? '表情槽位' : `${slotNum}号位表情槽位`}
-                timing={form.timing.facial}
-                showTiming={posIndex === 0}
+                timing={pos.timing.facial}
+                timingAriaPrefix={posIndex === 0 ? undefined : `${slotNum}号位表情`}
+                showTiming
                 busy={busy}
                 dialogSupported={dialogSupported}
                 onSelectChange={(sel) => motionStore.setImportPositionSelection(posIndex, 'facial', sel)}
                 onBrowse={() => void motionStore.browseFiles(`position-facial:${posIndex}`)}
+                onTimingChange={(patch) => motionStore.setImportPositionTiming(posIndex, 'facial', patch)}
               />
             </div>
           </div>

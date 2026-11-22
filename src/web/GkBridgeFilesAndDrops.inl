@@ -168,37 +168,59 @@ namespace GakuMotion::webpanel
 		}
 	}
 
+	inline std::string Bridge::TrackTimingJson(const TrackTiming& value)
+	{
+		return "{\"speed\":" + JNum(value.speed) + ",\"offsetSeconds\":" + JNum(value.offsetSeconds) + "}";
+	}
+
+	inline std::string Bridge::SlotTimingJson(const TrackTiming& motion, const TrackTiming& facial)
+	{
+		return "{\"motion\":" + TrackTimingJson(motion) + ",\"facial\":" + TrackTimingJson(facial) + "}";
+	}
+
 	inline std::string Bridge::TimingJson(const PerformanceTiming& timing)
 	{
-		const auto track = [](const TrackTiming& value) {
-			return "{\"speed\":" + JNum(value.speed) + ",\"offsetSeconds\":" + JNum(value.offsetSeconds) + "}";
-		};
-		return "{\"motion\":" + track(timing.motion) + ",\"facial\":" + track(timing.facial) +
-			",\"camera\":" + track(timing.camera) + ",\"audio\":" + track(timing.audio) + "}";
+		return "{\"motion\":" + TrackTimingJson(timing.motion) + ",\"facial\":" + TrackTimingJson(timing.facial) +
+			",\"camera\":" + TrackTimingJson(timing.camera) + ",\"audio\":" + TrackTimingJson(timing.audio) + "}";
+	}
+
+	inline bool Bridge::ParseTrackTimingField(const jsonlite::Value& value, const char* name, TrackTiming& target, std::string& error)
+	{
+		const jsonlite::Value* field = value.Find(name);
+		if (!field) return true;
+		if (!field->IsObject()) { error = std::string(name) + " timing must be an object"; return false; }
+		double speed = target.speed, offset = target.offsetSeconds;
+		if (!NumberParam(*field, "speed", speed)) { error = std::string(name) + ".speed must be a finite number"; return false; }
+		const jsonlite::Value* offsetValue = field->Find("offsetSeconds");
+		if (!offsetValue) offsetValue = field->Find("offset_seconds");
+		if (offsetValue)
+		{
+			if (!offsetValue->IsNumber() || !std::isfinite(offsetValue->numberValue))
+			{ error = std::string(name) + ".offsetSeconds must be a finite number"; return false; }
+			offset = offsetValue->numberValue;
+		}
+		if (speed < 0.0) { error = std::string(name) + ".speed must be >= 0"; return false; }
+		target.speed = static_cast<float>(speed);
+		target.offsetSeconds = static_cast<float>(offset);
+		return true;
+	}
+
+	inline bool Bridge::ParseSlotTiming(const jsonlite::Value& value, TrackTiming& motion, TrackTiming& facial, std::string& error)
+	{
+		if (!value.IsObject())
+		{
+			error = "slot timing must be an object";
+			return false;
+		}
+		return ParseTrackTimingField(value, "motion", motion, error) &&
+			ParseTrackTimingField(value, "facial", facial, error);
 	}
 
 	inline bool Bridge::ParseTiming(const jsonlite::Value& value, PerformanceTiming& timing, std::string& error)
 	{
-		const auto track = [&](const char* name, TrackTiming& target) {
-			const jsonlite::Value* field = value.Find(name);
-			if (!field) return true;
-			if (!field->IsObject()) { error = std::string(name) + " timing must be an object"; return false; }
-			double speed = target.speed, offset = target.offsetSeconds;
-			if (!NumberParam(*field, "speed", speed)) { error = std::string(name) + ".speed must be a finite number"; return false; }
-			const jsonlite::Value* offsetValue = field->Find("offsetSeconds");
-			if (!offsetValue) offsetValue = field->Find("offset_seconds");
-			if (offsetValue)
-			{
-				if (!offsetValue->IsNumber() || !std::isfinite(offsetValue->numberValue))
-				{ error = std::string(name) + ".offsetSeconds must be a finite number"; return false; }
-				offset = offsetValue->numberValue;
-			}
-			if (speed < 0.0) { error = std::string(name) + ".speed must be >= 0"; return false; }
-			target.speed = static_cast<float>(speed);
-			target.offsetSeconds = static_cast<float>(offset);
-			return true;
-		};
-		return track("motion", timing.motion) && track("facial", timing.facial) &&
-			track("camera", timing.camera) && track("audio", timing.audio);
+		return ParseTrackTimingField(value, "motion", timing.motion, error) &&
+			ParseTrackTimingField(value, "facial", timing.facial, error) &&
+			ParseTrackTimingField(value, "camera", timing.camera, error) &&
+			ParseTrackTimingField(value, "audio", timing.audio, error);
 	}
 } // namespace GakuMotion::webpanel

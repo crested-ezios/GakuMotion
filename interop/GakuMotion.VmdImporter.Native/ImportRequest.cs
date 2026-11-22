@@ -17,6 +17,8 @@ internal sealed class PositionRequest
     public float Y { get; init; }
     public float Z { get; init; }
     public float YawDegrees { get; init; }
+    public SlotTimingSettings? TrackTiming { get; init; }
+    public bool HasExplicitPlacement { get; init; }
 }
 
 /// <summary>
@@ -147,7 +149,9 @@ internal sealed class ImportRequest
                     X = OptionalFloatFrom(item, "x"),
                     Y = OptionalFloatFrom(item, "y"),
                     Z = OptionalFloatFrom(item, "z"),
-                    YawDegrees = OptionalFloatFrom(item, "yaw_degrees")
+                    YawDegrees = OptionalFloatFrom(item, "yaw_degrees"),
+                    TrackTiming = SlotTimingSettings.ParseOptional(item),
+                    HasExplicitPlacement = OptionalBoolFrom(item, "has_explicit_placement")
                 });
                 index++;
             }

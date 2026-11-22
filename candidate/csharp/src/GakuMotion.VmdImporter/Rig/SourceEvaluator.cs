@@ -93,9 +93,11 @@ public sealed class SourceEvaluator
         }
 
         // Subtract frame 0 origin for root trajectory (convert.py / root_displacement.py)
+        Vector3 rootOrigin = Vector3.Zero;
         if (totalFrames > 0)
         {
             Vector3 origin = rootTrajectory[0];
+            rootOrigin = origin;
             for (int f = 0; f < totalFrames; f++)
             {
                 rootTrajectory[f] -= origin;
@@ -125,6 +127,7 @@ public sealed class SourceEvaluator
             DenseRotations = denseRotations,
             DensePositions = densePositions,
             RootTrajectory = rootTrajectory,
+            RootOrigin = rootOrigin,
             MorphWeights = morphWeights
         };
     }

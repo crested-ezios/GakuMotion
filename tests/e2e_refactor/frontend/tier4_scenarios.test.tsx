@@ -17,6 +17,7 @@ import {
   findSlotCardElement,
   getStoreFormation,
   motionFileExists,
+  pointerDragSlotCard,
   probeCrossLayerReady,
   setNumericInputValue,
   unwrapFacialWeights,
@@ -175,9 +176,7 @@ describe('Tier 4 — Real-World Frontend + Cross-Layer Application Scenarios', (
 
     const liveSlot1 = findSlotCardElement(screen.getByText('1号位'))
     const liveSlot2 = findSlotCardElement(screen.getByText('2号位'))
-    fireEvent.dragStart(liveSlot1)
-    fireEvent.dragOver(liveSlot2)
-    fireEvent.drop(liveSlot2)
+    pointerDragSlotCard(liveSlot1, liveSlot2)
 
     await waitFor(() => expect(getStoreFormation().slots[0]?.actorToken).toBe(preSwap1.actorToken))
     const postSwap = getStoreFormation()
@@ -290,9 +289,7 @@ describe('Tier 4 — Real-World Frontend + Cross-Layer Application Scenarios', (
     // Drag 4号位 onto empty 5号位 (+)
     const slot4 = findSlotCardElement(screen.getByText('4号位'))
     const slot5 = findSlotCardElement(screen.getByText('5号位'))
-    fireEvent.dragStart(slot4)
-    fireEvent.dragOver(slot5)
-    fireEvent.drop(slot5)
+    pointerDragSlotCard(slot4, slot5)
     await waitFor(() =>
       expect(
         spy.mock.calls.some(

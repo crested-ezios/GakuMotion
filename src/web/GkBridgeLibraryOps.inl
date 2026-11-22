@@ -27,7 +27,11 @@ namespace GakuMotion::webpanel
 				",\"bodyBoneFrames\":" + JNum(info.bodyBoneFrames) +
 				",\"eyeBoneFrames\":" + JNum(info.eyeBoneFrames) +
 				",\"morphFrames\":" + JNum(info.morphFrames) +
-				",\"cameraFrames\":" + JNum(info.cameraFrames) + "}";
+				",\"cameraFrames\":" + JNum(info.cameraFrames) +
+				",\"hasRootOrigin\":" + JBool(info.hasRootOrigin) +
+				",\"rootOrigin\":{\"x\":" + JNum(info.rootOriginX) +
+				",\"y\":" + JNum(info.rootOriginY) +
+				",\"z\":" + JNum(info.rootOriginZ) + "}}";
 		}
 		probes += "]";
 		std::string motionCandidatesJson = "[";
@@ -47,12 +51,15 @@ namespace GakuMotion::webpanel
 		return CmdResult::Ok("{\"classification\":" + classificationJson + ",\"probes\":" + probes + "}");
 	}
 
-	inline std::string Bridge::MotionPositionsJson(const std::vector<MotionPositionEntry>& positions)
+	inline std::string Bridge::MotionPositionsJson(const std::vector<MotionPositionEntry>& positions,
+	                                               const PerformanceTiming& fallbackTiming)
 	{
 		std::string out = "[";
 		for (size_t j = 0; j < positions.size(); ++j)
 		{
 			const auto& p = positions[j];
+			const TrackTiming& motion = p.hasTiming ? p.motionTiming : fallbackTiming.motion;
+			const TrackTiming& facial = p.hasTiming ? p.facialTiming : fallbackTiming.facial;
 			if (j) out += ",";
 			out += "{\"slot\":" + JNum(p.slot) +
 				",\"x\":" + JNum(p.x) +
@@ -60,7 +67,8 @@ namespace GakuMotion::webpanel
 				",\"z\":" + JNum(p.z) +
 				",\"yawDegrees\":" + JNum(p.yawDegrees) +
 				",\"hasMotion\":" + JBool(p.hasMotion) +
-				",\"hasFacial\":" + JBool(p.hasFacial) + "}";
+				",\"hasFacial\":" + JBool(p.hasFacial) +
+				",\"timing\":" + SlotTimingJson(motion, facial) + "}";
 		}
 		out += "]";
 		return out;
@@ -93,7 +101,7 @@ namespace GakuMotion::webpanel
 			",\"hasCover\":" + JBool(entry.hasCover) +
 			",\"isGroup\":" + JBool(entry.isGroup) +
 			",\"positionCount\":" + JNum(posCount) +
-			",\"positions\":" + MotionPositionsJson(entry.positions) +
+			",\"positions\":" + MotionPositionsJson(entry.positions, entry.timing) +
 			",\"timing\":" + TimingJson(entry.timing) + "}");
 	}
 

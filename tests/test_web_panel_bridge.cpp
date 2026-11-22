@@ -1790,6 +1790,223 @@ static void TestAsyncTrackCoverCache()
 	cache.Stop();
 }
 
+static void WriteRootOriginVmd(const std::filesystem::path& path, uint32_t extraFillerBones,
+	bool includeParentRotation, uint32_t morphFrames, uint32_t cameraFrames)
+{
+	std::ofstream out(path, std::ios::binary | std::ios::trunc);
+	char header[30]{};
+	std::memcpy(header, "Vocaloid Motion Data 0002", 25);
+	out.write(header, 30);
+	char model[20]{};
+	out.write(model, 20);
+
+	auto writeBoneRecord = [&](const char* nameBytes, size_t nameLen, uint32_t frame,
+		float px, float py, float pz, float rx, float ry, float rz, float rw) {
+		char rec[111]{};
+		std::memcpy(rec, nameBytes, (std::min)(nameLen, size_t{15}));
+		std::memcpy(rec + 15, &frame, 4);
+		float pos[3]{px, py, pz};
+		float rot[4]{rx, ry, rz, rw};
+		std::memcpy(rec + 19, pos, 12);
+		std::memcpy(rec + 31, rot, 16);
+		out.write(rec, 111);
+	};
+
+	const uint32_t rootRecordCount = 3 + (includeParentRotation ? 1u : 0u);
+	const uint32_t boneCount = extraFillerBones + rootRecordCount;
+	out.write(reinterpret_cast<const char*>(&boneCount), 4);
+
+	// Out-of-order later frame before frame 0, to verify min-frame selection.
+	writeBoneRecord("\x83\x5A\x83\x93\x83\x5E\x81\x5B", 8, 12, 99.0f, 99.0f, 99.0f, 0.0f, 0.0f, 0.0f, 1.0f);
+	for (uint32_t i = 0; i < extraFillerBones; ++i)
+	{
+		writeBoneRecord("UpperBody", 9, i, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f);
+	}
+	if (includeParentRotation)
+	{
+		// Rotate +90 deg around Y in MMD (sin(45) = 0.70710678, cos(45) = 0.70710678)
+		const float s = 0.70710678f;
+		writeBoneRecord("\x91\x53\x82\xC4\x82\xCC\x90\x65", 8, 0, 2.0f, 0.0f, 0.0f, 0.0f, s, 0.0f, s);
+	}
+	// センター at frame 0: (10, 2, -5) in MMD
+	writeBoneRecord("\x83\x5A\x83\x93\x83\x5E\x81\x5B", 8, 0, 10.0f, 2.0f, -5.0f, 0.0f, 0.0f, 0.0f, 1.0f);
+	// グルーブ at frame 0: (0, 1, 0) in MMD
+	writeBoneRecord("\x83\x4F\x83\x8B\x81\x5B\x83\x75", 8, 0, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f);
+
+	out.write(reinterpret_cast<const char*>(&morphFrames), 4);
+	for (uint32_t i = 0; i < morphFrames; ++i)
+	{
+		char mrec[23]{};
+		std::memcpy(mrec, "blink", 5);
+		out.write(mrec, 23);
+	}
+	out.write(reinterpret_cast<const char*>(&cameraFrames), 4);
+	for (uint32_t i = 0; i < cameraFrames; ++i)
+	{
+		char crec[61]{};
+		out.write(crec, 61);
+	}
+}
+
+static void TestPerSlotTimingAndRootOriginProbe()
+{
+	BeginTest("per_slot_timing_and_root_origin_probe");
+	namespace fs = std::filesystem;
+	const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+	const fs::path root = fs::temp_directory_path() / ("gaku_webpanel_slot_timing_" + std::to_string(stamp));
+	fs::create_directories(root);
+
+	const fs::path vmdLarge = root / "large_center.vmd";
+	const fs::path vmdRotated = root / "rotated_parent.vmd";
+	const fs::path vmdFacial = root / "facial_only.vmd";
+	const fs::path vmdCam = root / "cam_only.vmd";
+	WriteRootOriginVmd(vmdLarge, 5000, false, 3, 0);
+	WriteRootOriginVmd(vmdRotated, 10, true, 0, 0);
+	WriteSyntheticVmd(vmdFacial, 0, 2, 0);
+	WriteSyntheticVmd(vmdCam, 0, 0, 4);
+
+	Fixture f;
+	const std::string probePaths = "[" + JString(MotionPathToUtf8(vmdLarge)) + "," +
+		JString(MotionPathToUtf8(vmdRotated)) + "," + JString(MotionPathToUtf8(vmdFacial)) + "," +
+		JString(MotionPathToUtf8(vmdCam)) + "]";
+	const auto probeRes = f.ReqJson("library.probeFiles", "{\"paths\":" + probePaths + "}");
+	Check(probeRes.Find("ok") && probeRes.Find("ok")->boolValue, "probeFiles succeeds for rootOrigin VMDs");
+	const auto* probes = probeRes.Find("result") ? probeRes.Find("result")->Find("probes") : nullptr;
+	Check(probes && probes->Size() == 4, "4 probes returned");
+	if (probes && probes->Size() == 4)
+	{
+		const auto* p0 = probes->At(0);
+		Check(p0->Find("hasRootOrigin") && p0->Find("hasRootOrigin")->boolValue &&
+			p0->Find("morphFrames") && p0->Find("morphFrames")->numberValue == 3.0 &&
+			p0->Find("bodyBoneFrames") && p0->Find("bodyBoneFrames")->numberValue == 5003.0,
+			"large >4096-frame VMD scans all bones and reads trailing morphFrames");
+		const auto* r0 = p0->Find("rootOrigin");
+		Check(r0 &&
+			std::fabs(r0->Find("x")->numberValue - (-10.0 * 0.07795)) < 1e-4 &&
+			std::fabs(r0->Find("y")->numberValue - (3.0 * 0.07795)) < 1e-4 &&
+			std::fabs(r0->Find("z")->numberValue - (5.0 * 0.07795)) < 1e-4,
+			"frame-0 Center + Groove converts to Unity rootOrigin * 0.07795 (ignoring later frame 12)");
+
+		const auto* p1 = probes->At(1);
+		const auto* r1 = p1->Find("rootOrigin");
+		// 全ての親 MMD pos=(2,0,0) -> Unity (-2,0,0); +90Y rot rotates Center Unity (-10,2,5) -> (5,2,10); total=(3,3,10)*0.07795
+		Check(p1->Find("hasRootOrigin")->boolValue && r1 &&
+			std::fabs(r1->Find("x")->numberValue - (3.0 * 0.07795)) < 1e-3 &&
+			std::fabs(r1->Find("y")->numberValue - (3.0 * 0.07795)) < 1e-3 &&
+			std::fabs(r1->Find("z")->numberValue - (10.0 * 0.07795)) < 1e-3,
+			"rotated parent hierarchy composes Center translation into Unity rootOrigin");
+
+		const auto* p2 = probes->At(2);
+		const auto* p3 = probes->At(3);
+		Check(p2->Find("hasRootOrigin") && !p2->Find("hasRootOrigin")->boolValue &&
+			p3->Find("hasRootOrigin") && !p3->Find("hasRootOrigin")->boolValue,
+			"facial-only and camera-only VMDs report hasRootOrigin=false");
+	}
+
+	// library.import parses per-position timing and hasExplicitPlacement, and syncs slot 1 into request.timing
+	f.ClearCommands();
+	const std::string groupImportReq = "{\"request\":{\"title\":\"PerSlot\",\"editKey\":\"\","
+		"\"fps\":30,\"clearAudio\":true,"
+		"\"timing\":{\"motion\":{\"speed\":1.0,\"offsetSeconds\":0.0},\"facial\":{\"speed\":1.0,\"offsetSeconds\":0.0},"
+		"\"camera\":{\"speed\":1.25,\"offsetSeconds\":0.5},\"audio\":{\"speed\":0.9,\"offsetSeconds\":-0.25}},"
+		"\"positions\":["
+		"{\"slot\":1,\"motionFile\":" + JString(MotionPathToUtf8(vmdLarge)) +
+		",\"x\":0,\"y\":0,\"z\":0,\"yawDegrees\":0,\"hasExplicitPlacement\":false,"
+		"\"timing\":{\"motion\":{\"speed\":1.5,\"offsetSeconds\":0.4},\"facial\":{\"speed\":0.8,\"offset_seconds\":-0.2}}},"
+		"{\"slot\":2,\"motionFile\":" + JString(MotionPathToUtf8(vmdRotated)) +
+		",\"x\":1.25,\"y\":0,\"z\":-0.5,\"yawDegrees\":30,\"hasExplicitPlacement\":true,"
+		"\"timing\":{\"motion\":{\"speed\":0.75,\"offset_seconds\":1.2},\"facial\":{\"speed\":2.0,\"offsetSeconds\":0.1}}},"
+		"{\"slot\":3,\"motionFile\":" + JString(MotionPathToUtf8(vmdLarge)) +
+		",\"x\":-1.25,\"y\":0,\"z\":-0.5,\"yawDegrees\":-30}"
+		"]}}";
+	Check(f.Ok(f.Req("library.import", groupImportReq)), "group library.import with per-slot timing accepted");
+	const auto* cmd = f.FindCommand(Core::GuiAction::Import);
+	Check(cmd && cmd->import.positions.size() == 3, "3 import position slots queued");
+	if (cmd && cmd->import.positions.size() == 3)
+	{
+		const auto& s1 = cmd->import.positions[0];
+		const auto& s2 = cmd->import.positions[1];
+		const auto& s3 = cmd->import.positions[2];
+		Check(s1.hasTiming && !s1.hasExplicitPlacement &&
+			std::fabs(s1.motionTiming.speed - 1.5f) < 1e-5f && std::fabs(s1.motionTiming.offsetSeconds - 0.4f) < 1e-5f &&
+			std::fabs(s1.facialTiming.speed - 0.8f) < 1e-5f && std::fabs(s1.facialTiming.offsetSeconds - (-0.2f)) < 1e-5f,
+			"slot 1 per-slot timing and hasExplicitPlacement parsed");
+		Check(s2.hasTiming && s2.hasExplicitPlacement &&
+			std::fabs(s2.motionTiming.speed - 0.75f) < 1e-5f && std::fabs(s2.motionTiming.offsetSeconds - 1.2f) < 1e-5f &&
+			std::fabs(s2.facialTiming.speed - 2.0f) < 1e-5f && std::fabs(s2.facialTiming.offsetSeconds - 0.1f) < 1e-5f,
+			"slot 2 per-slot timing and hasExplicitPlacement=true parsed");
+		Check(s3.hasTiming &&
+			std::fabs(s3.motionTiming.speed - 1.0f) < 1e-5f && std::fabs(s3.facialTiming.speed - 1.0f) < 1e-5f,
+			"slot 3 on new import inherits top-level timing when timingValue supplied");
+		Check(std::fabs(cmd->import.timing.motion.speed - 1.5f) < 1e-5f &&
+			std::fabs(cmd->import.timing.motion.offsetSeconds - 0.4f) < 1e-5f &&
+			std::fabs(cmd->import.timing.facial.speed - 0.8f) < 1e-5f &&
+			std::fabs(cmd->import.timing.camera.speed - 1.25f) < 1e-5f &&
+			std::fabs(cmd->import.timing.audio.speed - 0.9f) < 1e-5f,
+			"positions[0] timing syncs into request.timing motion/facial while camera & audio remain global");
+	}
+
+	// Invalid slot timing rejected
+	const std::string badSlotTimingReq = "{\"request\":{\"title\":\"BadSlotTiming\",\"editKey\":\"\","
+		"\"fps\":30,"
+		"\"positions\":[{\"slot\":1,\"motionFile\":" + JString(MotionPathToUtf8(vmdLarge)) +
+		",\"timing\":{\"motion\":{\"speed\":-0.5,\"offsetSeconds\":0}}}]}}";
+	Check(f.ErrorCode(f.Req("library.import", badSlotTimingReq)) == "invalid_params",
+		"negative per-slot speed rejected");
+
+	// Edit mode: omitted slot timing keeps hasTiming=false even if top-level timing is supplied
+	f.AddSyntheticLibrary();
+	f.core.motions[0].isGroup = true;
+	f.core.motions[0].positionCount = 2;
+	f.core.motions[0].timing.motion = {1.1f, 0.2f};
+	f.core.motions[0].timing.facial = {1.2f, -0.3f};
+	MotionPositionEntry pe1{1, 0, 0, 0, 0, true, false};
+	pe1.motionTiming = {1.4f, 0.5f}; pe1.facialTiming = {0.9f, 0.1f}; pe1.hasTiming = true;
+	MotionPositionEntry pe2{2, 1, 0, 0, 45, true, true};
+	pe2.motionTiming = {0.6f, 2.0f}; pe2.facialTiming = {1.8f, -0.5f}; pe2.hasTiming = true;
+	MotionPositionEntry pe3{3, -1, 0, 0, -45, true, false}; // hasTiming=false -> fallback to track timing
+	f.core.motions[0].positions = {pe1, pe2, pe3};
+
+	f.ClearCommands();
+	const std::string editSlotReq = "{\"request\":{\"title\":\"Alpha\",\"editKey\":\"alpha\","
+		"\"fps\":0,\"timing\":{\"camera\":{\"speed\":1.5,\"offsetSeconds\":0}},"
+		"\"positions\":[{\"slot\":1,\"preserveExisting\":true,"
+		"\"timing\":{\"motion\":{\"speed\":2.0,\"offsetSeconds\":0.3},\"facial\":{\"speed\":1.0,\"offsetSeconds\":0}}},"
+		"{\"slot\":2,\"preserveExisting\":true}]}}";
+	Check(f.Ok(f.Req("library.import", editSlotReq)), "edit with selective slot timing accepted");
+	const auto* editCmd = f.FindCommand(Core::GuiAction::Import);
+	Check(editCmd && editCmd->import.positions.size() == 2 &&
+		editCmd->import.positions[0].hasTiming && !editCmd->import.positions[1].hasTiming,
+		"edit mode sets hasTiming=true for explicit slot and false for omitted slot");
+
+	// library.startEdit and state.get return per-slot timing in positions[]
+	const auto startEdit = f.ReqJson("library.startEdit", "{\"key\":\"alpha\",\"revision\":5}");
+	Check(startEdit.Find("ok") && startEdit.Find("ok")->boolValue, "startEdit succeeds for group track");
+	const auto* editPos = startEdit.Find("result") ? startEdit.Find("result")->Find("positions") : nullptr;
+	Check(editPos && editPos->Size() == 3, "startEdit returns 3 positions");
+	if (editPos && editPos->Size() == 3)
+	{
+		const auto* t1 = editPos->At(1)->Find("timing");
+		const auto* t2 = editPos->At(2)->Find("timing");
+		Check(t1 && std::fabs(t1->Find("motion")->Find("speed")->numberValue - 0.6) < 1e-4 &&
+			std::fabs(t1->Find("motion")->Find("offsetSeconds")->numberValue - 2.0) < 1e-4 &&
+			std::fabs(t1->Find("facial")->Find("speed")->numberValue - 1.8) < 1e-4,
+			"startEdit serializes explicit slot 2 timing");
+		Check(t2 && std::fabs(t2->Find("motion")->Find("speed")->numberValue - 1.1) < 1e-4 &&
+			std::fabs(t2->Find("facial")->Find("speed")->numberValue - 1.2) < 1e-4,
+			"startEdit serializes fallback track timing for slot without explicit timing");
+	}
+	const auto stateSnap = f.ReqJson("state.get");
+	const auto* libPos = stateSnap.Find("result")->Find("library")->Find("entries")->At(0)->Find("positions");
+	Check(libPos && libPos->Size() == 3 &&
+		libPos->At(1)->Find("timing") != nullptr &&
+		std::fabs(libPos->At(1)->Find("timing")->Find("motion")->Find("speed")->numberValue - 0.6) < 1e-4,
+		"state.get library positions[] exposes per-slot timing");
+
+	std::error_code ec;
+	fs::remove_all(root, ec);
+}
+
 int main()
 {
 	std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -1821,6 +2038,7 @@ int main()
 	TestCoverEditingScreenshotAndDuplicateTitleImport();
 	TestM4PortraitsAndFormation();
 	TestAsyncTrackCoverCache();
+	TestPerSlotTimingAndRootOriginProbe();
 	std::printf("\nweb-panel bridge contracts: %d passed, %d failed\n", g_pass, g_fail);
 	return g_fail == 0 ? 0 : 1;
 }

@@ -11,6 +11,7 @@ import {
   findNumericInputByName,
   findSlotCardElement,
   isSlotStripViewportEl,
+  pointerDragSlotCard,
   probeF15Ready,
   setNumericInputValue,
   unwrapFacialWeights,
@@ -142,9 +143,7 @@ describe('Tier 2 — F15 Motion Slot Strip & Rotary Knobs Boundary/Negative Case
     await waitFor(() => expect(screen.getByText('2号位')).toBeInTheDocument())
 
     const slot2 = findSlotCardElement(screen.getByText('2号位'))
-    fireEvent.dragStart(slot2)
-    fireEvent.dragOver(slot2)
-    fireEvent.drop(slot2)
+    pointerDragSlotCard(slot2, slot2)
 
     expect(spy.mock.calls.some((c) => (c[0] as string) === 'formation.swapSlots')).toBe(false)
   })

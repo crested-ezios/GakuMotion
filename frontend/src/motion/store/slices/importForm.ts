@@ -2,11 +2,18 @@ import {
   BridgeError,
   IMPORT_SLOT,
   defaultImportRequest,
+  defaultSlotPerformanceTiming,
   isSlotPlaceholder,
   type ImportRequest,
   type TrackTiming,
 } from '../../protocol'
-import { classifyImportFiles, isSupportedAudioExtension, validateImportForm } from '../../validation'
+import {
+  canUseAsFacial,
+  canUseAsMotion,
+  classifyImportFiles,
+  isSupportedAudioExtension,
+  validateImportForm,
+} from '../../validation'
 import type { SliceBundle, StoreContext } from '../context'
 import { normalizeEditEntryInfo } from '../normalizersCore'
 import {
@@ -17,7 +24,11 @@ import {
   type ImportSlotKey,
   type ImportSlotState,
 } from '../types'
-import type { createImportHelpers } from './importPositions'
+import {
+  recomputeAutoSlotOffsets,
+  sanitizeTrackTiming,
+  type createImportHelpers,
+} from './importPositions'
 import type { ImportProgressHooks } from './importProgress'
 
 export function createImportFormSlice(
@@ -47,6 +58,7 @@ export function createImportFormSlice(
           {
             motion: { candidates: [IMPORT_SLOT.empty], selection: 0 },
             facial: { candidates: [IMPORT_SLOT.autoFacial], selection: 0 },
+            timing: defaultSlotPerformanceTiming(),
             x: 0,
             y: 0,
             z: 0,
@@ -97,6 +109,21 @@ export function createImportFormSlice(
         }
 
         const motionCandidates = classification.motionCandidates
+        const motionPool = [
+          ...motionCandidates,
+          ...vmdFiles.filter((f) => (!probeMap[f] || canUseAsMotion(probeMap[f])) && !motionCandidates.includes(f)),
+        ]
+        const facialPool: string[] = []
+        for (const f of facialOnlyFiles) appendUnique(facialPool, f)
+        for (const f of motionPool) {
+          const probe = probeMap[f]
+          if (!probe || canUseAsFacial(probe)) appendUnique(facialPool, f)
+        }
+        for (const f of vmdFiles) {
+          const probe = probeMap[f]
+          if (!probe || canUseAsFacial(probe)) appendUnique(facialPool, f)
+        }
+
         let positions: ImportPositionFormState[]
         if (motionCandidates.length >= 2) {
           const separateFacial =
@@ -104,12 +131,13 @@ export function createImportFormSlice(
               ? classification.facialCandidate
               : ''
           positions = motionCandidates.map((motionPath, idx) => {
-            const motionCands = [IMPORT_SLOT.empty, motionPath]
-            const facialCands = [IMPORT_SLOT.autoFacial, ...facialOnlyFiles, IMPORT_SLOT.skip]
+            const motionCands = [IMPORT_SLOT.empty, ...motionPool]
+            const facialCands = [IMPORT_SLOT.autoFacial, ...facialPool, IMPORT_SLOT.skip]
             const facialSel = idx === 0 && separateFacial ? findIndex(facialCands, separateFacial) : 0
             return {
-              motion: { candidates: motionCands, selection: 1 },
+              motion: { candidates: motionCands, selection: findIndex(motionCands, motionPath) },
               facial: { candidates: facialCands, selection: facialSel },
+              timing: defaultSlotPerformanceTiming(),
               x: 0,
               y: 0,
               z: 0,
@@ -118,12 +146,13 @@ export function createImportFormSlice(
             }
           })
         } else {
-          const motionCands = [IMPORT_SLOT.empty, ...vmdFiles]
-          const facialCands = [IMPORT_SLOT.autoFacial, ...vmdFiles, IMPORT_SLOT.skip]
+          const motionCands = [IMPORT_SLOT.empty, ...motionPool]
+          const facialCands = [IMPORT_SLOT.autoFacial, ...facialPool, IMPORT_SLOT.skip]
           positions = [
             {
               motion: { candidates: motionCands, selection: findIndex(motionCands, classification.motionCandidate) },
               facial: { candidates: facialCands, selection: findIndex(facialCands, classification.facialCandidate) },
+              timing: defaultSlotPerformanceTiming(),
               x: 0,
               y: 0,
               z: 0,
@@ -132,6 +161,7 @@ export function createImportFormSlice(
             },
           ]
         }
+        positions = recomputeAutoSlotOffsets(positions, probeMap, 'new')
 
         const camCands = [
           IMPORT_SLOT.empty,
@@ -175,19 +205,28 @@ export function createImportFormSlice(
           form.title = info.title
           form.subtitle = info.subtitle ?? ''
           form.timing = info.timing
+          const slotTimingAt = (idx: number) => {
+            const t = info.positions?.[idx]?.timing
+            return {
+              motion: { ...(t?.motion ?? info.timing.motion) },
+              facial: { ...(t?.facial ?? info.timing.facial) },
+            }
+          }
           if (info.isGroup && info.positions && info.positions.length >= 2) {
-            form.positions = info.positions.map((pos) => ({
+            form.positions = info.positions.map((pos, idx) => ({
               motion: { candidates: [IMPORT_SLOT.keepMotion], selection: 0 },
               facial: {
                 candidates: pos.hasFacial ? [IMPORT_SLOT.clear, IMPORT_SLOT.keepTrack] : [IMPORT_SLOT.clear],
                 selection: pos.hasFacial ? 1 : 0,
               },
+              timing: slotTimingAt(idx),
               x: pos.x,
               y: pos.y,
               z: pos.z,
               yawDegrees: pos.yawDegrees,
               preserveExisting: true,
               sourceSlot: pos.slot,
+              ...(idx >= 1 ? { placementEdited: true } : {}),
             }))
           } else {
             form.positions = [
@@ -197,6 +236,7 @@ export function createImportFormSlice(
                   candidates: info.hasFacial ? [IMPORT_SLOT.clear, IMPORT_SLOT.keepTrack] : [IMPORT_SLOT.clear],
                   selection: info.hasFacial ? 1 : 0,
                 },
+                timing: slotTimingAt(0),
                 x: 0,
                 y: 0,
                 z: 0,
@@ -205,6 +245,11 @@ export function createImportFormSlice(
                 sourceSlot: 1,
               },
             ]
+          }
+          form.timing = {
+            ...info.timing,
+            motion: { ...form.positions[0].timing.motion },
+            facial: { ...form.positions[0].timing.facial },
           }
           form.slots.motion = form.positions[0].motion
           form.slots.facial = form.positions[0].facial
@@ -323,10 +368,17 @@ export function createImportFormSlice(
 
       setImportTiming: (slot: ImportSlotKey, patch: Partial<TrackTiming>): void => {
         const form = ctx.getState().importForm
-        const timing = { ...form.timing, [slot]: { ...form.timing[slot], ...patch } }
-        const track = timing[slot]
-        if (!Number.isFinite(track.speed) || track.speed < 0) track.speed = track.speed === 0 ? 0 : 1
-        if (!Number.isFinite(track.offsetSeconds)) track.offsetSeconds = 0
+        const nextTrack = sanitizeTrackTiming(form.timing[slot], patch)
+        const timing = { ...form.timing, [slot]: nextTrack }
+        if ((slot === 'motion' || slot === 'facial') && form.positions.length > 0) {
+          const positions = form.positions.map((pos, idx) =>
+            idx === 0
+              ? { ...pos, timing: { ...pos.timing, [slot]: { ...nextTrack } } }
+              : pos,
+          )
+          ctx.set({ importForm: { ...form, timing, positions } })
+          return
+        }
         ctx.set({ importForm: { ...form, timing } })
       },
 
@@ -381,12 +433,22 @@ export function createImportFormSlice(
         request.fps = form.fps
         request.sourceFps = form.sourceFps
         request.rebakeOutput = form.mode === 'edit' && form.fps > 0
-        request.timing = form.timing
+        const slot0Timing = form.positions[0]?.timing ?? {
+          motion: form.timing.motion,
+          facial: form.timing.facial,
+        }
+        request.timing = {
+          ...form.timing,
+          motion: { ...slot0Timing.motion },
+          facial: { ...slot0Timing.facial },
+        }
         const isDisk = (path: string) => !isSlotPlaceholder(path)
         const isGroup = form.positions.length >= 2
         request.isGroup = isGroup
+        const includePositions =
+          isGroup || (form.mode === 'edit' && Boolean(form.editInfo?.isGroup) && form.positions.length === 1)
 
-        if (isGroup) {
+        if (includePositions) {
           request.positions = form.positions.map((pos, idx) => {
             const mPick = pos.motion.candidates[pos.motion.selection] ?? ''
             const fPick = pos.facial.candidates[pos.facial.selection] ?? ''
@@ -399,14 +461,17 @@ export function createImportFormSlice(
               ...(isDisk(fPick) ? { facialFile: fPick, morphVmd: fPick } : {}),
               disableMorph,
               preserveExisting,
+              hasExplicitPlacement: Boolean(pos.placementEdited),
+              timing: {
+                motion: { ...pos.timing.motion },
+                facial: { ...pos.timing.facial },
+              },
               x: pos.x,
               y: pos.y,
               z: pos.z,
               yawDegrees: pos.yawDegrees,
             }
           })
-        } else {
-          request.positions = []
         }
 
         if (form.mode === 'edit') {

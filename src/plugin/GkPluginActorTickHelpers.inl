@@ -217,6 +217,7 @@ static void RunActorPhysicsAndProbes(
 			binding->second.bindPoseCaptured && player.controller.CanDriveActor(activeActor);
 		if (!canDrive || player.state == GakuMotion::PlaybackState::Stopped)
 		{
+			player.controller.fallbackMuteAnimator = false;
 			if (canDrive)
 			{
 				const bool fallbackClean = g_fallbackPhysics.RestoreForCapture(player.controller);
@@ -228,11 +229,16 @@ static void RunActorPhysicsAndProbes(
 		else if (frame != g_physicsFrame || g_physicsActor != activeActor)
 		{
 			const int requested = core.config.secondaryPhysicsBackend;
-			if (requested != g_physicsBackend || core.config.beforeQuartzExperiment != g_physicsBeforeQuartz ||
+			const bool structuralChange =
+				requested != g_physicsBackend || core.config.beforeQuartzExperiment != g_physicsBeforeQuartz ||
 				core.config.sleeveMuscleDiagnostics != g_physicsSleeveDiagnostics ||
-				activeActor != g_physicsActor || core.currentMotionIndex !=
-				g_physicsMotion ||
-				player.SeekCount() != g_physicsSeeks || player.scrubbing || player.currentTime + .001f < g_physicsTime)
+				activeActor != g_physicsActor || core.currentMotionIndex != g_physicsMotion;
+			const bool timelineDiscontinuity =
+				player.SeekCount() != g_physicsSeeks || player.scrubbing ||
+				player.currentTime + .001f < g_physicsTime;
+			const bool clearOnTimelineBoundary =
+				timelineDiscontinuity && (g_physicsBeforeQuartz || requested != 2);
+			if (structuralChange || clearOnTimelineBoundary)
 			{
 				if (g_physicsActor == activeActor)
 				{
@@ -247,6 +253,10 @@ static void RunActorPhysicsAndProbes(
 				g_physicsSleeveDiagnostics = core.config.sleeveMuscleDiagnostics;
 				g_physicsMotion = core.currentMotionIndex;
 				g_physicsActor = activeActor;
+			}
+			else if (timelineDiscontinuity)
+			{
+				g_fallbackPhysics.Clear();
 			}
 			g_physicsSeeks = player.SeekCount();
 			g_physicsTime = player.currentTime;
@@ -309,6 +319,7 @@ static void RunActorPhysicsAndProbes(
 			d.bridge_expired_skips = perf.expired_skips;
 			d.bridge_identity_skips = perf.identity_skips;
 			const std::string reason = requested == 2 ? g_burstBridge.reason : requested == 1 ? "fallback" : "off";
+			SyncFallbackAnimatorMute(player.controller, activeActor, binding->second, requested, native, reason);
 			if (reason != g_physicsReason)
 			{
 				g_physicsReason = reason;

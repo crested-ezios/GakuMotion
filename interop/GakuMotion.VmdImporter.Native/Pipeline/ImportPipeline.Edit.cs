@@ -113,6 +113,11 @@ internal static partial class ImportPipeline
                         slot1Obj["source_vmd"] = info["source_vmd"]?.DeepClone();
                         slot1Obj["source_vmd_sha256"] = info["source_vmd_sha256"]?.DeepClone();
                         slot1Obj["source_morph_vmd"] = info["source_morph_vmd"]?.DeepClone();
+                        if (bodyInfo["positions"] is JsonArray bodyPos && bodyPos.Count > 0 &&
+                            bodyPos[0] is JsonObject bodySlot1 && bodySlot1["source_root_origin"] is JsonNode originNode)
+                        {
+                            slot1Obj["source_root_origin"] = originNode.DeepClone();
+                        }
                         RecomputeTopLevelSummaryFromPositions(stage, info, existingPositions);
                     }
                 }
@@ -203,7 +208,15 @@ internal static partial class ImportPipeline
             if (!string.IsNullOrWhiteSpace(request.Title)) info["title"] = request.Title.Trim();
             else if (info["title"] is null || info["title"]!.ToString().Length == 0) info["title"] = Path.GetFileName(target);
             if (request.HasSubtitle) info["subtitle"] = request.Subtitle.Trim();
-            if (request.TrackTiming != null) info["track_timing"] = request.TrackTiming.ToJson();
+            if (request.Positions is not { Count: > 0 } && request.TrackTiming != null)
+            {
+                info["track_timing"] = request.TrackTiming.ToJson();
+                if (info["positions"] is JsonArray existingPositions && existingPositions.Count > 0 &&
+                    existingPositions[0] is JsonObject slot1Obj)
+                {
+                    slot1Obj["track_timing"] = SlotTimingSettings.FromTopLevel(request.TrackTiming).ToJson();
+                }
+            }
             WriteEditInfo(stage, info);
 
             log.Progress(96, "PACK", "正在保存曲目修改...");

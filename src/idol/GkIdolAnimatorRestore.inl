@@ -76,7 +76,8 @@ namespace GakuMotion
 
 		// The official timeline can replace a controller or enable its Animator.
 		// Legacy continually suppresses it; the experiment keeps its graph live.
-		if (preserveAnimatorForSecondaryPhysics)
+		const bool preserveAnimator = PreserveAnimatorForSecondaryPhysics();
+		if (preserveAnimator)
 		{
 			// Undo only our own legacy takeover on a hot A/B switch. Do not
 			// freeze Animator.speed: its deltaTime also feeds the swing jobs.
@@ -96,7 +97,7 @@ namespace GakuMotion
 			}
 		}
 
-		if (!preserveAnimatorForSecondaryPhysics && bPtr->cachedPlayableDirector && fnPausePlayableDirector)
+		if (!preserveAnimator && bPtr->cachedPlayableDirector && fnPausePlayableDirector)
 		{
 			fnPausePlayableDirector(bPtr->cachedPlayableDirector);
 		}
@@ -241,7 +242,8 @@ namespace GakuMotion
 				}
 				// No saved PlayableDirector play-state or resume API exists here.
 				// A graph actually paused by GM cannot be certified as restored.
-				if (!preserveAnimatorForSecondaryPhysics && before.cachedPlayableDirector && fnPausePlayableDirector) bodyOk = false;
+				const bool preserveAnimator = PreserveAnimatorForSecondaryPhysics();
+				if (!preserveAnimator && before.cachedPlayableDirector && fnPausePlayableDirector) bodyOk = false;
 				for (int side=0; side<2; ++side)
 				{
 					const auto saved = before.waistSupport[side];
@@ -293,7 +295,12 @@ namespace GakuMotion
 
 	inline void IdolController::RestoreMute(void* animatorComponent, void* playableDirector)
 	{
-		if (captureCheckEnforced) { RestoreForCapture(); return; }
+		if (captureCheckEnforced)
+		{
+			RestoreForCapture();
+			fallbackMuteAnimator = false;
+			return;
+		}
 		(void)animatorComponent;
 		(void)playableDirector;
 		auto restoreOne = [this](IdolBoneBinding& b)
@@ -327,6 +334,7 @@ namespace GakuMotion
 			restoreOne(currentBinding);
 		}
 		cachedAnimator = nullptr;
+		fallbackMuteAnimator = false;
 	}
 
 	inline Quaternion IdolController::FromEulerXYZ(float pitchDeg, float yawDeg, float rollDeg)

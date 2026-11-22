@@ -289,4 +289,112 @@ describe('LibraryPage', () => {
     expect(motionStore.getState().coverEditor.error).toContain('仅支持拖入图片文件')
     expect(motionStore.getState().coverEditor.sourceImageUri).toBe(loadedUri)
   })
+
+  it('shares non-exclusive motion & facial candidates across all positions, allows duplicate selection, and preserves pools across add/remove/pick/append', async () => {
+    const origReq = bridge.request.bind(bridge)
+    const probeFixtures: Record<string, { tendency: string; body: number; eye: number; morph: number; cam: number }> = {
+      'C:\\Pool\\01_a.vmd': { tendency: 'motionAndFacial', body: 5000, eye: 100, morph: 400, cam: 0 },
+      'C:\\Pool\\02_b.vmd': { tendency: 'motionOnly', body: 5000, eye: 0, morph: 0, cam: 0 },
+      'C:\\Pool\\03_c.vmd': { tendency: 'motionAndFacial', body: 5000, eye: 80, morph: 350, cam: 0 },
+      'C:\\Pool\\face.vmd': { tendency: 'facialOnly', body: 0, eye: 120, morph: 900, cam: 0 },
+      'C:\\Pool\\cam.vmd': { tendency: 'cameraOnly', body: 0, eye: 0, morph: 0, cam: 2000 },
+      'C:\\Pool\\picked_both.vmd': { tendency: 'motionAndFacial', body: 4000, eye: 60, morph: 300, cam: 0 },
+      'C:\\Pool\\appended_both.vmd': { tendency: 'motionAndFacial', body: 4500, eye: 70, morph: 320, cam: 0 },
+    }
+    vi.spyOn(bridge, 'request').mockImplementation((async (method: string, params?: unknown, options?: unknown) => {
+      if (method === 'library.probeFiles') {
+        const paths = ((params as { paths?: string[] })?.paths ?? []) as string[]
+        return {
+          probes: paths.map((path) => {
+            const f = probeFixtures[path] ?? { tendency: 'motionAndFacial', body: 1000, eye: 10, morph: 50, cam: 0 }
+            return {
+              path,
+              valid: true,
+              isGkCamera: false,
+              tendency: f.tendency,
+              boneFrames: f.body + f.eye,
+              bodyBoneFrames: f.body,
+              eyeBoneFrames: f.eye,
+              morphFrames: f.morph,
+              cameraFrames: f.cam,
+            }
+          }),
+        } as never
+      }
+      return origReq(method as never, params as never, options as never)
+    }) as typeof bridge.request)
+
+    render(<LibraryPage />)
+    await motionStore.openImportNew([
+      'C:\\Pool\\03_c.vmd',
+      'C:\\Pool\\01_a.vmd',
+      'C:\\Pool\\02_b.vmd',
+      'C:\\Pool\\face.vmd',
+      'C:\\Pool\\cam.vmd',
+    ])
+
+    let positions = motionStore.getState().importForm.positions
+    expect(positions.length).toBe(3)
+    // Distinct auto-assigned initial motion selections, but ALL slots share the full motion & facial pools
+    expect(positions[0].motion.candidates[positions[0].motion.selection]).toBe('C:\\Pool\\01_a.vmd')
+    expect(positions[1].motion.candidates[positions[1].motion.selection]).toBe('C:\\Pool\\02_b.vmd')
+    expect(positions[2].motion.candidates[positions[2].motion.selection]).toBe('C:\\Pool\\03_c.vmd')
+    for (const pos of positions) {
+      expect(pos.motion.candidates).toContain('C:\\Pool\\01_a.vmd')
+      expect(pos.motion.candidates).toContain('C:\\Pool\\02_b.vmd')
+      expect(pos.motion.candidates).toContain('C:\\Pool\\03_c.vmd')
+      expect(pos.motion.candidates).not.toContain('C:\\Pool\\face.vmd')
+      expect(pos.motion.candidates).not.toContain('C:\\Pool\\cam.vmd')
+
+      // facial candidates include facialOnly AND motionAndFacial VMDs, before trailing skip
+      expect(pos.facial.candidates).toContain('C:\\Pool\\face.vmd')
+      expect(pos.facial.candidates).toContain('C:\\Pool\\01_a.vmd')
+      expect(pos.facial.candidates).toContain('C:\\Pool\\03_c.vmd')
+      expect(pos.facial.candidates).not.toContain('C:\\Pool\\02_b.vmd')
+      expect(pos.facial.candidates).not.toContain('C:\\Pool\\cam.vmd')
+      expect(pos.facial.candidates[pos.facial.candidates.length - 1]).toBe('（不导入）')
+    }
+
+    // Duplicate selection across slots is allowed and valid
+    const idxAInSlot2 = positions[1].motion.candidates.indexOf('C:\\Pool\\01_a.vmd')
+    const idxCInSlot2Facial = positions[1].facial.candidates.indexOf('C:\\Pool\\03_c.vmd')
+    motionStore.setImportPositionSelection(1, 'motion', idxAInSlot2)
+    motionStore.setImportPositionSelection(1, 'facial', idxCInSlot2Facial)
+    expect(motionStore.importFormError()).toBeNull()
+
+    // removeImportPosition removes 2号位 without pruning 02_b.vmd out of remaining slots
+    motionStore.removeImportPosition(1)
+    positions = motionStore.getState().importForm.positions
+    expect(positions.length).toBe(2)
+    expect(positions[0].motion.candidates).toContain('C:\\Pool\\02_b.vmd')
+    expect(positions[1].motion.candidates).toContain('C:\\Pool\\02_b.vmd')
+
+    // addImportPosition populates new slot from full pool across positions & probes
+    motionStore.addImportPosition()
+    positions = motionStore.getState().importForm.positions
+    expect(positions.length).toBe(3)
+    expect(positions[2].motion.candidates).toContain('C:\\Pool\\02_b.vmd')
+    expect(positions[2].facial.candidates).toContain('C:\\Pool\\01_a.vmd')
+    expect(positions[2].facial.candidates).toContain('C:\\Pool\\face.vmd')
+
+    // importPickPositionFile populates all slots & cross-populates facial when motionAndFacial, selecting only target slot
+    await motionStore.importPickPositionFile(2, 'motion', 'C:\\Pool\\picked_both.vmd')
+    positions = motionStore.getState().importForm.positions
+    expect(positions[2].motion.candidates[positions[2].motion.selection]).toBe('C:\\Pool\\picked_both.vmd')
+    expect(positions[0].motion.candidates[positions[0].motion.selection]).toBe('C:\\Pool\\01_a.vmd')
+    for (const pos of positions) {
+      expect(pos.motion.candidates).toContain('C:\\Pool\\picked_both.vmd')
+      expect(pos.facial.candidates).toContain('C:\\Pool\\picked_both.vmd')
+      expect(pos.facial.candidates[pos.facial.candidates.length - 1]).toBe('（不导入）')
+    }
+
+    // importAppendFiles adds motionAndFacial file to all slots' motion & facial candidates
+    await motionStore.importAppendFiles(['C:\\Pool\\appended_both.vmd'])
+    positions = motionStore.getState().importForm.positions
+    expect(positions.length).toBe(4)
+    for (const pos of positions) {
+      expect(pos.motion.candidates).toContain('C:\\Pool\\appended_both.vmd')
+      expect(pos.facial.candidates).toContain('C:\\Pool\\appended_both.vmd')
+    }
+  })
 })

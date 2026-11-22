@@ -167,10 +167,12 @@ namespace GakuMotion::webpanel
 				if (pSourceFps != 0.0 && pSourceFps != 25.0 && pSourceFps != 30.0 && pSourceFps != 60.0)
 					return CmdResult::Err("invalid_params", "position.sourceFps must be 0, 25, 30, or 60");
 				bool pDisableMorph = false, pClearMorph = false, pRebake = false, pPreserve = false;
+				bool pHasExplicitPlacement = false;
 				if ((posObj->Find("disableMorph") && !BoolParam(*posObj, "disableMorph", pDisableMorph)) ||
 					(posObj->Find("clearMorph") && !BoolParam(*posObj, "clearMorph", pClearMorph)) ||
 					(posObj->Find("rebakeOutput") && !BoolParam(*posObj, "rebakeOutput", pRebake)) ||
-					(posObj->Find("preserveExisting") && !BoolParam(*posObj, "preserveExisting", pPreserve)))
+					(posObj->Find("preserveExisting") && !BoolParam(*posObj, "preserveExisting", pPreserve)) ||
+					(posObj->Find("hasExplicitPlacement") && !BoolParam(*posObj, "hasExplicitPlacement", pHasExplicitPlacement)))
 					return CmdResult::Err("invalid_params", "position boolean flags must be booleans");
 
 				std::string pMotion = ImportSlotString(*posObj, "motionFile", "motionMode", "motionPath");
@@ -192,6 +194,22 @@ namespace GakuMotion::webpanel
 				ps.y = static_cast<float>(py);
 				ps.z = static_cast<float>(pz);
 				ps.yawDegrees = static_cast<float>(pyaw);
+				ps.hasExplicitPlacement = pHasExplicitPlacement;
+				ps.motionTiming = timing.motion;
+				ps.facialTiming = timing.facial;
+				if (const jsonlite::Value* pTiming = posObj->Find("timing"))
+				{
+					std::string slotTimingError;
+					if (!ParseSlotTiming(*pTiming, ps.motionTiming, ps.facialTiming, slotTimingError))
+						return CmdResult::Err("invalid_params", slotTimingError);
+					if (!ValidTrackTiming(ps.motionTiming) || !ValidTrackTiming(ps.facialTiming))
+						return CmdResult::Err("invalid_params", "位置轨道速度必须 >= 0，偏移必须为有限数值");
+					ps.hasTiming = true;
+				}
+				else
+				{
+					ps.hasTiming = (timingValue != nullptr && !edit);
+				}
 
 				if (!ps.preserveExisting && IsImportSlotFile(pMotion))
 				{
@@ -209,6 +227,15 @@ namespace GakuMotion::webpanel
 					ps.morphVmd = pFacial;
 				}
 				request.positions.push_back(std::move(ps));
+			}
+			for (const auto& pos : request.positions)
+			{
+				if (pos.slot == 1 && pos.hasTiming)
+				{
+					request.timing.motion = pos.motionTiming;
+					request.timing.facial = pos.facialTiming;
+					break;
+				}
 			}
 		}
 

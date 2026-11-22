@@ -425,6 +425,11 @@ namespace GakuMotion::csharp_import
 					reason = "团曲位置参数或源帧率必须为有限数值";
 					return false;
 				}
+				if (!ValidTrackTiming(pos.motionTiming) || !ValidTrackTiming(pos.facialTiming))
+				{
+					reason = "团曲槽位播放速度必须为不小于 0 的有限数值，初始偏移量必须为有限数值";
+					return false;
+				}
 			}
 			return true;
 		}
@@ -445,6 +450,122 @@ namespace GakuMotion::csharp_import
 			std::string s = jsonlite::FormatNumber(static_cast<double>(clean), 6);
 			if (s == "-0") s = "0";
 			return s;
+		}
+
+		inline std::string SerializeImportRequestJson(const MotionImportRequest& request)
+		{
+			const std::string primaryVmd = request.editDir.empty()
+				? ResolvePrimaryVmd(request)
+				: request.vmd;
+
+			std::string json = "{";
+			json += "\"motion_vmd\":";
+			AppendJsonString(json, primaryVmd);
+			json += ",\"edit_dir\":";
+			AppendJsonString(json, request.editDir);
+			json += ",\"morph_vmd\":";
+			AppendJsonString(json, request.morphVmd);
+			json += ",\"disable_morph\":";
+			json += request.disableMorph ? "true" : "false";
+			json += ",\"motions_root\":";
+			AppendJsonString(json, request.motionsRoot);
+			json += ",\"transaction_root\":";
+			AppendJsonString(json, request.transactionRoot);
+			json += ",\"title\":";
+			AppendJsonString(json, request.title);
+			if (request.hasSubtitle)
+			{
+				json += ",\"subtitle\":";
+				AppendJsonString(json, request.subtitle);
+			}
+			char fpsBuffer[64]{};
+			std::snprintf(fpsBuffer, sizeof(fpsBuffer), "%.6f", request.fps > 0.0f ? request.fps : 0.0f);
+			json += ",\"fps\":";
+			json += fpsBuffer;
+			json += ",\"rebake_output\":";
+			json += request.rebakeOutput ? "true" : "false";
+			std::snprintf(fpsBuffer, sizeof(fpsBuffer), "%.6f", request.sourceFps > 0.0f ? request.sourceFps : 0.0f);
+			json += ",\"source_fps\":";
+			json += fpsBuffer;
+			json += ",\"audio\":";
+			AppendJsonString(json, request.audio);
+			json += ",\"clear_audio\":";
+			json += request.clearAudio ? "true" : "false";
+			json += ",\"track_timing\":" + PerformanceTimingJson(request.timing);
+			json += ",\"camera_vmd\":";
+			AppendJsonString(json, request.cameraVmd);
+			json += ",\"clear_camera\":";
+			json += request.clearCamera ? "true" : "false";
+			char cameraFpsBuffer[64]{};
+			std::snprintf(cameraFpsBuffer, sizeof(cameraFpsBuffer), "%.6f", request.cameraFps > 0.0f ? request.cameraFps : 60.0f);
+			json += ",\"camera_fps\":";
+			json += cameraFpsBuffer;
+			char cameraScaleBuffer[64]{};
+			std::snprintf(cameraScaleBuffer, sizeof(cameraScaleBuffer), "%.6f", request.cameraScale > 0.0f ? request.cameraScale : 0.083f);
+			json += ",\"camera_scale\":";
+			json += cameraScaleBuffer;
+			json += ",\"camera_root_registration\":";
+			AppendJsonString(json, request.cameraRootRegistration);
+			if (!request.positions.empty() || request.positionsExplicit)
+			{
+				json += ",\"positions\":[";
+				for (size_t i = 0; i < request.positions.size(); ++i)
+				{
+					if (i > 0) json.push_back(',');
+					const auto& pos = request.positions[i];
+					json += "{\"slot\":";
+					json += std::to_string(pos.slot);
+					if (pos.sourceSlot > 0)
+					{
+						json += ",\"source_slot\":";
+						json += std::to_string(pos.sourceSlot);
+					}
+					json += ",\"motion_vmd\":";
+					AppendJsonString(json, pos.motionVmd);
+					json += ",\"morph_vmd\":";
+					AppendJsonString(json, pos.morphVmd);
+					json += ",\"disable_morph\":";
+					json += pos.disableMorph ? "true" : "false";
+					json += ",\"clear_morph\":";
+					json += pos.clearMorph ? "true" : "false";
+					json += ",\"source_fps\":";
+					json += FormatFiniteFloat(pos.sourceFps > 0.0f ? pos.sourceFps : 0.0f);
+					json += ",\"rebake_output\":";
+					json += pos.rebakeOutput ? "true" : "false";
+					json += ",\"preserve_existing\":";
+					json += pos.preserveExisting ? "true" : "false";
+					json += ",\"x\":";
+					json += FormatFiniteFloat(pos.x);
+					json += ",\"y\":";
+					json += FormatFiniteFloat(pos.y);
+					json += ",\"z\":";
+					json += FormatFiniteFloat(pos.z);
+					json += ",\"yaw_degrees\":";
+					json += FormatFiniteFloat(pos.yawDegrees);
+					json += ",\"has_explicit_placement\":";
+					json += pos.hasExplicitPlacement ? "true" : "false";
+					if (pos.hasTiming)
+					{
+						json += ",\"track_timing\":";
+						json += SlotTrackTimingJson(pos.motionTiming, pos.facialTiming);
+					}
+					json.push_back('}');
+				}
+				json.push_back(']');
+			}
+			json += ",\"log_path\":";
+			AppendJsonString(json, request.log);
+			json += ",\"timing_jsonl\":";
+			{
+				// Collect real import timings next to the import log
+				// (<localRoot>/GakuMotion/vmd_import_timing.jsonl), never in plugins/.
+				const size_t slash = request.log.find_last_of("/\\");
+				const std::string timing = (slash == std::string::npos ? std::string() : request.log.substr(0, slash + 1))
+					+ "vmd_import_timing.jsonl";
+				AppendJsonString(json, timing);
+			}
+			json += "}";
+			return json;
 		}
 	}
 
@@ -503,110 +624,7 @@ namespace GakuMotion::csharp_import
 			return false;
 		}
 
-		const std::string primaryVmd = request.editDir.empty()
-			? detail::ResolvePrimaryVmd(request)
-			: request.vmd;
-
-		std::string json = "{";
-		json += "\"motion_vmd\":";
-		detail::AppendJsonString(json, primaryVmd);
-		json += ",\"edit_dir\":";
-		detail::AppendJsonString(json, request.editDir);
-		json += ",\"morph_vmd\":";
-		detail::AppendJsonString(json, request.morphVmd);
-		json += ",\"disable_morph\":";
-		json += request.disableMorph ? "true" : "false";
-		json += ",\"motions_root\":";
-		detail::AppendJsonString(json, request.motionsRoot);
-		json += ",\"transaction_root\":";
-		detail::AppendJsonString(json, request.transactionRoot);
-		json += ",\"title\":";
-		detail::AppendJsonString(json, request.title);
-		if (request.hasSubtitle)
-		{
-			json += ",\"subtitle\":";
-			detail::AppendJsonString(json, request.subtitle);
-		}
-		char fpsBuffer[64]{};
-		std::snprintf(fpsBuffer, sizeof(fpsBuffer), "%.6f", request.fps > 0.0f ? request.fps : 0.0f);
-		json += ",\"fps\":";
-		json += fpsBuffer;
-		json += ",\"rebake_output\":";
-		json += request.rebakeOutput ? "true" : "false";
-		std::snprintf(fpsBuffer, sizeof(fpsBuffer), "%.6f", request.sourceFps > 0.0f ? request.sourceFps : 0.0f);
-		json += ",\"source_fps\":";
-		json += fpsBuffer;
-		json += ",\"audio\":";
-		detail::AppendJsonString(json, request.audio);
-		json += ",\"clear_audio\":";
-		json += request.clearAudio ? "true" : "false";
-		json += ",\"track_timing\":" + PerformanceTimingJson(request.timing);
-		json += ",\"camera_vmd\":";
-		detail::AppendJsonString(json, request.cameraVmd);
-		json += ",\"clear_camera\":";
-		json += request.clearCamera ? "true" : "false";
-		char cameraFpsBuffer[64]{};
-		std::snprintf(cameraFpsBuffer, sizeof(cameraFpsBuffer), "%.6f", request.cameraFps > 0.0f ? request.cameraFps : 60.0f);
-		json += ",\"camera_fps\":";
-		json += cameraFpsBuffer;
-		char cameraScaleBuffer[64]{};
-		std::snprintf(cameraScaleBuffer, sizeof(cameraScaleBuffer), "%.6f", request.cameraScale > 0.0f ? request.cameraScale : 0.083f);
-		json += ",\"camera_scale\":";
-		json += cameraScaleBuffer;
-		json += ",\"camera_root_registration\":";
-		detail::AppendJsonString(json, request.cameraRootRegistration);
-		if (!request.positions.empty() || request.positionsExplicit)
-		{
-			json += ",\"positions\":[";
-			for (size_t i = 0; i < request.positions.size(); ++i)
-			{
-				if (i > 0) json.push_back(',');
-				const auto& pos = request.positions[i];
-				json += "{\"slot\":";
-				json += std::to_string(pos.slot);
-				if (pos.sourceSlot > 0)
-				{
-					json += ",\"source_slot\":";
-					json += std::to_string(pos.sourceSlot);
-				}
-				json += ",\"motion_vmd\":";
-				detail::AppendJsonString(json, pos.motionVmd);
-				json += ",\"morph_vmd\":";
-				detail::AppendJsonString(json, pos.morphVmd);
-				json += ",\"disable_morph\":";
-				json += pos.disableMorph ? "true" : "false";
-				json += ",\"clear_morph\":";
-				json += pos.clearMorph ? "true" : "false";
-				json += ",\"source_fps\":";
-				json += detail::FormatFiniteFloat(pos.sourceFps > 0.0f ? pos.sourceFps : 0.0f);
-				json += ",\"rebake_output\":";
-				json += pos.rebakeOutput ? "true" : "false";
-				json += ",\"preserve_existing\":";
-				json += pos.preserveExisting ? "true" : "false";
-				json += ",\"x\":";
-				json += detail::FormatFiniteFloat(pos.x);
-				json += ",\"y\":";
-				json += detail::FormatFiniteFloat(pos.y);
-				json += ",\"z\":";
-				json += detail::FormatFiniteFloat(pos.z);
-				json += ",\"yaw_degrees\":";
-				json += detail::FormatFiniteFloat(pos.yawDegrees);
-				json.push_back('}');
-			}
-			json.push_back(']');
-		}
-		json += ",\"log_path\":";
-		detail::AppendJsonString(json, request.log);
-		json += ",\"timing_jsonl\":";
-		{
-			// Collect real import timings next to the import log
-			// (<localRoot>/GakuMotion/vmd_import_timing.jsonl), never in plugins/.
-			const size_t slash = request.log.find_last_of("/\\");
-			const std::string timing = (slash == std::string::npos ? std::string() : request.log.substr(0, slash + 1))
-				+ "vmd_import_timing.jsonl";
-			detail::AppendJsonString(json, timing);
-		}
-		json += "}";
+		std::string json = detail::SerializeImportRequestJson(request);
 
 		job.response.assign(65536, '\0');
 		job.code = 2;

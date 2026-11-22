@@ -15,6 +15,7 @@ import {
   findSlotCardElement,
   getStoreFormation,
   isSlotStripViewportEl,
+  pointerDragSlotCard,
   probeF15Ready,
   setNumericInputValue,
   unwrapFacialWeights,
@@ -290,9 +291,7 @@ describe('Tier 1 — F15 Motion Slot Strip, Rotary Knobs & Bones UI', () => {
     const slot1 = findSlotCardElement(screen.getByText('1号位'))
     const slot2 = findSlotCardElement(screen.getByText('2号位'))
 
-    fireEvent.dragStart(slot1)
-    fireEvent.dragOver(slot2)
-    fireEvent.drop(slot2)
+    pointerDragSlotCard(slot1, slot2)
 
     await waitFor(() =>
       expect(
@@ -359,9 +358,7 @@ describe('Tier 1 — F15 Motion Slot Strip, Rotary Knobs & Bones UI', () => {
     const slot1After = findSlotCardElement(screen.getByText('1号位'))
     const slot3 = findSlotCardElement(screen.getByText('3号位'))
 
-    fireEvent.dragStart(slot1After)
-    fireEvent.dragOver(slot3)
-    fireEvent.drop(slot3)
+    pointerDragSlotCard(slot1After, slot3)
 
     await waitFor(() =>
       expect(

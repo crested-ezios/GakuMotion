@@ -2,6 +2,7 @@ namespace GakuMotion.VmdImporter.Native;
 
 using System.Diagnostics;
 using System.Globalization;
+using System.Numerics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -121,6 +122,15 @@ internal static partial class ImportPipeline
         throw new InvalidDataException("曲目 info.json 中的采样率无效");
     }
 
+    private static (float X, float Y, float Z) ResolveRelativePlacementOffset(Vector3 slotOrigin, Vector3 slot1Origin)
+    {
+        Vector3 delta = slotOrigin - slot1Origin;
+        float dx = CleanZero(delta.X);
+        float dz = CleanZero(delta.Z);
+        float dy = MathF.Abs(delta.Y) < 0.02f ? 0.0f : CleanZero(delta.Y);
+        return (dx, dy, dz);
+    }
+
     /// <summary>Stages a track outside the scanned library, then commits it atomically.</summary>
     private static string CommitTrack(ImportRequest request, IReadOnlyList<SlotSpec> slots,
         IReadOnlyList<BakedSlotResult> bakedSlots, string? audio, string cameraPath, bool cameraIsBaked,
@@ -139,6 +149,7 @@ internal static partial class ImportPipeline
         try
         {
             var slotMeta = new List<SlotMetadataEntry>(slots.Count);
+            Vector3 slot1Origin = slot1Baked.RootOrigin;
             for (int i = 0; i < slots.Count; i++)
             {
                 SlotSpec spec = slots[i];
@@ -146,15 +157,38 @@ internal static partial class ImportPipeline
                 string slotDir = SlotDirectory(stage, spec.Slot);
                 WriteBakedSlotFiles(slotDir, baked, spec.DisableMorph);
 
+                float outX, outY, outZ, outYaw;
+                if (spec.Slot == 1)
+                {
+                    outX = 0.0f;
+                    outY = 0.0f;
+                    outZ = 0.0f;
+                    outYaw = 0.0f;
+                }
+                else
+                {
+                    if (spec.HasExplicitPlacement)
+                    {
+                        outX = CleanZero(spec.X);
+                        outY = CleanZero(spec.Y);
+                        outZ = CleanZero(spec.Z);
+                    }
+                    else
+                    {
+                        (outX, outY, outZ) = ResolveRelativePlacementOffset(baked.RootOrigin, slot1Origin);
+                    }
+                    outYaw = CleanZero(spec.YawDegrees);
+                }
+
                 string slotSourceMorph = spec.DisableMorph
                     ? string.Empty
                     : (string.IsNullOrEmpty(baked.MorphPath) ? baked.VmdPath : baked.MorphPath);
                 slotMeta.Add(new SlotMetadataEntry(
                     Slot: spec.Slot,
-                    X: spec.Slot == 1 ? 0.0f : CleanZero(spec.X),
-                    Y: spec.Slot == 1 ? 0.0f : CleanZero(spec.Y),
-                    Z: spec.Slot == 1 ? 0.0f : CleanZero(spec.Z),
-                    YawDegrees: spec.Slot == 1 ? 0.0f : CleanZero(spec.YawDegrees),
+                    X: outX,
+                    Y: outY,
+                    Z: outZ,
+                    YawDegrees: outYaw,
                     HasMotion: true,
                     HasFacial: baked.Clip.BlendshapeNames.Count > 0,
                     SourceVmd: baked.VmdPath,
@@ -164,7 +198,9 @@ internal static partial class ImportPipeline
                     Frames: baked.Clip.TotalFrames,
                     Bones: baked.Clip.Bones.Count,
                     DurationSeconds: baked.Clip.DurationSeconds,
-                    OutputFps: baked.Clip.Fps));
+                    OutputFps: baked.Clip.Fps,
+                    Timing: spec.Timing,
+                    SourceRootOrigin: baked.RootOrigin));
             }
 
             AudioProbeResult? audioProbe = null;
@@ -258,7 +294,9 @@ internal static partial class ImportPipeline
             {
                 info["has_cover"] = false;
             }
-            info["track_timing"] = (request.TrackTiming ?? new PerformanceTimingSettings()).ToJson();
+            PerformanceTimingSettings topTiming =
+                (request.TrackTiming ?? new PerformanceTimingSettings()).WithSlot1Timing(slotMeta[0].Timing);
+            info["track_timing"] = topTiming.ToJson();
             WriteEditInfo(stage, info);
             PublishNewTrack(stage, commit);
             if (!string.IsNullOrEmpty(cameraNotice)) log.Line("Camera: " + cameraNotice);
@@ -378,7 +416,33 @@ internal static partial class ImportPipeline
             sb.Append("      \"source_vmd_sha256\": ").Append(Quote(s.SourceVmdSha256)).Append(",\n");
             sb.Append("      \"source_fps\": ").Append(s.SourceFps.ToString("R", CultureInfo.InvariantCulture)).Append(",\n");
             sb.Append("      \"frames\": ").Append(s.Frames.ToString(CultureInfo.InvariantCulture)).Append(",\n");
-            sb.Append("      \"bones\": ").Append(s.Bones.ToString(CultureInfo.InvariantCulture)).Append("\n");
+            sb.Append("      \"bones\": ").Append(s.Bones.ToString(CultureInfo.InvariantCulture)).Append(",\n");
+            sb.Append("      \"track_timing\": {\n");
+            sb.Append("        \"motion\": { \"speed\": ")
+              .Append(CleanZero(s.Timing.Motion.Speed).ToString("R", CultureInfo.InvariantCulture))
+              .Append(", \"offset_seconds\": ")
+              .Append(CleanZero(s.Timing.Motion.OffsetSeconds).ToString("R", CultureInfo.InvariantCulture))
+              .Append(" },\n");
+            sb.Append("        \"facial\": { \"speed\": ")
+              .Append(CleanZero(s.Timing.Facial.Speed).ToString("R", CultureInfo.InvariantCulture))
+              .Append(", \"offset_seconds\": ")
+              .Append(CleanZero(s.Timing.Facial.OffsetSeconds).ToString("R", CultureInfo.InvariantCulture))
+              .Append(" }\n");
+            if (s.SourceRootOrigin is Vector3 origin)
+            {
+                sb.Append("      },\n");
+                sb.Append("      \"source_root_origin\": { \"x\": ")
+                  .Append(CleanZero(origin.X).ToString("R", CultureInfo.InvariantCulture))
+                  .Append(", \"y\": ")
+                  .Append(CleanZero(origin.Y).ToString("R", CultureInfo.InvariantCulture))
+                  .Append(", \"z\": ")
+                  .Append(CleanZero(origin.Z).ToString("R", CultureInfo.InvariantCulture))
+                  .Append(" }\n");
+            }
+            else
+            {
+                sb.Append("      }\n");
+            }
             sb.Append(i + 1 < slots.Count ? "    },\n" : "    }\n");
         }
         sb.Append("  ],\n");

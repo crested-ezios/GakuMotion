@@ -31,7 +31,9 @@ internal static partial class ImportPipeline
                     X: 0.0f,
                     Y: 0.0f,
                     Z: 0.0f,
-                    YawDegrees: 0.0f)
+                    YawDegrees: 0.0f,
+                    Timing: SlotTimingSettings.FromTopLevel(request.TrackTiming),
+                    HasExplicitPlacement: false)
             ];
         }
 
@@ -54,7 +56,9 @@ internal static partial class ImportPipeline
                 X: CleanZero(p.X),
                 Y: CleanZero(p.Y),
                 Z: CleanZero(p.Z),
-                YawDegrees: CleanZero(p.YawDegrees)));
+                YawDegrees: CleanZero(p.YawDegrees),
+                Timing: p.TrackTiming ?? SlotTimingSettings.FromTopLevel(request.TrackTiming),
+                HasExplicitPlacement: p.HasExplicitPlacement || p.X != 0.0f || p.Y != 0.0f || p.Z != 0.0f));
         }
 
         if (!seenSlots.Contains(1))
@@ -74,7 +78,9 @@ internal static partial class ImportPipeline
                 X: 0.0f,
                 Y: 0.0f,
                 Z: 0.0f,
-                YawDegrees: 0.0f));
+                YawDegrees: 0.0f,
+                Timing: SlotTimingSettings.FromTopLevel(request.TrackTiming),
+                HasExplicitPlacement: false));
         }
 
         sorted.Sort((a, b) => a.Slot.CompareTo(b.Slot));
@@ -233,7 +239,7 @@ internal static partial class ImportPipeline
         using var sha = SHA256.Create();
         string sourceVmdSha256 = Convert.ToHexString(sha.ComputeHash(File.ReadAllBytes(vmdPath))).ToLowerInvariant();
 
-        return new BakedSlotResult(clip, bytes, report, sourceFps, vmdPath, resolvedMorph, sourceVmdSha256, vmdBytes, slotTiming);
+        return new BakedSlotResult(clip, bytes, report, sourceFps, vmdPath, resolvedMorph, sourceVmdSha256, vmdBytes, result.RootOrigin, slotTiming);
     }
 
     private static void WriteBakedSlotFiles(string slotDir, BakedSlotResult baked, bool clearStandaloneMorph)

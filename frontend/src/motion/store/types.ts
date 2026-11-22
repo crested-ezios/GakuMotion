@@ -10,6 +10,7 @@ import {
   DEFAULT_STAGE_FORMATION,
   DEFAULT_STAGE_SETTINGS,
   defaultPerformanceTiming,
+  defaultSlotPerformanceTiming,
   defaultSoleSettings,
   defaultStudioSettings,
   type ActorsState,
@@ -31,6 +32,7 @@ import {
   type PermissionState,
   type PlayerState,
   type ScreenshotCapabilities,
+  type SlotPerformanceTiming,
   type SolePitchState,
   type SoleSettings,
   type SoleState,
@@ -65,12 +67,14 @@ export interface ImportSlotState {
 export interface ImportPositionFormState {
   motion: ImportSlotState
   facial: ImportSlotState
+  timing: SlotPerformanceTiming
   x: number
   y: number
   z: number
   yawDegrees: number
   preserveExisting: boolean
   sourceSlot?: number
+  placementEdited?: boolean
 }
 
 export type ImportCoverMode = 'auto' | 'custom' | 'clear'
@@ -159,6 +163,7 @@ export function emptyImportPosition(): ImportPositionFormState {
   return {
     motion: { candidates: [], selection: 0 },
     facial: { candidates: [], selection: 0 },
+    timing: defaultSlotPerformanceTiming(),
     x: 0,
     y: 0,
     z: 0,

@@ -3,6 +3,7 @@ import {
   DEFAULT_AUDIO_EFFECT_STATE,
   DEFAULT_CAMERA_SETTINGS,
   DEFAULT_CLOCK_STATE,
+  DEFAULT_TRACK_TIMING,
   defaultPerformanceTiming,
   type ActorsState,
   type AudioEffectState,
@@ -16,10 +17,13 @@ import {
   type LibraryState,
   type PerformanceTiming,
   type SceneActor,
+  type SlotPerformanceTiming,
   type StageFormation,
   type StageSlotState,
   type TrackTiming,
   type Vector3,
+  type VmdProbe,
+  type VmdTendency,
 } from '../protocol'
 import { cloneDefaultFormation } from './types'
 
@@ -48,21 +52,60 @@ export function asVec3(value: unknown, fallback: Vector3 = { x: 0, y: 0, z: 0 })
   }
 }
 
+function normalizeTrackTiming(raw: unknown, fallback: TrackTiming = DEFAULT_TRACK_TIMING): TrackTiming {
+  const t = asObj(raw)
+  return {
+    speed: asNum(t.speed, fallback.speed),
+    offsetSeconds: asNum(t.offsetSeconds, fallback.offsetSeconds),
+  }
+}
+
 export function normalizeTiming(raw: unknown): PerformanceTiming {
   const defaults = defaultPerformanceTiming()
   const obj = asObj(raw)
-  const track = (key: keyof PerformanceTiming): TrackTiming => {
-    const t = asObj(obj[key])
-    return {
-      speed: asNum(t.speed, defaults[key].speed),
-      offsetSeconds: asNum(t.offsetSeconds, defaults[key].offsetSeconds),
-    }
-  }
   return {
-    motion: track('motion'),
-    facial: track('facial'),
-    camera: track('camera'),
-    audio: track('audio'),
+    motion: normalizeTrackTiming(obj.motion, defaults.motion),
+    facial: normalizeTrackTiming(obj.facial, defaults.facial),
+    camera: normalizeTrackTiming(obj.camera, defaults.camera),
+    audio: normalizeTrackTiming(obj.audio, defaults.audio),
+  }
+}
+
+const VALID_VMD_TENDENCIES = new Set<VmdTendency>([
+  'invalid',
+  'motionOnly',
+  'motionAndFacial',
+  'facialOnly',
+  'cameraOnly',
+  'empty',
+])
+
+export function normalizeVmdProbe(raw: unknown): VmdProbe {
+  const obj = asObj(raw)
+  const tendency = VALID_VMD_TENDENCIES.has(obj.tendency as VmdTendency)
+    ? (obj.tendency as VmdTendency)
+    : 'invalid'
+  const rawOrigin = obj.rootOrigin
+  const originObj = asObj(rawOrigin)
+  const hasFiniteOrigin =
+    rawOrigin !== null &&
+    typeof rawOrigin === 'object' &&
+    Number.isFinite(originObj.x) &&
+    Number.isFinite(originObj.y) &&
+    Number.isFinite(originObj.z)
+  const hasRootOrigin = asBool(obj.hasRootOrigin, false) && hasFiniteOrigin
+  return {
+    path: asStr(obj.path),
+    valid: asBool(obj.valid, false),
+    isGkCamera: asBool(obj.isGkCamera, false),
+    tendency,
+    boneFrames: asNum(obj.boneFrames, 0),
+    bodyBoneFrames: asNum(obj.bodyBoneFrames, 0),
+    eyeBoneFrames: asNum(obj.eyeBoneFrames, 0),
+    morphFrames: asNum(obj.morphFrames, 0),
+    cameraFrames: asNum(obj.cameraFrames, 0),
+    hasRootOrigin,
+    ...(hasRootOrigin ? { rootOrigin: asVec3(rawOrigin) } : {}),
   }
 }
 
@@ -70,6 +113,15 @@ export function normalizeLibraryPositions(raw: unknown): LibraryPositionEntry[] 
   if (!Array.isArray(raw)) return []
   return raw.map((item, idx) => {
     const obj = asObj(item)
+    const rawTiming = obj.timing
+    let timing: SlotPerformanceTiming | undefined
+    if (rawTiming !== null && typeof rawTiming === 'object') {
+      const tObj = asObj(rawTiming)
+      timing = {
+        motion: normalizeTrackTiming(tObj.motion),
+        facial: normalizeTrackTiming(tObj.facial),
+      }
+    }
     return {
       slot: asNum(obj.slot, idx + 1),
       x: asNum(obj.x, 0),
@@ -78,6 +130,7 @@ export function normalizeLibraryPositions(raw: unknown): LibraryPositionEntry[] 
       yawDegrees: asNum(obj.yawDegrees ?? obj.yaw_degrees, 0),
       hasMotion: asBool(obj.hasMotion, true),
       hasFacial: asBool(obj.hasFacial, false),
+      ...(timing ? { timing } : {}),
     }
   })
 }

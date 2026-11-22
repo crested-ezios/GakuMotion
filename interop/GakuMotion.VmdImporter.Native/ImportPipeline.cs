@@ -1,6 +1,7 @@
 ﻿namespace GakuMotion.VmdImporter.Native;
 
 using System.Diagnostics;
+using System.Numerics;
 using GakuMotion.VmdImporter.Native.Facial;
 using GakuMotion.VmdImporter.Output;
 using GakuMotion.VmdImporter.Vmd;
@@ -47,7 +48,9 @@ internal static partial class ImportPipeline
         float X,
         float Y,
         float Z,
-        float YawDegrees);
+        float YawDegrees,
+        SlotTimingSettings Timing,
+        bool HasExplicitPlacement);
 
     private sealed record BakedSlotResult(
         GkClipData Clip,
@@ -58,6 +61,7 @@ internal static partial class ImportPipeline
         string MorphPath,
         string SourceVmdSha256,
         long VmdBytes,
+        Vector3 RootOrigin,
         ImportTiming Timing);
 
     private sealed record SlotMetadataEntry(
@@ -75,7 +79,9 @@ internal static partial class ImportPipeline
         int Frames,
         int Bones,
         double DurationSeconds,
-        float OutputFps);
+        float OutputFps,
+        SlotTimingSettings Timing,
+        Vector3? SourceRootOrigin);
 
     private static readonly string[] PerSlotFiles =
     {

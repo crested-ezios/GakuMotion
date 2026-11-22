@@ -272,21 +272,30 @@
 
 			const std::string trackDir = motion ? motion->dir : player.currentMotionDir;
 			const int targetSlot1Based = slot.sourceSlotIndex + 1;
+			bool loadedSlotClip = false;
 			if (!trackDir.empty() &&
 				(forceReloadClip || newlyCreated || track->currentMotionDir != trackDir ||
 				 track->currentMotionSlot != targetSlot1Based || track->clip.total_frames == 0))
 			{
-				if (!track->LoadMotionSlot(trackDir, targetSlot1Based))
+				if (track->LoadMotionSlot(trackDir, targetSlot1Based))
 				{
-					if (targetSlot1Based != 1)
-					{
-						track->LoadMotionSlot(trackDir, 1);
-					}
+					loadedSlotClip = true;
+				}
+				else if (targetSlot1Based != 1)
+				{
+					loadedSlotClip = track->LoadMotionSlot(trackDir, 1);
 				}
 				track->audioSourceDuration = 0.0f;
 				track->cameraSourceDuration = 0.0f;
-				track->timing = motion ? motion->timing : player.timing;
 				track->controller.LoadAuxGroundTruth(track->SlotAuxReplayPath());
+			}
+			if (motion)
+			{
+				track->timing = ResolveSlotPerformanceTiming(motion, targetSlot1Based, player.timing);
+			}
+			else if (!loadedSlotClip && track->currentMotionDir.empty())
+			{
+				track->timing = player.timing;
 			}
 			track->controller.SetTargetActor(actor);
 			if (formationAnchorCaptured)
@@ -1070,7 +1079,7 @@
 				if (player.LoadMotionSlot(motion->dir, sourceSlotIndex + 1) ||
 					(sourceSlotIndex != 0 && player.LoadMotionSlot(motion->dir, 1)))
 				{
-					player.timing = motion->timing;
+					player.timing = ResolveSlotPerformanceTiming(motion, sourceSlotIndex + 1, player.timing);
 					player.SyncClockState(savedTime);
 					player.state = savedState;
 				}

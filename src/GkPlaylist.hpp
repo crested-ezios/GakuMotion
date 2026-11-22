@@ -36,6 +36,10 @@ namespace GakuMotion
 		float y{0.0f};
 		float z{0.0f};
 		float yawDegrees{0.0f};
+		TrackTiming motionTiming;
+		TrackTiming facialTiming;
+		bool hasTiming{false};
+		bool hasExplicitPlacement{false};
 	};
 
 	struct MotionImportRequest

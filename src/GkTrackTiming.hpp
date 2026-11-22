@@ -48,41 +48,77 @@ namespace GakuMotion
 		return static_cast<float>(std::clamp(duration, 0.0, static_cast<double>((std::numeric_limits<float>::max)())));
 	}
 
+	namespace detail
+	{
+		inline bool ReadTrackTimingObject(const jsonlite::Value& root, const char* key, TrackTiming& target)
+		{
+			const auto* value = root.Find(key);
+			if (!value || !value->IsObject()) return false;
+			if (const auto* speed = value->Find("speed"); speed && speed->IsNumber())
+			{
+				const float parsed = speed->AsFloat(target.speed);
+				if (std::isfinite(parsed) && parsed >= 0.0f) target.speed = parsed;
+			}
+			if (const auto* offset = value->Find("offset_seconds"); offset && offset->IsNumber())
+			{
+				const float parsed = offset->AsFloat(target.offsetSeconds);
+				if (std::isfinite(parsed)) target.offsetSeconds = parsed;
+			}
+			return true;
+		}
+
+		inline std::string TrackTimingJson(const TrackTiming& value)
+		{
+			const auto number = [](float v) {
+				char buffer[64]{};
+				const auto result = std::to_chars(buffer, buffer + sizeof(buffer), v);
+				return std::string(buffer, result.ptr);
+			};
+			return "{\"speed\":" + number(value.speed) + ",\"offset_seconds\":" + number(value.offsetSeconds) + "}";
+		}
+	}
+
 	inline PerformanceTiming ReadPerformanceTiming(const jsonlite::Value& info)
 	{
 		PerformanceTiming result;
 		const auto* root = info.Find("track_timing");
 		if (!root || !root->IsObject()) return result;
-		const auto read = [&](const char* key, TrackTiming& target) {
-			const auto* value = root->Find(key);
-			if (!value || !value->IsObject()) return;
-			if (const auto* speed = value->Find("speed"); speed && speed->IsNumber())
-			{
-				const float parsed = speed->AsFloat(1.0f);
-				if (std::isfinite(parsed) && parsed >= 0.0f) target.speed = parsed;
-			}
-			if (const auto* offset = value->Find("offset_seconds"); offset && offset->IsNumber())
-			{
-				const float parsed = offset->AsFloat(0.0f);
-				if (std::isfinite(parsed)) target.offsetSeconds = parsed;
-			}
-		};
-		read("motion", result.motion); read("facial", result.facial);
-		read("camera", result.camera); read("audio", result.audio);
+		detail::ReadTrackTimingObject(*root, "motion", result.motion);
+		detail::ReadTrackTimingObject(*root, "facial", result.facial);
+		detail::ReadTrackTimingObject(*root, "camera", result.camera);
+		detail::ReadTrackTimingObject(*root, "audio", result.audio);
 		return result;
+	}
+
+	inline bool ReadSlotTrackTimings(const jsonlite::Value& posObj, const PerformanceTiming& fallback,
+		TrackTiming& outMotion, TrackTiming& outFacial, bool* outHasExplicit = nullptr)
+	{
+		outMotion = fallback.motion;
+		outFacial = fallback.facial;
+		const auto* root = posObj.Find("track_timing");
+		if (!root || !root->IsObject())
+		{
+			if (outHasExplicit) *outHasExplicit = false;
+			return false;
+		}
+		const bool hasMotion = detail::ReadTrackTimingObject(*root, "motion", outMotion);
+		const bool hasFacial = detail::ReadTrackTimingObject(*root, "facial", outFacial);
+		const bool explicitTiming = hasMotion || hasFacial;
+		if (outHasExplicit) *outHasExplicit = explicitTiming;
+		return explicitTiming;
+	}
+
+	inline std::string SlotTrackTimingJson(const TrackTiming& motion, const TrackTiming& facial)
+	{
+		return "{\"motion\":" + detail::TrackTimingJson(motion) +
+			",\"facial\":" + detail::TrackTimingJson(facial) + "}";
 	}
 
 	inline std::string PerformanceTimingJson(const PerformanceTiming& timing)
 	{
-		const auto number = [](float value) {
-			char buffer[64]{};
-			const auto result = std::to_chars(buffer, buffer + sizeof(buffer), value);
-			return std::string(buffer, result.ptr);
-		};
-		const auto track = [&](const TrackTiming& value) {
-			return "{\"speed\":" + number(value.speed) + ",\"offset_seconds\":" + number(value.offsetSeconds) + "}";
-		};
-		return "{\"motion\":" + track(timing.motion) + ",\"facial\":" + track(timing.facial) +
-			",\"camera\":" + track(timing.camera) + ",\"audio\":" + track(timing.audio) + "}";
+		return "{\"motion\":" + detail::TrackTimingJson(timing.motion) +
+			",\"facial\":" + detail::TrackTimingJson(timing.facial) +
+			",\"camera\":" + detail::TrackTimingJson(timing.camera) +
+			",\"audio\":" + detail::TrackTimingJson(timing.audio) + "}";
 	}
 }

@@ -331,4 +331,94 @@ static void TestEnsembleRuntime(const std::string& repoRoot)
             EnsembleNear(core.player.currentTime, .25f), "global Seek advances shared performance clock");
         core.ReleaseControl(ticket);
     }
+
+    BeginTest("per-slot motion and facial timing across formation playback, duration, swap and source change");
+    {
+        Fixture fixture(repoRoot); auto& core = fixture.core;
+        const auto groupDir = fixture.root / "motions" / "group-0";
+        // Slot 2 has 240 frames @ 60fps = 4.0s clip; with speed=0.5, offset=2.0 -> 10.0s timeline duration!
+        // Slot 1 has explicit slot-level override (speed=2.0 motion, 0.5 facial) while top-level audio/camera stay global.
+        // Slot 3 omits slot track_timing and falls back to top-level motion/facial (1.0, 0.0).
+        // Remove slot 4's clip file so setting sourceSlotIndex=0/3 exercises no-reload / fallback clip timing!
+        {
+            std::ofstream info(groupDir / "info.json", std::ios::binary | std::ios::trunc);
+            info << R"({
+              "version": 1,
+              "title": "Group Timing Test",
+              "is_group": true,
+              "position_count": 4,
+              "track_timing": {
+                "motion": {"speed": 1.0, "offset_seconds": 0.0},
+                "facial": {"speed": 1.0, "offset_seconds": 0.0},
+                "camera": {"speed": 1.25, "offset_seconds": 0.5},
+                "audio": {"speed": 0.8, "offset_seconds": 1.5}
+              },
+              "positions": [
+                {"slot": 1, "x": 0, "y": 0, "z": 0, "yaw_degrees": 0, "track_timing": {"motion": {"speed": 2.0, "offset_seconds": 0.2}, "facial": {"speed": 0.5, "offset_seconds": -0.3}}},
+                {"slot": 2, "x": -1, "y": 0, "z": 0.2, "yaw_degrees": 15, "track_timing": {"motion": {"speed": 0.5, "offset_seconds": 2.0}, "facial": {"speed": 1.5, "offset_seconds": 0.4}}},
+                {"slot": 3, "x": 1, "y": 0, "z": 0.2, "yaw_degrees": 30},
+                {"slot": 4, "x": 2, "y": 0, "z": 0.2, "yaw_degrees": 45, "track_timing": {"motion": {"speed": 0.25, "offset_seconds": 1.0}, "facial": {"speed": 1.0, "offset_seconds": 0.0}}}
+              ]
+            })";
+        }
+        std::error_code ignoredEc;
+        std::filesystem::remove(groupDir / "positions/slot_4/motion.gkclip", ignoredEc);
+        core.RefreshMotionLibrary();
+        Check(fixture.SelectGroup(false) && core.formation.active, "group song with per-slot timing loads");
+
+        // Slot 1 AdoptLoadedMotionSlot + LoadMotionByIndex both resolve slot 1 timing while preserving global camera/audio
+        Check(EnsembleNear(core.player.timing.motion.speed, 2.0f) &&
+            EnsembleNear(core.player.timing.motion.offsetSeconds, 0.2f) &&
+            EnsembleNear(core.player.timing.facial.speed, 0.5f) &&
+            EnsembleNear(core.player.timing.facial.offsetSeconds, -0.3f) &&
+            EnsembleNear(core.player.timing.camera.speed, 1.25f) &&
+            EnsembleNear(core.player.timing.audio.speed, 0.8f) &&
+            EnsembleNear(core.player.timing.audio.offsetSeconds, 1.5f),
+            "AdoptLoadedMotionSlot applies slot 1 motion/facial overrides while keeping camera/audio global");
+
+        {
+            MotionPlayer idxPlayer;
+            idxPlayer.controller = core.player.controller;
+            Check(idxPlayer.LoadMotionByIndex(core.motions, 0) &&
+                EnsembleNear(idxPlayer.timing.motion.speed, 2.0f) &&
+                EnsembleNear(idxPlayer.timing.facial.speed, 0.5f) &&
+                EnsembleNear(idxPlayer.timing.camera.speed, 1.25f) &&
+                EnsembleNear(idxPlayer.timing.audio.offsetSeconds, 1.5f),
+                "LoadMotionByIndex resolves Slot 1 timing cleanly");
+        }
+
+        // Check per-slot track timings and mixed duration (slot 4 has 1.0s clip @ 0.25x + 1.0s offset = 5.0s; slot 2 has 4.0s clip @ 0.5x + 2.0s offset = 10.0s)
+        auto* t0 = core.TrackForSlot(0);
+        auto* t1 = core.TrackForSlot(1);
+        auto* t2 = core.TrackForSlot(2);
+        auto* t3 = core.TrackForSlot(3);
+        Check(t0 && EnsembleNear(t0->timing.motion.speed, 2.0f) && EnsembleNear(t0->timing.facial.speed, 0.5f),
+            "slot 0 track uses slot 1 timing");
+        Check(t1 && EnsembleNear(t1->timing.motion.speed, 0.5f) && EnsembleNear(t1->timing.motion.offsetSeconds, 2.0f) &&
+            EnsembleNear(t1->timing.facial.speed, 1.5f) && EnsembleNear(t1->timing.facial.offsetSeconds, 0.4f),
+            "slot 1 track uses slot 2 timing");
+        Check(t2 && EnsembleNear(t2->timing.motion.speed, 1.0f) && EnsembleNear(t2->timing.facial.speed, 1.0f),
+            "slot 2 track falls back to track-global timing");
+        Check(t3 && EnsembleNear(t3->timing.motion.speed, 0.25f) && EnsembleNear(t3->timing.motion.offsetSeconds, 1.0f),
+            "slot 3 track resolves slot 4 timing even when clip falls back to slot 1");
+        Check(EnsembleNear(core.player.TimelineDuration(), 10.0f),
+            "UpdateFormationDuration reflects mixed per-slot timing (4s / 0.5 + 2s = 10s)");
+
+        // SetSlotSource on slot 3 from sourceSlotIndex=3 (slot 4 fallback->clip 1) to sourceSlotIndex=0 (slot 1->clip 1):
+        // Clip path/slot=1 doesn't reload, yet timing MUST update from 0.25x to 2.0x!
+        Check(core.SetSlotSource(3, 0), "SetSlotSource onto same underlying fallback clip succeeds");
+        Check(EnsembleNear(core.TrackForSlot(3)->timing.motion.speed, 2.0f) &&
+            EnsembleNear(core.TrackForSlot(3)->timing.facial.speed, 0.5f),
+            "SetSlotSource updates track timing even when clip does not reload");
+
+        // SwapSlots swaps actor ownership across positions; slot 0 stays on slot 1 timing and slot 1 stays on slot 2 timing
+        auto* actor0 = &fixture.actors[0];
+        auto* actor1 = &fixture.actors[1];
+        Check(core.SwapSlots(0, 1), "SwapSlots(0, 1) succeeds");
+        Check(core.TrackForSlot(0)->controller.targetActor == actor1 &&
+            EnsembleNear(core.TrackForSlot(0)->timing.motion.speed, 2.0f) &&
+            core.TrackForSlot(1)->controller.targetActor == actor0 &&
+            EnsembleNear(core.TrackForSlot(1)->timing.motion.speed, 0.5f),
+            "SwapSlots binds swapped actors to each slot position's timing");
+    }
 }

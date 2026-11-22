@@ -59,6 +59,16 @@ export interface PlayerState {
   playMode: number
 }
 
+export interface TrackTiming {
+  speed: number
+  offsetSeconds: number
+}
+
+export interface SlotPerformanceTiming {
+  motion: TrackTiming
+  facial: TrackTiming
+}
+
 export interface LibraryPositionEntry {
   slot: number
   x: number
@@ -67,6 +77,7 @@ export interface LibraryPositionEntry {
   yawDegrees: number
   hasMotion: boolean
   hasFacial: boolean
+  timing?: SlotPerformanceTiming
 }
 
 export interface LibraryEntry {

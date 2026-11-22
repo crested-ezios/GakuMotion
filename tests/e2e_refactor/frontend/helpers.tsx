@@ -573,6 +573,12 @@ export function findSlotCardElement(labelEl: HTMLElement): HTMLElement {
   return labelEl.parentElement ?? labelEl
 }
 
+export function pointerDragSlotCard(source: HTMLElement, target: HTMLElement): void {
+  fireEvent.pointerDown(source, { button: 0, clientX: 20, clientY: 20 })
+  fireEvent.pointerMove(target, { clientX: 200, clientY: 20 })
+  fireEvent.pointerUp(target, { button: 0, clientX: 200, clientY: 20 })
+}
+
 export interface FormationSlotShape {
   slotIndex: number
   occupied: boolean

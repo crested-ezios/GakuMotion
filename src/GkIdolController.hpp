@@ -124,6 +124,20 @@ namespace GakuMotion
 		void* cachedAnimator{nullptr};
 		// Opt-in until hair/cloth and same-frame body input are verified on device.
 		bool preserveAnimatorForSecondaryPhysics{false};
+		// Per-actor fallback mute when native secondary physics is definitively unavailable.
+		bool fallbackMuteAnimator{false};
+		bool PreserveAnimatorForSecondaryPhysics() const noexcept
+		{
+			return preserveAnimatorForSecondaryPhysics && !fallbackMuteAnimator;
+		}
+		bool IsAnimatorMuted(void* actor = nullptr) const noexcept
+		{
+			void* act = actor ? actor : currentBinding.actor;
+			if (!act) return false;
+			const auto it = bindings.find(act);
+			if (it == bindings.end()) return false;
+			return it->second.animatorControllerDetached || it->second.animatorWasDisabled;
+		}
 		bool captureCheckEnforced{false};
 		bool captureRestoreUnconfirmed{false};
 		bool facialEnableBaseline{true};

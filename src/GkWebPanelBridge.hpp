@@ -122,10 +122,15 @@ namespace GakuMotion::webpanel
 		CmdResult DropPoll();
 		CmdResult DropPeekMethod();
 		static const char* VmdTendencyName(VmdTendency tendency);
+		static std::string TrackTimingJson(const TrackTiming& value);
 		static std::string TimingJson(const PerformanceTiming& timing);
+		static std::string SlotTimingJson(const TrackTiming& motion, const TrackTiming& facial);
+		static bool ParseTrackTimingField(const jsonlite::Value& value, const char* name, TrackTiming& target, std::string& error);
 		static bool ParseTiming(const jsonlite::Value& value, PerformanceTiming& timing, std::string& error);
+		static bool ParseSlotTiming(const jsonlite::Value& value, TrackTiming& motion, TrackTiming& facial, std::string& error);
 		CmdResult LibraryProbeFiles(const jsonlite::Value& params);
-		static std::string MotionPositionsJson(const std::vector<MotionPositionEntry>& positions);
+		static std::string MotionPositionsJson(const std::vector<MotionPositionEntry>& positions,
+		                                       const PerformanceTiming& fallbackTiming = {});
 		CmdResult LibraryStartEdit(const jsonlite::Value& params);
 		CmdResult LibraryProbeAudio(const jsonlite::Value& params);
 		CmdResult LibraryGetCover(const jsonlite::Value& params);

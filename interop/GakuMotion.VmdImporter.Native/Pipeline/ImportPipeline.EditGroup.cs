@@ -1,30 +1,76 @@
 namespace GakuMotion.VmdImporter.Native;
 
+using System.Numerics;
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using GakuMotion.VmdImporter.Output;
+using GakuMotion.VmdImporter.Rig;
+using GakuMotion.VmdImporter.Vmd;
 
 internal static partial class ImportPipeline
 {
-    private static JsonObject BuildPositionJsonObject(SlotMetadataEntry entry) => new()
+    private static JsonObject BuildPositionJsonObject(SlotMetadataEntry entry)
     {
-        ["slot"] = entry.Slot,
-        ["x"] = CleanZero(entry.X),
-        ["y"] = CleanZero(entry.Y),
-        ["z"] = CleanZero(entry.Z),
-        ["yaw_degrees"] = CleanZero(entry.YawDegrees),
-        ["has_motion"] = entry.HasMotion,
-        ["has_facial"] = entry.HasFacial,
-        ["source_vmd"] = entry.SourceVmd,
-        ["source_morph_vmd"] = entry.SourceMorphVmd,
-        ["source_vmd_sha256"] = entry.SourceVmdSha256,
-        ["source_fps"] = entry.SourceFps,
-        ["frames"] = entry.Frames,
-        ["bones"] = entry.Bones
-    };
+        var obj = new JsonObject
+        {
+            ["slot"] = entry.Slot,
+            ["x"] = CleanZero(entry.X),
+            ["y"] = CleanZero(entry.Y),
+            ["z"] = CleanZero(entry.Z),
+            ["yaw_degrees"] = CleanZero(entry.YawDegrees),
+            ["has_motion"] = entry.HasMotion,
+            ["has_facial"] = entry.HasFacial,
+            ["source_vmd"] = entry.SourceVmd,
+            ["source_morph_vmd"] = entry.SourceMorphVmd,
+            ["source_vmd_sha256"] = entry.SourceVmdSha256,
+            ["source_fps"] = entry.SourceFps,
+            ["frames"] = entry.Frames,
+            ["bones"] = entry.Bones,
+            ["track_timing"] = entry.Timing.ToJson()
+        };
+        if (entry.SourceRootOrigin is Vector3 origin)
+        {
+            obj["source_root_origin"] = new JsonObject
+            {
+                ["x"] = CleanZero(origin.X),
+                ["y"] = CleanZero(origin.Y),
+                ["z"] = CleanZero(origin.Z)
+            };
+        }
+        return obj;
+    }
+
+    private static Vector3? ReadSourceRootOrigin(JsonObject? metaObj)
+    {
+        if (metaObj?["source_root_origin"] is not JsonObject originObj)
+            return null;
+        if (!PerformanceTimingSettings.TryReadFiniteFloat(originObj["x"], out float x) ||
+            !PerformanceTimingSettings.TryReadFiniteFloat(originObj["y"], out float y) ||
+            !PerformanceTimingSettings.TryReadFiniteFloat(originObj["z"], out float z))
+            return null;
+        return new Vector3(CleanZero(x), CleanZero(y), CleanZero(z));
+    }
+
+    private static Vector3? TryReadSourceRootOriginFromVmd(string slotDir)
+    {
+        string sourceVmd = Path.Combine(slotDir, "source.vmd");
+        if (!File.Exists(sourceVmd) || File.Exists(Path.Combine(slotDir, TargetGeometryName)))
+            return null;
+        try
+        {
+            VmdMotion motion = VmdReader.Parse(sourceVmd);
+            if (motion.BoneKeyframes.Count == 0)
+                return null;
+            return new SourceEvaluator().Evaluate(motion, startFrame: 0, endFrame: 0).RootOrigin;
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
     private static SlotMetadataEntry ReadSlotMetadataFromClip(string slotDir, int slot, JsonObject? metaObj,
-        float x, float y, float z, float yaw, float defaultFps)
+        float x, float y, float z, float yaw, float defaultFps, SlotTimingSettings fallbackTiming)
     {
         int frames = ReadJsonInt(metaObj, "frames", 0);
         int bones = ReadJsonInt(metaObj, "bones", 0);
@@ -71,6 +117,9 @@ internal static partial class ImportPipeline
             }
         }
 
+        SlotTimingSettings timing = SlotTimingSettings.ReadFromInfoObject(metaObj, fallbackTiming);
+        Vector3? sourceRootOrigin = ReadSourceRootOrigin(metaObj);
+
         return new SlotMetadataEntry(
             Slot: slot,
             X: x,
@@ -86,7 +135,9 @@ internal static partial class ImportPipeline
             Frames: frames,
             Bones: bones,
             DurationSeconds: duration,
-            OutputFps: outFps);
+            OutputFps: outFps,
+            Timing: timing,
+            SourceRootOrigin: sourceRootOrigin);
     }
 
     private static void RecomputeTopLevelSummaryFromPositions(string stage, JsonObject info, JsonArray positions)
@@ -309,6 +360,8 @@ internal static partial class ImportPipeline
         }
 
         string? existingAudio = AudioProbe.FindExistingAudioFile(stage, info);
+        SlotTimingSettings? existingTopTiming = SlotTimingSettings.ReadOptionalFromInfoObject(info);
+        SlotTimingSettings requestTopTiming = SlotTimingSettings.FromTopLevel(request.TrackTiming);
         var metadataEntries = new List<SlotMetadataEntry>(plan.Count);
         bool anyRebaked = false;
         int maxFrames = 0;
@@ -322,10 +375,13 @@ internal static partial class ImportPipeline
             int targetSlot = item.TargetSlot;
             PositionRequest pos = item.Pos;
             string slotDir = SlotDirectory(stage, targetSlot);
-            float outX = targetSlot == 1 ? 0.0f : CleanZero(pos.X);
-            float outY = targetSlot == 1 ? 0.0f : CleanZero(pos.Y);
-            float outZ = targetSlot == 1 ? 0.0f : CleanZero(pos.Z);
-            float outYaw = targetSlot == 1 ? 0.0f : CleanZero(pos.YawDegrees);
+            SlotTimingSettings fallbackTiming = item.SourceSlot > 0
+                ? (existingTopTiming ?? requestTopTiming)
+                : requestTopTiming;
+            SlotTimingSettings? existingSlotTiming = item.SourceSlot > 0
+                ? (SlotTimingSettings.ReadOptionalFromInfoObject(item.ExistingMeta) ?? existingTopTiming)
+                : null;
+            SlotTimingSettings outTiming = pos.TrackTiming ?? existingSlotTiming ?? requestTopTiming;
 
             if (item.NeedsRebake)
             {
@@ -387,10 +443,10 @@ internal static partial class ImportPipeline
 
                 var entry = new SlotMetadataEntry(
                     Slot: targetSlot,
-                    X: outX,
-                    Y: outY,
-                    Z: outZ,
-                    YawDegrees: outYaw,
+                    X: 0.0f,
+                    Y: 0.0f,
+                    Z: 0.0f,
+                    YawDegrees: 0.0f,
                     HasMotion: true,
                     HasFacial: baked.Clip.BlendshapeNames.Count > 0,
                     SourceVmd: preservedSourceVmd,
@@ -400,13 +456,17 @@ internal static partial class ImportPipeline
                     Frames: baked.Clip.TotalFrames,
                     Bones: baked.Clip.Bones.Count,
                     DurationSeconds: baked.Clip.DurationSeconds,
-                    OutputFps: baked.Clip.Fps);
+                    OutputFps: baked.Clip.Fps,
+                    Timing: outTiming,
+                    SourceRootOrigin: baked.RootOrigin);
                 metadataEntries.Add(entry);
             }
             else
             {
                 SlotMetadataEntry entry = ReadSlotMetadataFromClip(
-                    slotDir, targetSlot, item.ExistingMeta, outX, outY, outZ, outYaw, item.ExistingOutputFps);
+                    slotDir, targetSlot, item.ExistingMeta, 0.0f, 0.0f, 0.0f, 0.0f, item.ExistingOutputFps, fallbackTiming);
+                if (pos.TrackTiming != null)
+                    entry = entry with { Timing = pos.TrackTiming };
                 metadataEntries.Add(entry);
             }
 
@@ -415,6 +475,30 @@ internal static partial class ImportPipeline
             if (last.Bones > maxBones) maxBones = last.Bones;
             if (last.DurationSeconds > maxDuration) maxDuration = last.DurationSeconds;
             if (last.HasFacial) anyFacial = true;
+        }
+
+        bool slot1ChoreographyChanged = plan[0].SourceSlot != 1 ||
+            (plan[0].NeedsRebake && !string.IsNullOrEmpty(plan[0].Pos.MotionVmd));
+        for (int i = 0; i < metadataEntries.Count; i++)
+        {
+            var item = plan[i];
+            (float outX, float outY, float outZ, float outYaw) = ResolveEditedSlotPlacement(
+                stage,
+                item.TargetSlot,
+                item.SourceSlot,
+                item.NeedsRebake,
+                slot1ChoreographyChanged,
+                item.Pos,
+                item.ExistingMeta,
+                metadataEntries,
+                i);
+            metadataEntries[i] = metadataEntries[i] with
+            {
+                X = outX,
+                Y = outY,
+                Z = outZ,
+                YawDegrees = outYaw
+            };
         }
 
         SlotMetadataEntry slot1 = metadataEntries[0];
@@ -443,5 +527,66 @@ internal static partial class ImportPipeline
         info["source_vmd"] = slot1.SourceVmd;
         info["source_vmd_sha256"] = slot1.SourceVmdSha256;
         info["source_morph_vmd"] = slot1.SourceMorphVmd;
+
+        PerformanceTimingSettings topTimingBase = request.TrackTiming ?? PerformanceTimingSettings.ReadFromInfoObject(info);
+        info["track_timing"] = topTimingBase.WithSlot1Timing(slot1.Timing).ToJson();
+    }
+
+    private static (float X, float Y, float Z, float Yaw) ResolveEditedSlotPlacement(
+        string stage,
+        int targetSlot,
+        int sourceSlot,
+        bool needsRebake,
+        bool slot1ChoreographyChanged,
+        PositionRequest pos,
+        JsonObject? existingMeta,
+        List<SlotMetadataEntry> entries,
+        int index)
+    {
+        if (targetSlot == 1)
+            return (0.0f, 0.0f, 0.0f, 0.0f);
+
+        bool hasExplicitPlacement = pos.HasExplicitPlacement || pos.X != 0.0f || pos.Y != 0.0f || pos.Z != 0.0f;
+        if (hasExplicitPlacement)
+            return (CleanZero(pos.X), CleanZero(pos.Y), CleanZero(pos.Z), CleanZero(pos.YawDegrees));
+
+        float resolvedYaw = pos.YawDegrees != 0.0f
+            ? CleanZero(pos.YawDegrees)
+            : ReadJsonFloat(existingMeta, "yaw_degrees", 0.0f);
+
+        if (needsRebake)
+        {
+            Vector3 slotOrigin = EnsureSlotOrigin(stage, targetSlot, entries, index) ?? Vector3.Zero;
+            Vector3 slot1Origin = EnsureSlotOrigin(stage, 1, entries, 0) ?? Vector3.Zero;
+            (float dx, float dy, float dz) = ResolveRelativePlacementOffset(slotOrigin, slot1Origin);
+            return (dx, dy, dz, CleanZero(pos.YawDegrees));
+        }
+
+        if (sourceSlot == 1 || slot1ChoreographyChanged)
+        {
+            Vector3? slotOriginOpt = EnsureSlotOrigin(stage, targetSlot, entries, index);
+            Vector3? slot1OriginOpt = EnsureSlotOrigin(stage, 1, entries, 0);
+            if (slotOriginOpt is Vector3 slotOrigin && slot1OriginOpt is Vector3 slot1Origin)
+            {
+                (float dx, float dy, float dz) = ResolveRelativePlacementOffset(slotOrigin, slot1Origin);
+                return (dx, dy, dz, resolvedYaw);
+            }
+        }
+
+        return (
+            CleanZero(ReadJsonFloat(existingMeta, "x", 0.0f)),
+            CleanZero(ReadJsonFloat(existingMeta, "y", 0.0f)),
+            CleanZero(ReadJsonFloat(existingMeta, "z", 0.0f)),
+            resolvedYaw);
+    }
+
+    private static Vector3? EnsureSlotOrigin(string stage, int slot, List<SlotMetadataEntry> entries, int index)
+    {
+        if (entries[index].SourceRootOrigin is Vector3 cached)
+            return cached;
+        Vector3? peeked = TryReadSourceRootOriginFromVmd(SlotDirectory(stage, slot));
+        if (peeked is Vector3 resolved)
+            entries[index] = entries[index] with { SourceRootOrigin = resolved };
+        return peeked;
     }
 }

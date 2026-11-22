@@ -29,6 +29,11 @@ public sealed class SourceEvaluationResult
     public Vector3[] RootTrajectory { get; init; } = Array.Empty<Vector3>();
 
     /// <summary>
+    /// Frame 0 world hips displacement in meters (scale 0.07795 m/unit) prior to frame-0 origin subtraction.
+    /// </summary>
+    public Vector3 RootOrigin { get; init; }
+
+    /// <summary>
     /// Evaluated morph curve weights per frame: [morphName] -> float[frame]
     /// </summary>
     public IReadOnlyDictionary<string, float[]> MorphWeights { get; init; } = new Dictionary<string, float[]>();

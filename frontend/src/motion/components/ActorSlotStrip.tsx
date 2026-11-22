@@ -15,9 +15,12 @@ export function ActorSlotStrip() {
   const slots = formation.slots
 
   const viewportRef = React.useRef<HTMLDivElement>(null)
+  const cardRefs = React.useRef<Map<number, HTMLDivElement>>(new Map())
+  const dragCleanupRef = React.useRef<(() => void) | null>(null)
+  const suppressClickRef = React.useRef(false)
+  const suppressTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
   const [viewportWidth, setViewportWidth] = React.useState(0)
   const [windowStart, setWindowStart] = React.useState(0)
-  const dragSourceRef = React.useRef<number | null>(null)
   const [dragOverSlot, setDragOverSlot] = React.useState<number | null>(null)
   const [draggingSlot, setDraggingSlot] = React.useState<number | null>(null)
 
@@ -83,6 +86,142 @@ export function ActorSlotStrip() {
     }
   }, [slots, capabilities])
 
+  React.useEffect(() => {
+    return () => {
+      dragCleanupRef.current?.()
+      if (suppressTimerRef.current !== null) {
+        clearTimeout(suppressTimerRef.current)
+        suppressTimerRef.current = null
+      }
+    }
+  }, [])
+
+  const hitTestSlot = React.useCallback(
+    (clientX: number, clientY: number, target: EventTarget | null): number | null => {
+      const vp = viewportRef.current
+      const vpRect = vp?.getBoundingClientRect()
+      if (
+        vpRect &&
+        vpRect.width > 0 &&
+        vpRect.height > 0 &&
+        (clientX < vpRect.left || clientX > vpRect.right || clientY < vpRect.top || clientY > vpRect.bottom)
+      ) {
+        return null
+      }
+
+      let hasMeasuredCard = false
+      for (const [slotIdx, el] of cardRefs.current.entries()) {
+        const rect = el.getBoundingClientRect()
+        if (rect.width > 0 && rect.height > 0) {
+          hasMeasuredCard = true
+          if (
+            clientX >= rect.left &&
+            clientX <= rect.right &&
+            clientY >= rect.top &&
+            clientY <= rect.bottom
+          ) {
+            return slotIdx
+          }
+        }
+      }
+      if (hasMeasuredCard) return null
+
+      if (typeof document.elementsFromPoint === 'function') {
+        for (const hitEl of document.elementsFromPoint(clientX, clientY)) {
+          const card = (hitEl as HTMLElement).closest?.('[data-slot-index]') as HTMLElement | null
+          if (card && (!vp || vp.contains(card))) {
+            const parsed = Number(card.dataset.slotIndex)
+            if (Number.isInteger(parsed)) return parsed
+          }
+        }
+        return null
+      }
+
+      if (target instanceof Element) {
+        const card = target.closest('[data-slot-index]') as HTMLElement | null
+        if (card && (!vp || vp.contains(card))) {
+          const parsed = Number(card.dataset.slotIndex)
+          if (Number.isInteger(parsed)) return parsed
+        }
+      }
+      return null
+    },
+    [],
+  )
+
+  const scheduleClickUnsuppress = React.useCallback(() => {
+    suppressClickRef.current = true
+    if (suppressTimerRef.current !== null) clearTimeout(suppressTimerRef.current)
+    suppressTimerRef.current = setTimeout(() => {
+      suppressClickRef.current = false
+      suppressTimerRef.current = null
+    }, 0)
+  }, [])
+
+  const startCardPointerDrag = React.useCallback(
+    (event: React.PointerEvent<HTMLDivElement>, fromSlot: number, occupied: boolean) => {
+      if (!occupied || event.button !== 0) return
+      dragCleanupRef.current?.()
+
+      const startX = event.clientX
+      const startY = event.clientY
+      let moved = false
+
+      const cleanup = () => {
+        window.removeEventListener('pointermove', onPointerMove)
+        window.removeEventListener('pointerup', onPointerUp)
+        window.removeEventListener('pointercancel', onCancel)
+        window.removeEventListener('blur', onCancel)
+        document.body.style.cursor = ''
+        setDraggingSlot(null)
+        setDragOverSlot(null)
+        if (dragCleanupRef.current === cleanup) {
+          dragCleanupRef.current = null
+        }
+      }
+
+      const onPointerMove = (moveEvent: PointerEvent) => {
+        const dx = moveEvent.clientX - startX
+        const dy = moveEvent.clientY - startY
+        if (!moved) {
+          if (Math.hypot(dx, dy) < 5) return
+          moved = true
+          setDraggingSlot(fromSlot)
+          document.body.style.cursor = 'grabbing'
+        }
+        const hit = hitTestSlot(moveEvent.clientX, moveEvent.clientY, moveEvent.target)
+        setDragOverSlot(hit)
+      }
+
+      const onPointerUp = (upEvent: PointerEvent) => {
+        const wasMoved = moved
+        const targetSlot = wasMoved
+          ? hitTestSlot(upEvent.clientX, upEvent.clientY, upEvent.target)
+          : null
+        cleanup()
+        if (wasMoved) {
+          scheduleClickUnsuppress()
+          if (targetSlot !== null && targetSlot !== fromSlot) {
+            void motionStore.swapFormationSlots(fromSlot, targetSlot)
+          }
+        }
+      }
+
+      const onCancel = () => {
+        const wasMoved = moved
+        cleanup()
+        if (wasMoved) scheduleClickUnsuppress()
+      }
+
+      dragCleanupRef.current = cleanup
+      window.addEventListener('pointermove', onPointerMove)
+      window.addEventListener('pointerup', onPointerUp)
+      window.addEventListener('pointercancel', onCancel)
+      window.addEventListener('blur', onCancel)
+    },
+    [hitTestSlot, scheduleClickUnsuppress],
+  )
+
   const canSelect = capabilities.includes('formation.selectSlot')
   const prevDisabled = clampedStart <= 0
   const nextDisabled = clampedStart >= maxStart
@@ -123,14 +262,26 @@ export function ActorSlotStrip() {
             return (
               <div
                 key={slot.slotIndex}
+                ref={(el) => {
+                  if (el) cardRefs.current.set(slot.slotIndex, el)
+                  else cardRefs.current.delete(slot.slotIndex)
+                }}
                 role="button"
                 tabIndex={0}
                 aria-pressed={selected}
                 aria-label={`${slotTitle} ${slot.occupied ? actorName : '空槽位'}`}
                 data-testid={`actor-slot-card-${slot.slotIndex}`}
                 data-slot-index={slot.slotIndex}
-                draggable={slot.occupied}
+                onPointerDown={(event) => startCardPointerDrag(event, slot.slotIndex, slot.occupied)}
                 onClick={() => {
+                  if (suppressClickRef.current) {
+                    suppressClickRef.current = false
+                    if (suppressTimerRef.current !== null) {
+                      clearTimeout(suppressTimerRef.current)
+                      suppressTimerRef.current = null
+                    }
+                    return
+                  }
                   if (canSelect) void motionStore.selectFormationSlot(slot.slotIndex)
                 }}
                 onKeyDown={(event) => {
@@ -139,62 +290,13 @@ export function ActorSlotStrip() {
                     void motionStore.selectFormationSlot(slot.slotIndex)
                   }
                 }}
-                onDragStart={(event) => {
-                  if (!slot.occupied) {
-                    event.preventDefault()
-                    return
-                  }
-                  dragSourceRef.current = slot.slotIndex
-                  setDraggingSlot(slot.slotIndex)
-                  try {
-                    event.dataTransfer.setData('text/plain', String(slot.slotIndex))
-                    event.dataTransfer.effectAllowed = 'move'
-                  } catch {
-                    // Synthetic JSDOM drag events may not supply a DataTransfer object.
-                  }
-                }}
-                onDragOver={(event) => {
-                  event.preventDefault()
-                  if (dragSourceRef.current !== null && dragOverSlot !== slot.slotIndex) {
-                    setDragOverSlot(slot.slotIndex)
-                  }
-                }}
-                onDragLeave={() => {
-                  if (dragOverSlot === slot.slotIndex) setDragOverSlot(null)
-                }}
-                onDrop={(event) => {
-                  event.preventDefault()
-                  let from = dragSourceRef.current
-                  if (from === null) {
-                    try {
-                      const raw = event.dataTransfer?.getData('text/plain')
-                      if (raw !== '') {
-                        const parsed = Number(raw)
-                        if (Number.isInteger(parsed)) from = parsed
-                      }
-                    } catch {
-                      // Ignore invalid DataTransfer access.
-                    }
-                  }
-                  dragSourceRef.current = null
-                  setDraggingSlot(null)
-                  setDragOverSlot(null)
-                  if (from !== null && from !== slot.slotIndex) {
-                    void motionStore.swapFormationSlots(from, slot.slotIndex)
-                  }
-                }}
-                onDragEnd={() => {
-                  dragSourceRef.current = null
-                  setDraggingSlot(null)
-                  setDragOverSlot(null)
-                }}
                 style={{ width: `${CARD_WIDTH_PX}px` }}
                 className={cn(
-                  'group relative flex shrink-0 cursor-pointer select-none flex-col overflow-hidden rounded-lg border transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  'group relative flex shrink-0 select-none flex-col overflow-hidden rounded-lg border transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                   slot.isOverflow ? 'border-dashed' : 'border-solid',
                   slot.occupied
-                    ? 'bg-card'
-                    : 'bg-muted/25 hover:bg-muted/40',
+                    ? cn('bg-card', draggingSlot !== null ? 'cursor-grabbing' : 'cursor-grab')
+                    : 'cursor-pointer bg-muted/25 hover:bg-muted/40',
                   selected
                     ? 'border-primary ring-2 ring-primary/30 shadow-sm'
                     : slot.isOverflow

@@ -8,6 +8,8 @@
 
 #include <string>
 #include <vector>
+#include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -135,6 +137,10 @@ namespace GakuMotion
 		uint32_t eyeBoneFrames{0};
 		uint32_t morphFrames{0};
 		uint32_t cameraFrames{0};
+		bool hasRootOrigin{false};
+		float rootOriginX{0.0f};
+		float rootOriginY{0.0f};
+		float rootOriginZ{0.0f};
 
 		bool CanUseAsMotion() const { return valid && bodyBoneFrames > 0; }
 		bool CanUseAsFacial() const { return valid && (morphFrames > 0 || eyeBoneFrames > 0); }
@@ -209,27 +215,75 @@ namespace GakuMotion
 			return false;
 		};
 
-		const uint32_t scanCount = (std::min)(boneCount, 4096u);
-		for (uint32_t i = 0; i < scanCount; ++i)
+		struct RootBoneSample
 		{
-			char bname[16]{};
-			file.read(bname, 15);
-			if (!file) return info;
+			bool seen{false};
+			uint32_t minFrame{0};
+			float pos[3]{0.0f, 0.0f, 0.0f};
+			float rot[4]{0.0f, 0.0f, 0.0f, 1.0f};
+		};
+		struct RootBoneSpec
+		{
+			const char* bytes;
+			size_t len;
+		};
+		static constexpr RootBoneSpec kRootBones[5] = {
+			{"\x91\x53\x82\xC4\x82\xCC\x90\x65", 8}, // 全ての親
+			{"\x83\x5A\x83\x93\x83\x5E\x81\x5B", 8}, // センター
+			{"\x83\x4F\x83\x8B\x81\x5B\x83\x75", 8}, // グルーブ
+			{"\x8D\x98", 2},                         // 腰
+			{"\x89\xBA\x94\xBC\x90\x67", 6},         // 下半身
+		};
+		std::array<RootBoneSample, 5> rootSamples{};
 
-			if (IsEyeBone(bname))
+		constexpr size_t kRecordBytes = 111;
+		constexpr uint32_t kChunkRecords = 512;
+		std::vector<char> chunkBuffer(
+			boneCount > 0 ? static_cast<size_t>((std::min)(boneCount, kChunkRecords)) * kRecordBytes : size_t{0});
+		uint32_t remainingBones = boneCount;
+		while (remainingBones > 0)
+		{
+			const uint32_t batch = (std::min)(remainingBones, kChunkRecords);
+			const std::streamsize bytesToRead =
+				static_cast<std::streamsize>(batch) * static_cast<std::streamsize>(kRecordBytes);
+			file.read(chunkBuffer.data(), bytesToRead);
+			if (!file || file.gcount() != bytesToRead) return info;
+
+			for (uint32_t i = 0; i < batch; ++i)
 			{
-				++info.eyeBoneFrames;
-			}
-			else if (bname[0] != '\0')
-			{
-				++info.bodyBoneFrames;
-				if (boneCount > 4096u && info.bodyBoneFrames > 0)
+				const char* rec = chunkBuffer.data() + static_cast<size_t>(i) * kRecordBytes;
+				char bname[16]{};
+				std::memcpy(bname, rec, 15);
+
+				if (IsEyeBone(bname))
 				{
-					// 已明确包含身体动作骨骼，直接跳转跳过剩余骨骼块（< 0.1ms）
-					break;
+					++info.eyeBoneFrames;
+				}
+				else if (bname[0] != '\0')
+				{
+					++info.bodyBoneFrames;
+					size_t nameLen = 0;
+					while (nameLen < 15 && bname[nameLen] != '\0') ++nameLen;
+					for (size_t r = 0; r < 5; ++r)
+					{
+						if (nameLen == kRootBones[r].len &&
+						    std::memcmp(bname, kRootBones[r].bytes, kRootBones[r].len) == 0)
+						{
+							uint32_t frame = 0;
+							std::memcpy(&frame, rec + 15, 4);
+							if (!rootSamples[r].seen || frame < rootSamples[r].minFrame)
+							{
+								rootSamples[r].seen = true;
+								rootSamples[r].minFrame = frame;
+								std::memcpy(rootSamples[r].pos, rec + 19, 12);
+								std::memcpy(rootSamples[r].rot, rec + 31, 16);
+							}
+							break;
+						}
+					}
 				}
 			}
-			file.seekg(96, std::ios::cur);
+			remainingBones -= batch;
 		}
 
 		// 精确跳至骨骼记录块末尾
@@ -282,6 +336,65 @@ namespace GakuMotion
 		}
 
 		info.valid = true;
+		if (info.bodyBoneFrames > 0)
+		{
+			double worldPos[3]{0.0, 0.0, 0.0};
+			double worldRot[4]{0.0, 0.0, 0.0, 1.0};
+			for (size_t r = 0; r < 5; ++r)
+			{
+				if (!rootSamples[r].seen) continue;
+				const double lx = std::isfinite(rootSamples[r].pos[0]) ? -static_cast<double>(rootSamples[r].pos[0]) : 0.0;
+				const double ly = std::isfinite(rootSamples[r].pos[1]) ? static_cast<double>(rootSamples[r].pos[1]) : 0.0;
+				const double lz = std::isfinite(rootSamples[r].pos[2]) ? -static_cast<double>(rootSamples[r].pos[2]) : 0.0;
+
+				const double tx = 2.0 * (worldRot[1] * lz - worldRot[2] * ly);
+				const double ty = 2.0 * (worldRot[2] * lx - worldRot[0] * lz);
+				const double tz = 2.0 * (worldRot[0] * ly - worldRot[1] * lx);
+				worldPos[0] += lx + worldRot[3] * tx + (worldRot[1] * tz - worldRot[2] * ty);
+				worldPos[1] += ly + worldRot[3] * ty + (worldRot[2] * tx - worldRot[0] * tz);
+				worldPos[2] += lz + worldRot[3] * tz + (worldRot[0] * ty - worldRot[1] * tx);
+
+				const float rxRaw = rootSamples[r].rot[0];
+				const float ryRaw = rootSamples[r].rot[1];
+				const float rzRaw = rootSamples[r].rot[2];
+				const float rwRaw = rootSamples[r].rot[3];
+				if (std::isfinite(rxRaw) && std::isfinite(ryRaw) && std::isfinite(rzRaw) && std::isfinite(rwRaw))
+				{
+					const double rx = -static_cast<double>(rxRaw);
+					const double ry = static_cast<double>(ryRaw);
+					const double rz = -static_cast<double>(rzRaw);
+					const double rw = static_cast<double>(rwRaw);
+					const double n2 = rx * rx + ry * ry + rz * rz + rw * rw;
+					if (n2 > 1e-12)
+					{
+						const double inv = 1.0 / std::sqrt(n2);
+						const double lrx = rx * inv, lry = ry * inv, lrz = rz * inv, lrw = rw * inv;
+						const double nx = worldRot[3] * lrx + worldRot[0] * lrw + worldRot[1] * lrz - worldRot[2] * lry;
+						const double ny = worldRot[3] * lry + worldRot[1] * lrw + worldRot[2] * lrx - worldRot[0] * lrz;
+						const double nz = worldRot[3] * lrz + worldRot[2] * lrw + worldRot[0] * lry - worldRot[1] * lrx;
+						const double nw = worldRot[3] * lrw - worldRot[0] * lrx - worldRot[1] * lry - worldRot[2] * lrz;
+						const double mn2 = nx * nx + ny * ny + nz * nz + nw * nw;
+						if (mn2 > 1e-12)
+						{
+							const double minv = 1.0 / std::sqrt(mn2);
+							worldRot[0] = nx * minv;
+							worldRot[1] = ny * minv;
+							worldRot[2] = nz * minv;
+							worldRot[3] = nw * minv;
+						}
+					}
+				}
+			}
+			constexpr double kMmdToUnityScale = 0.07795;
+			auto cleanCoord = [](double v) -> float {
+				const float f = static_cast<float>(v * kMmdToUnityScale);
+				return (!std::isfinite(f) || f == 0.0f) ? 0.0f : f;
+			};
+			info.rootOriginX = cleanCoord(worldPos[0]);
+			info.rootOriginY = cleanCoord(worldPos[1]);
+			info.rootOriginZ = cleanCoord(worldPos[2]);
+			info.hasRootOrigin = true;
+		}
 		if (info.cameraFrames > 0 && info.bodyBoneFrames == 0 && info.morphFrames == 0)
 			info.tendency = VmdTendency::CameraOnly;
 		else if (info.bodyBoneFrames > 0 && info.morphFrames > 0)

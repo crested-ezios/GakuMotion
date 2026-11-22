@@ -4,8 +4,10 @@ import type {
   ClockState,
   FacialWeights,
   PlayerState,
+  SlotPerformanceTiming,
   StageFormation,
   StageSettings,
+  TrackTiming,
 } from './coreTypes'
 import type {
   ExperimentSettings,
@@ -15,7 +17,6 @@ import type {
   SolePitchSettings,
   SoleSettings,
   StudioSettings,
-  TrackTiming,
   VmdProbe,
   VmdTendency,
 } from './phase2Types'
@@ -166,6 +167,13 @@ export function isSlotPlaceholder(path: string): boolean {
 }
 
 export const DEFAULT_TRACK_TIMING: TrackTiming = { speed: 1, offsetSeconds: 0 }
+
+export function defaultSlotPerformanceTiming(): SlotPerformanceTiming {
+  return {
+    motion: { ...DEFAULT_TRACK_TIMING },
+    facial: { ...DEFAULT_TRACK_TIMING },
+  }
+}
 
 export function defaultPerformanceTiming(): PerformanceTiming {
   return {

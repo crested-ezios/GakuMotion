@@ -48,6 +48,15 @@ public static class RootDisplacement
     }
 
     /// <summary>
+    /// Converts a frame-0 displacement in MMD units into meters using the validated displacement scale.
+    /// </summary>
+    public static Vector3 ComputeOrigin(Vector3 displacementMmd, float scale = DefaultScale)
+    {
+        ValidateScale(scale);
+        return displacementMmd * scale;
+    }
+
+    /// <summary>
     /// Computes dense root trajectory array in meters, relative to frame 0 origin.
     /// Replicates convert.py / vmd2gkclip.py root trajectory pipeline.
     /// </summary>

@@ -80,7 +80,7 @@ namespace GakuMotion::webpanel
 				",\"hasCover\":" + JBool(entry.hasCover) +
 				",\"isGroup\":" + JBool(entry.isGroup) +
 				",\"positionCount\":" + JNum(posCount) +
-				",\"positions\":" + MotionPositionsJson(entry.positions) + "}";
+				",\"positions\":" + MotionPositionsJson(entry.positions, entry.timing) + "}";
 		}
 		entries += "]";
 		return "{\"revision\":" + JNum(static_cast<double>(core_.libraryRevision)) +

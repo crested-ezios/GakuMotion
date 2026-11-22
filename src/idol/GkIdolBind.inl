@@ -138,8 +138,9 @@ namespace GakuMotion
 		// Keep the controller detach (that part is doing real work against Idle
 		// pollution) but make the Rebind itself switchable, so the causal claim
 		// can be tested on device instead of argued.
+		const bool preserveAnimator = PreserveAnimatorForSecondaryPhysics();
 		void* anim = animator ? animator : b.cachedAnimator;
-		if (!preserveAnimatorForSecondaryPhysics && anim)
+		if (!preserveAnimator && anim)
 		{
 			CaptureAnimatorState(b);
 			DetachAnimatorController(b);
@@ -152,7 +153,7 @@ namespace GakuMotion
 		if (anim)
 		{
 			GM_DEBUG("[GakuMotion][Animator] actor=%p policy=%s controllerDetached=%d rebind=%d",
-			          actor, preserveAnimatorForSecondaryPhysics ? "preserve-graph(experimental)" : "legacy-mute",
+			          actor, preserveAnimator ? "preserve-graph(experimental)" : "legacy-mute",
 			          int(b.animatorControllerDetached), int(b.animatorRebound));
 		}
 

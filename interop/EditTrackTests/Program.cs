@@ -1,5 +1,6 @@
 namespace GakuMotion.EditTrackTests;
 
+using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -1035,6 +1036,388 @@ internal static unsafe class Program
                 Require(rcBody == 1, $"GkVmdImport_Run parse error with adequate buffer returned rc={rcBody}, expected 1");
                 Require(rcCamera == 1, $"GkCameraImport_Run parse error with adequate buffer returned rc={rcCamera}, expected 1");
             });
+            Case("Issue1: group per-slot track_timing persists, updates zero-rebake, syncs slot 1, and falls back on legacy tracks", () =>
+            {
+                string seed = Path.Combine(_root, "issue1-per-slot-timing");
+                string library = Path.Combine(seed, "motions");
+                string vmd1 = Fixtures.WriteSyntheticVmd(Path.Combine(seed, "s1"), frames: 6);
+                string vmd2 = Fixtures.WriteSyntheticVmd(Path.Combine(seed, "s2"), frames: 8);
+                string vmd3 = Fixtures.WriteSyntheticVmd(Path.Combine(seed, "s3"), frames: 10);
+                string wav = Path.Combine(seed, "song.wav"); Wav(wav, sample: 51);
+
+                var slot1Timing = new JsonObject
+                {
+                    ["motion"] = new JsonObject { ["speed"] = 0.75f, ["offset_seconds"] = 1.5f },
+                    ["facial"] = new JsonObject { ["speed"] = 1.25f, ["offset_seconds"] = -0.5f }
+                };
+                var slot2Timing = new JsonObject
+                {
+                    ["motion"] = new JsonObject { ["speed"] = 1.5f, ["offset_seconds"] = -1.0f },
+                    ["facial"] = new JsonObject { ["speed"] = 0.5f, ["offset_seconds"] = 0.25f }
+                };
+                var topTiming = new JsonObject
+                {
+                    ["motion"] = new JsonObject { ["speed"] = 0.9f, ["offset_seconds"] = 0.1f },
+                    ["facial"] = new JsonObject { ["speed"] = 1.1f, ["offset_seconds"] = -0.1f },
+                    ["camera"] = new JsonObject { ["speed"] = 0.8f, ["offset_seconds"] = 2.0f },
+                    ["audio"] = new JsonObject { ["speed"] = 1.2f, ["offset_seconds"] = -0.25f }
+                };
+
+                Result imp = RunRequest(new JsonObject
+                {
+                    ["motions_root"] = library,
+                    ["title"] = "PerSlotTiming",
+                    ["audio"] = wav,
+                    ["track_timing"] = topTiming,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["motion_vmd"] = vmd1, ["track_timing"] = slot1Timing.DeepClone() },
+                        new JsonObject { ["slot"] = 2, ["motion_vmd"] = vmd2, ["track_timing"] = slot2Timing.DeepClone(), ["x"] = 1.0f },
+                        new JsonObject { ["slot"] = 3, ["motion_vmd"] = vmd3, ["x"] = -1.0f }
+                    }
+                });
+                Require(imp.Ok, "group import with per-slot timing failed: " + imp.Error);
+                string track = imp.Directory;
+                JsonObject meta = Info(track);
+                var pos = (JsonArray)meta["positions"]!;
+                Require(JsonNode.DeepEquals(pos[0]!["track_timing"], slot1Timing), "slot 1 track_timing mismatch");
+                Require(JsonNode.DeepEquals(pos[1]!["track_timing"], slot2Timing), "slot 2 track_timing mismatch");
+                Require(Math.Abs(pos[2]!["track_timing"]!["motion"]!["speed"]!.GetValue<float>() - 0.9f) < 1e-5f &&
+                        Math.Abs(pos[2]!["track_timing"]!["facial"]!["offset_seconds"]!.GetValue<float>() - (-0.1f)) < 1e-5f,
+                    "slot 3 should inherit top-level motion/facial timing");
+                Require(JsonNode.DeepEquals(meta["track_timing"]!["motion"], slot1Timing["motion"]), "top-level motion timing not synced to slot 1");
+                Require(JsonNode.DeepEquals(meta["track_timing"]!["facial"], slot1Timing["facial"]), "top-level facial timing not synced to slot 1");
+                Require(Math.Abs(meta["track_timing"]!["camera"]!["speed"]!.GetValue<float>() - 0.8f) < 1e-5f &&
+                        Math.Abs(meta["track_timing"]!["audio"]!["offset_seconds"]!.GetValue<float>() - (-0.25f)) < 1e-5f,
+                    "top-level camera/audio timing clobbered");
+
+                // Delete source.vmd in all slots to prove per-slot timing edits perform zero rebake.
+                File.Delete(Path.Combine(track, "source.vmd"));
+                File.Delete(Path.Combine(track, "positions", "slot_2", "source.vmd"));
+                File.Delete(Path.Combine(track, "positions", "slot_3", "source.vmd"));
+                var beforeZeroRebake = Snapshot(track);
+
+                var slot2Updated = new JsonObject
+                {
+                    ["motion"] = new JsonObject { ["speed"] = 2.0f, ["offset_seconds"] = 0.75f },
+                    ["facial"] = new JsonObject { ["speed"] = 0.0f, ["offset_seconds"] = 1.25f }
+                };
+                Result editTiming = RunRequest(new JsonObject
+                {
+                    ["edit_dir"] = track,
+                    ["track_timing"] = new JsonObject
+                    {
+                        ["motion"] = new JsonObject { ["speed"] = 9.9f, ["offset_seconds"] = 9.9f }, // must NOT override slot 1
+                        ["facial"] = new JsonObject { ["speed"] = 9.9f, ["offset_seconds"] = 9.9f },
+                        ["camera"] = new JsonObject { ["speed"] = 1.4f, ["offset_seconds"] = -0.5f },
+                        ["audio"] = new JsonObject { ["speed"] = 1.0f, ["offset_seconds"] = 0.0f }
+                    },
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["source_slot"] = 1, ["preserve_existing"] = true, ["track_timing"] = slot1Timing.DeepClone() },
+                        new JsonObject { ["slot"] = 2, ["source_slot"] = 2, ["preserve_existing"] = true, ["track_timing"] = slot2Updated.DeepClone() },
+                        new JsonObject { ["slot"] = 3, ["source_slot"] = 3, ["preserve_existing"] = true }
+                    }
+                });
+                Require(editTiming.Ok, "zero-rebake per-slot timing edit failed: " + editTiming.Error);
+                var afterZeroRebake = Snapshot(track);
+                foreach (string rel in beforeZeroRebake.Keys.Where(k => k != "info.json"))
+                    Require(beforeZeroRebake[rel] == afterZeroRebake[rel], "zero-rebake timing edit mutated " + rel);
+
+                JsonObject metaAfter = Info(track);
+                var posAfter = (JsonArray)metaAfter["positions"]!;
+                Require(JsonNode.DeepEquals(posAfter[0]!["track_timing"], slot1Timing), "slot 1 timing lost");
+                Require(JsonNode.DeepEquals(posAfter[1]!["track_timing"], slot2Updated), "slot 2 updated timing lost");
+                Require(Math.Abs(posAfter[2]!["track_timing"]!["motion"]!["speed"]!.GetValue<float>() - 0.9f) < 1e-5f, "slot 3 custom timing not preserved");
+                Require(Math.Abs(posAfter[1]!["x"]!.GetValue<float>() - 1.0f) < 1e-5f, "slot 2 placement wiped on preserve_existing timing edit");
+                Require(JsonNode.DeepEquals(metaAfter["track_timing"]!["motion"], slot1Timing["motion"]) &&
+                        JsonNode.DeepEquals(metaAfter["track_timing"]!["facial"], slot1Timing["facial"]),
+                    "Edit.cs overwrote slot 1 synced motion/facial timing with top-level timing");
+                Require(Math.Abs(metaAfter["track_timing"]!["camera"]!["speed"]!.GetValue<float>() - 1.4f) < 1e-5f,
+                    "top-level camera timing not updated");
+
+                // Promote slot 2 -> slot 1 without specifying track_timing; top-level motion/facial syncs to former slot 2.
+                Result promote = RunRequest(new JsonObject
+                {
+                    ["edit_dir"] = track,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["source_slot"] = 2, ["preserve_existing"] = true },
+                        new JsonObject { ["slot"] = 2, ["source_slot"] = 1, ["preserve_existing"] = true },
+                        new JsonObject { ["slot"] = 3, ["source_slot"] = 3, ["preserve_existing"] = true }
+                    }
+                });
+                Require(promote.Ok, "promote timing sync failed: " + promote.Error);
+                JsonObject metaPromote = Info(track);
+                Require(JsonNode.DeepEquals(metaPromote["track_timing"]!["motion"], slot2Updated["motion"]) &&
+                        JsonNode.DeepEquals(metaPromote["track_timing"]!["facial"], slot2Updated["facial"]),
+                    "top-level timing did not sync to promoted slot 1");
+                Require(Math.Abs(metaPromote["track_timing"]!["camera"]!["speed"]!.GetValue<float>() - 1.4f) < 1e-5f,
+                    "camera timing lost during slot promotion");
+
+                // Invalid per-slot timing rejects atomically without mutating track.
+                var snapBeforeInvalid = Snapshot(track);
+                Require(!RunRequest(new JsonObject
+                {
+                    ["edit_dir"] = track,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["preserve_existing"] = true },
+                        new JsonObject
+                        {
+                            ["slot"] = 2,
+                            ["preserve_existing"] = true,
+                            ["track_timing"] = new JsonObject { ["motion"] = new JsonObject { ["speed"] = -0.1f } }
+                        },
+                        new JsonObject { ["slot"] = 3, ["preserve_existing"] = true }
+                    }
+                }).Ok, "negative per-slot speed accepted");
+                Same(snapBeforeInvalid, Snapshot(track));
+
+                // Legacy track without per-slot track_timing falls back to top-level info["track_timing"].
+                JsonObject legacyMeta = Info(track);
+                foreach (JsonNode? entry in (JsonArray)legacyMeta["positions"]!)
+                    ((JsonObject)entry!).Remove("track_timing");
+                File.WriteAllText(Path.Combine(track, "info.json"), legacyMeta.ToJsonString());
+                Result legacyEdit = RunRequest(new JsonObject
+                {
+                    ["edit_dir"] = track,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["preserve_existing"] = true },
+                        new JsonObject { ["slot"] = 2, ["preserve_existing"] = true },
+                        new JsonObject { ["slot"] = 3, ["preserve_existing"] = true }
+                    }
+                });
+                Require(legacyEdit.Ok, "legacy fallback edit failed: " + legacyEdit.Error);
+                JsonObject afterLegacy = Info(track);
+                foreach (JsonNode? entry in (JsonArray)afterLegacy["positions"]!)
+                {
+                    Require(JsonNode.DeepEquals(entry!["track_timing"]!["motion"], slot2Updated["motion"]) &&
+                            JsonNode.DeepEquals(entry!["track_timing"]!["facial"], slot2Updated["facial"]),
+                        "legacy slot did not inherit top-level track_timing");
+                }
+
+                // Legacy solo-path edit (omitted positions[]) updating top-level track_timing also syncs positions[0].
+                var soloTiming = new JsonObject
+                {
+                    ["motion"] = new JsonObject { ["speed"] = 0.6f, ["offset_seconds"] = 0.5f },
+                    ["facial"] = new JsonObject { ["speed"] = 1.4f, ["offset_seconds"] = -0.5f },
+                    ["camera"] = new JsonObject { ["speed"] = 1.0f, ["offset_seconds"] = 0.0f },
+                    ["audio"] = new JsonObject { ["speed"] = 1.0f, ["offset_seconds"] = 0.0f }
+                };
+                Result soloTimingEdit = RunRequest(new JsonObject { ["edit_dir"] = track, ["track_timing"] = soloTiming });
+                Require(soloTimingEdit.Ok, "solo-path timing edit failed: " + soloTimingEdit.Error);
+                JsonObject afterSoloTiming = Info(track);
+                var afterSoloPos = (JsonArray)afterSoloTiming["positions"]!;
+                Require(JsonNode.DeepEquals(afterSoloPos[0]!["track_timing"]!["motion"], soloTiming["motion"]) &&
+                        JsonNode.DeepEquals(afterSoloPos[0]!["track_timing"]!["facial"], soloTiming["facial"]),
+                    "solo-path timing edit did not sync positions[0].track_timing");
+                Require(JsonNode.DeepEquals(afterSoloPos[1]!["track_timing"]!["motion"], slot2Updated["motion"]),
+                    "solo-path timing edit clobbered slot 2 timing");
+            });
+            Case("Issue1+3: identical motion_vmd and morph_vmd across multiple slots succeeds and isolates outputs", () =>
+            {
+                string seed = Path.Combine(_root, "shared-vmd-slots");
+                string library = Path.Combine(seed, "motions");
+                string sharedBody = Fixtures.WriteSyntheticVmd(Path.Combine(seed, "body"), frames: 7);
+                string sharedMorph = WriteSyntheticVmdWithMorph(Path.Combine(seed, "morph.vmd"), frames: 7, "あ");
+                string wav = Path.Combine(seed, "song.wav"); Wav(wav, sample: 61);
+
+                Result imp = RunRequest(new JsonObject
+                {
+                    ["motions_root"] = library,
+                    ["title"] = "IdenticalSlotInputs",
+                    ["audio"] = wav,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["motion_vmd"] = sharedBody, ["morph_vmd"] = sharedMorph },
+                        new JsonObject { ["slot"] = 2, ["motion_vmd"] = sharedBody, ["morph_vmd"] = sharedMorph }
+                    }
+                });
+                Require(imp.Ok, "identical motion/morph across slots failed: " + imp.Error);
+                string track = imp.Directory;
+                Require(File.Exists(Path.Combine(track, "motion.gkclip")) &&
+                        File.Exists(Path.Combine(track, "source_morph.vmd")), "slot 1 outputs missing");
+                string slot2Dir = Path.Combine(track, "positions", "slot_2");
+                Require(File.Exists(Path.Combine(slot2Dir, "motion.gkclip")) &&
+                        File.Exists(Path.Combine(slot2Dir, "source_morph.vmd")), "slot 2 outputs missing");
+
+                JsonObject meta = Info(track);
+                var pos = (JsonArray)meta["positions"]!;
+                Require(pos[0]!["has_facial"]!.GetValue<bool>() && pos[1]!["has_facial"]!.GetValue<bool>(),
+                    "both slots should have facial");
+                Require(Math.Abs(pos[1]!["x"]!.GetValue<float>()) < 1e-6f &&
+                        Math.Abs(pos[1]!["y"]!.GetValue<float>()) < 1e-6f &&
+                        Math.Abs(pos[1]!["z"]!.GetValue<float>()) < 1e-6f,
+                    "identical VMDs should have zero relative placement offset");
+
+                // Mutating slot 2 (disable_morph) must leave slot 1's source_morph.vmd and facial intact.
+                string slot1ClipBefore = Digest(Path.Combine(track, "motion.gkclip"));
+                string slot1MorphBefore = Digest(Path.Combine(track, "source_morph.vmd"));
+                Result edit = RunRequest(new JsonObject
+                {
+                    ["edit_dir"] = track,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["preserve_existing"] = true },
+                        new JsonObject { ["slot"] = 2, ["disable_morph"] = true }
+                    }
+                });
+                Require(edit.Ok, "slot 2 isolation edit failed: " + edit.Error);
+                Require(Digest(Path.Combine(track, "motion.gkclip")) == slot1ClipBefore, "slot 1 clip changed");
+                Require(Digest(Path.Combine(track, "source_morph.vmd")) == slot1MorphBefore, "slot 1 source_morph.vmd changed");
+                Require(!File.Exists(Path.Combine(slot2Dir, "source_morph.vmd")), "slot 2 source_morph.vmd not cleared");
+                JsonObject afterEdit = Info(track);
+                var afterPos = (JsonArray)afterEdit["positions"]!;
+                Require(afterPos[0]!["has_facial"]!.GetValue<bool>() && !afterPos[1]!["has_facial"]!.GetValue<bool>(),
+                    "slot isolation failed in metadata");
+            });
+            Case("Issue3: non-zero frame-0 Center VMDs auto-compute inter-slot relative offsets and respect explicit overrides", () =>
+            {
+                string seed = Path.Combine(_root, "issue3-root-origin");
+                string library = Path.Combine(seed, "motions");
+                string vmd1 = WriteSyntheticVmdWithCenter(Path.Combine(seed, "c1.vmd"), frames: 6, new Vector3(10.0f, 0.0f, -5.0f));
+                string vmd2 = WriteSyntheticVmdWithCenter(Path.Combine(seed, "c2.vmd"), frames: 6, new Vector3(-10.0f, 0.10f, 5.0f));
+                string vmd3 = WriteSyntheticVmdWithCenter(Path.Combine(seed, "c3.vmd"), frames: 6, new Vector3(10.0f, 1.0f, -5.0f));
+                string wav = Path.Combine(seed, "song.wav"); Wav(wav, sample: 67);
+
+                // 1. Auto relative placement across 3 slots
+                Result impAuto = RunRequest(new JsonObject
+                {
+                    ["motions_root"] = library,
+                    ["title"] = "AutoRelativeOffsets",
+                    ["audio"] = wav,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["motion_vmd"] = vmd1 },
+                        new JsonObject { ["slot"] = 2, ["motion_vmd"] = vmd2, ["yaw_degrees"] = 15.0f },
+                        new JsonObject { ["slot"] = 3, ["motion_vmd"] = vmd3 }
+                    }
+                });
+                Require(impAuto.Ok, "auto relative offset import failed: " + impAuto.Error);
+                string trackAuto = impAuto.Directory;
+                JsonObject metaAuto = Info(trackAuto);
+                var posAuto = (JsonArray)metaAuto["positions"]!;
+
+                // MMD -> Unity: (-x, y, -z) * 0.07795
+                // origin1 = (-0.7795, 0.0, +0.38975)
+                // origin2 = (+0.7795, +0.007795, -0.38975) -> delta = (+1.559, 0.007795 snapped to 0, -0.7795)
+                // origin3 = (-0.7795, +0.07795, +0.38975)  -> delta = (0, +0.07795 >= 0.02 kept, 0)
+                const float scale = 0.07795f;
+                Require(Math.Abs(posAuto[0]!["x"]!.GetValue<float>()) < 1e-6f &&
+                        Math.Abs(posAuto[0]!["y"]!.GetValue<float>()) < 1e-6f &&
+                        Math.Abs(posAuto[0]!["z"]!.GetValue<float>()) < 1e-6f, "slot 1 must be clamped to origin");
+                Require(Math.Abs(posAuto[0]!["source_root_origin"]!["x"]!.GetValue<float>() - (-10.0f * scale)) < 1e-4f &&
+                        Math.Abs(posAuto[0]!["source_root_origin"]!["z"]!.GetValue<float>() - (5.0f * scale)) < 1e-4f,
+                    "slot 1 source_root_origin mismatch");
+                Require(Math.Abs(posAuto[1]!["x"]!.GetValue<float>() - (20.0f * scale)) < 1e-4f &&
+                        Math.Abs(posAuto[1]!["y"]!.GetValue<float>()) < 1e-6f &&
+                        Math.Abs(posAuto[1]!["z"]!.GetValue<float>() - (-10.0f * scale)) < 1e-4f &&
+                        Math.Abs(posAuto[1]!["yaw_degrees"]!.GetValue<float>() - 15.0f) < 1e-4f,
+                    "slot 2 auto relative offset or <2cm Y snap failed");
+                Require(Math.Abs(posAuto[2]!["x"]!.GetValue<float>()) < 1e-4f &&
+                        Math.Abs(posAuto[2]!["y"]!.GetValue<float>() - (1.0f * scale)) < 1e-4f &&
+                        Math.Abs(posAuto[2]!["z"]!.GetValue<float>()) < 1e-4f,
+                    "slot 3 >=2cm elevation offset not preserved");
+
+                // Clip root trajectory frame 0 must stay Vector3.Zero.
+                foreach (string clipPath in new[]
+                {
+                    Path.Combine(trackAuto, "motion.gkclip"),
+                    Path.Combine(trackAuto, "positions", "slot_2", "motion.gkclip"),
+                    Path.Combine(trackAuto, "positions", "slot_3", "motion.gkclip")
+                })
+                {
+                    GkClipData clip = GkClipDecoder.Decode(File.ReadAllBytes(clipPath));
+                    Require(clip.RootPositions![0].Length() < 1e-6f, "clip RootPositions[0] must stay zero: " + clipPath);
+                }
+
+                // 2. Reorder [2 -> 1, 1 -> 2, 3 -> 3] without explicit coords recalculates relative to new slot 1 (old slot 2).
+                Result reorderAuto = RunRequest(new JsonObject
+                {
+                    ["edit_dir"] = trackAuto,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["source_slot"] = 2, ["preserve_existing"] = true },
+                        new JsonObject { ["slot"] = 2, ["source_slot"] = 1, ["preserve_existing"] = true },
+                        new JsonObject { ["slot"] = 3, ["source_slot"] = 3, ["preserve_existing"] = true }
+                    }
+                });
+                Require(reorderAuto.Ok, "auto reorder failed: " + reorderAuto.Error);
+                JsonObject metaReorder = Info(trackAuto);
+                var posReorder = (JsonArray)metaReorder["positions"]!;
+                Require(Math.Abs(posReorder[0]!["x"]!.GetValue<float>()) < 1e-6f, "promoted slot 1 not at origin");
+                Require(Math.Abs(posReorder[1]!["x"]!.GetValue<float>() - (-20.0f * scale)) < 1e-4f &&
+                        Math.Abs(posReorder[1]!["z"]!.GetValue<float>() - (10.0f * scale)) < 1e-4f &&
+                        Math.Abs(posReorder[1]!["y"]!.GetValue<float>()) < 1e-6f,
+                    "demoted slot 1 relative offset mismatch");
+                Require(Math.Abs(posReorder[2]!["x"]!.GetValue<float>() - (-20.0f * scale)) < 1e-4f &&
+                        Math.Abs(posReorder[2]!["y"]!.GetValue<float>() - (0.9f * scale)) < 1e-4f &&
+                        Math.Abs(posReorder[2]!["z"]!.GetValue<float>() - (10.0f * scale)) < 1e-4f,
+                    "slot 3 relative offset against new slot 1 mismatch");
+
+                // 3. Explicit has_explicit_placement: true (including 0,0,0) and non-zero explicit x/y/z override auto offsets.
+                Result impExplicit = RunRequest(new JsonObject
+                {
+                    ["motions_root"] = library,
+                    ["title"] = "ExplicitOverridesAuto",
+                    ["audio"] = wav,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["motion_vmd"] = vmd1 },
+                        new JsonObject { ["slot"] = 2, ["motion_vmd"] = vmd2, ["has_explicit_placement"] = true, ["x"] = 0.0f, ["y"] = 0.0f, ["z"] = 0.0f },
+                        new JsonObject { ["slot"] = 3, ["motion_vmd"] = vmd3, ["x"] = 2.25f, ["y"] = 0.0f, ["z"] = -1.25f }
+                    }
+                });
+                Require(impExplicit.Ok, "explicit override import failed: " + impExplicit.Error);
+                JsonObject metaExp = Info(impExplicit.Directory);
+                var posExp = (JsonArray)metaExp["positions"]!;
+                Require(Math.Abs(posExp[1]!["x"]!.GetValue<float>()) < 1e-6f &&
+                        Math.Abs(posExp[1]!["y"]!.GetValue<float>()) < 1e-6f &&
+                        Math.Abs(posExp[1]!["z"]!.GetValue<float>()) < 1e-6f,
+                    "has_explicit_placement:true (0,0,0) was overwritten by auto offset");
+                Require(Math.Abs(posExp[2]!["x"]!.GetValue<float>() - 2.25f) < 1e-5f &&
+                        Math.Abs(posExp[2]!["z"]!.GetValue<float>() - (-1.25f)) < 1e-5f,
+                    "non-zero explicit x/z overridden");
+
+                // 4. Edit replacing slot 2 with non-zero Center VMD and !has_explicit_placement computes auto offset;
+                //    zero-rebake explicit (0,0,0) with has_explicit_placement:true clears slot 2 back to 0,0,0.
+                Result replaceAuto = RunRequest(new JsonObject
+                {
+                    ["edit_dir"] = impExplicit.Directory,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["preserve_existing"] = true },
+                        new JsonObject { ["slot"] = 2, ["motion_vmd"] = vmd2 },
+                        new JsonObject { ["slot"] = 3, ["preserve_existing"] = true }
+                    }
+                });
+                Require(replaceAuto.Ok, "edit replace auto offset failed: " + replaceAuto.Error);
+                JsonObject metaReplace = Info(impExplicit.Directory);
+                var posReplace = (JsonArray)metaReplace["positions"]!;
+                Require(Math.Abs(posReplace[1]!["x"]!.GetValue<float>() - (20.0f * scale)) < 1e-4f,
+                    "replaced slot 2 did not compute auto relative offset");
+                Require(Math.Abs(posReplace[2]!["x"]!.GetValue<float>() - 2.25f) < 1e-5f,
+                    "preserved slot 3 lost explicit placement during slot 2 edit");
+
+                Result clearExplicit = RunRequest(new JsonObject
+                {
+                    ["edit_dir"] = impExplicit.Directory,
+                    ["positions"] = new JsonArray
+                    {
+                        new JsonObject { ["slot"] = 1, ["preserve_existing"] = true },
+                        new JsonObject { ["slot"] = 2, ["preserve_existing"] = true, ["has_explicit_placement"] = true, ["x"] = 0.0f, ["y"] = 0.0f, ["z"] = 0.0f },
+                        new JsonObject { ["slot"] = 3, ["preserve_existing"] = true }
+                    }
+                });
+                Require(clearExplicit.Ok, "explicit clear to 0,0,0 failed: " + clearExplicit.Error);
+                JsonObject metaCleared = Info(impExplicit.Directory);
+                var posCleared = (JsonArray)metaCleared["positions"]!;
+                Require(Math.Abs(posCleared[1]!["x"]!.GetValue<float>()) < 1e-6f &&
+                        Math.Abs(posCleared[1]!["z"]!.GetValue<float>()) < 1e-6f,
+                    "explicit zero placement did not override previous auto offset");
+            });
         }
         finally
         {
@@ -1325,6 +1708,73 @@ internal static unsafe class Program
                 writer.Write(f == 0 ? 0.0f : 0.8f);
             }
 
+            writer.Write((uint)0); // camera
+            writer.Write((uint)0); // light
+            writer.Write((uint)0); // self-shadow
+            writer.Write((uint)0); // property
+        }
+
+        File.WriteAllBytes(path, ms.ToArray());
+        return path;
+    }
+
+    private static string WriteSyntheticVmdWithCenter(string path, int frames, Vector3 centerPosFrame0)
+    {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        Encoding shiftJis = Encoding.GetEncoding(932);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+        var tracks = new (string Name, Func<int, Quaternion> Rotation, Func<int, Vector3> Position)[]
+        {
+            ("センター", _ => Quaternion.Identity, _ => centerPosFrame0),
+            ("下半身", f => Quaternion.CreateFromAxisAngle(Vector3.UnitZ, 0.5f * f * MathF.PI / 180.0f), _ => Vector3.Zero),
+            ("上半身", f => Quaternion.CreateFromAxisAngle(Vector3.UnitX, 1.0f * f * MathF.PI / 180.0f), _ => Vector3.Zero),
+            ("頭", f => Quaternion.CreateFromAxisAngle(Vector3.UnitY, 0.5f * f * MathF.PI / 180.0f), _ => Vector3.Zero)
+        };
+
+        using var ms = new MemoryStream();
+        using (var writer = new BinaryWriter(ms, Encoding.ASCII, leaveOpen: true))
+        {
+            byte[] header = new byte[30];
+            Encoding.ASCII.GetBytes("Vocaloid Motion Data 0002", header);
+            writer.Write(header);
+
+            byte[] model = new byte[20];
+            shiftJis.GetBytes("center origin probe", model);
+            writer.Write(model);
+
+            writer.Write((uint)(tracks.Length * frames));
+            foreach ((string name, Func<int, Quaternion> rotation, Func<int, Vector3> position) in tracks)
+            {
+                for (int f = 0; f < frames; f++)
+                {
+                    byte[] boneName = new byte[15];
+                    shiftJis.GetBytes(name, boneName);
+                    writer.Write(boneName);
+                    writer.Write((uint)f);
+
+                    Vector3 pos = position(f);
+                    writer.Write(pos.X);
+                    writer.Write(pos.Y);
+                    writer.Write(pos.Z);
+
+                    Quaternion rot = rotation(f);
+                    writer.Write(rot.X);
+                    writer.Write(rot.Y);
+                    writer.Write(rot.Z);
+                    writer.Write(rot.W);
+
+                    byte[] curves = new byte[64];
+                    for (int c = 0; c < 4; c++)
+                    {
+                        int at = c * 16;
+                        curves[at + 0] = 20; curves[at + 4] = 20; curves[at + 8] = 107; curves[at + 12] = 107;
+                    }
+                    writer.Write(curves);
+                }
+            }
+
+            writer.Write((uint)0); // morph
             writer.Write((uint)0); // camera
             writer.Write((uint)0); // light
             writer.Write((uint)0); // self-shadow
