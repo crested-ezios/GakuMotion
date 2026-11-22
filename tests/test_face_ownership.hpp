@@ -92,6 +92,21 @@ static void TestFaceFamilyOwnership()
 	binding.Apply(actor, legacy, 0, api);
 	Check(Near(b.weights[0], 17) && Near(b.weights[1], 23) && binding.ownedIndices.empty(),
 	      "legacy clip restores all default mouth siblings and releases ownership");
+	live = &a;
+	a.weights[4] = 82.f;
+	binding.Apply(actor, legacy, 0, api, true);
+	Check(Near(a.weights[4], 0) && Near(a.weights[5], 22),
+		"Motion without eye tracks during Animator takeover opens the eyelids and preserves iris weights");
+	Check(BlendshapeBinding::IdleBlinkWeight(3.57f) > .5f && BlendshapeBinding::IdleBlinkWeight(3.71f) == 0.f,
+		"the idle blink closes and reopens on the wall-clock schedule");
+	binding.Restore(actor, api);
+	Check(Near(a.weights[4], 82), "exiting takeover restores the original eyelid weight");
+	MotionClip authored = clip;
+	authored.blendshape_names = {"b_eye.eye_001"};
+	authored.blendshape_weights = {.3f, .8f};
+	binding.Apply(actor, authored, 0, api, true);
+	Check(Near(a.weights[4], 30) && binding.idleBlinkIndex < 0, "authored eyelids override standby blinking");
+	binding.Restore(actor, api);
 }
 
 static void TestCharacterDefaultPriorPlayback()
