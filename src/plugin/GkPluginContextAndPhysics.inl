@@ -213,16 +213,14 @@
 		g_physicsTime = -1.0f;
 		g_physicsLastTick = {};
 	}
-	bool IsTransientNativePhysicsPendingReason(int requested, bool native, const std::string& reason)
+	bool IsNativePhysicsPending(int requested, const std::string& reason)
 	{
-		return requested == 2 && (native ||
-			reason == "native_pending" || reason == "native_pending_stale" ||
+		return requested == 2 && (reason == "native_pending" || reason == "native_pending_stale" ||
 			reason == "body_binding_pending" || reason == "discovering");
 	}
 	void SyncFallbackAnimatorMute(GakuMotion::IdolController& ctrl, void* actor,
-		const GakuMotion::IdolBoneBinding& binding, int requested, bool native, const std::string& reason)
+		const GakuMotion::IdolBoneBinding& binding, bool shouldMute)
 	{
-		const bool shouldMute = !native && !IsTransientNativePhysicsPendingReason(requested, native, reason);
 		const bool prevMute = ctrl.fallbackMuteAnimator;
 		ctrl.fallbackMuteAnimator = shouldMute;
 		if (shouldMute && !ctrl.IsAnimatorMuted(actor))
@@ -235,7 +233,7 @@
 		}
 	}
 	void DispatchEnsemblePhysics(GakuMotion::Core& core, void* actor, int frame,
-		float realDeltaTime, std::chrono::steady_clock::time_point bodyBegin)
+		float realDeltaTime, std::chrono::steady_clock::time_point bodyBegin, bool filterSceneForces = false)
 	{
 		auto* track = core.PlayerForActor(actor);
 		if (!track) return;
@@ -328,11 +326,21 @@
 		slot.lastTick = dispatchBegin;
 		bool native = false;
 		if (useV3) native = g_multiBurstBridge.Publish(index, binding->second, ctrl, slot.time, frame,
-			slot.beforeQuartz, slot.sleeveDiagnostics);
+			slot.beforeQuartz, slot.sleeveDiagnostics, filterSceneForces);
 		else if (legacyOwner) native = g_burstBridge.Publish(binding->second, ctrl, slot.time, frame,
-			slot.beforeQuartz, slot.sleeveDiagnostics);
-		if (native && slot.actual == 1) { slot.fallback.Restore(ctrl); slot.fallback.Clear(); }
-		slot.actual = requested == 0 ? 0 : native ? 2 : 1;
+			slot.beforeQuartz, slot.sleeveDiagnostics, filterSceneForces);
+		const std::string multiUnavailableReason = g_multiBurstBridge.reason.empty()
+			? std::string("fallback_legacy_bridge_master_only")
+			: ("fallback_legacy_bridge_master_only (" + g_multiBurstBridge.reason + ")");
+		const std::string reason = requested == 0 ? "off" : requested == 1 ? "fallback" :
+			useV3 ? g_multiBurstBridge.State(index).reason : legacyOwner ? g_burstBridge.reason : multiUnavailableReason;
+		const bool pending = IsNativePhysicsPending(requested, reason);
+		// Photography keeps its game graph running while we await native consumption.
+		const bool waitForNative = filterSceneForces && pending;
+		const int actual = requested == 0 || waitForNative ? 0 : native ? 2 : 1;
+		if (slot.actual == 1 && actual != 1) slot.fallback.Restore(ctrl);
+		slot.actual = actual;
+		SyncFallbackAnimatorMute(ctrl, actor, binding->second, !native && !pending);
 		if (slot.actual == 1) slot.fallback.Publish(binding->second, ctrl, dt, frame);
 		const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - dispatchBegin).count();
 		auto& d = slot.diagnostic;
@@ -356,12 +364,6 @@
 		d.native_solver_calls = bridgePerf.solver_calls; d.native_solver_total_ns = bridgePerf.solver_total_ns;
 		d.bridge_failures = bridgePerf.failed_passes; d.bridge_expired_skips = bridgePerf.expired_skips;
 		d.bridge_identity_skips = bridgePerf.identity_skips;
-		const std::string multiUnavailableReason = g_multiBurstBridge.reason.empty()
-			? std::string("fallback_legacy_bridge_master_only")
-			: ("fallback_legacy_bridge_master_only (" + g_multiBurstBridge.reason + ")");
-		const std::string reason = requested == 0 ? "off" : requested == 1 ? "fallback" :
-			useV3 ? g_multiBurstBridge.State(index).reason : legacyOwner ? g_burstBridge.reason : multiUnavailableReason;
-		SyncFallbackAnimatorMute(ctrl, actor, binding->second, requested, native, reason);
 		const bool paused = core.player.state == GakuMotion::PlaybackState::Paused && !core.player.scrubbing;
 		if (!paused || timelineDiscontinuity) slot.pausedSampleBackend = -1;
 		// The last worker pass can still refer to a playing frame when Pause arrives.
@@ -370,12 +372,14 @@
 		{
 			g_hostContext.logInfo(
 				"[GakuMotion][Physics] paused slot=%zu clip=%.3f actual=%d simulation_dt=%.6f "
-				"stream_frame=%d stream_dt=%.6f animator_muted=%d",
+				"stream_frame=%d stream_dt=%.6f animator_muted=%d filter_scene_forces=%d bridge=%.*s",
 				index, slot.time, slot.actual, dt, native ? bridgeStatus.source_frame : -1,
-				native ? bridgeStatus.delta_time : 0.f, ctrl.IsAnimatorMuted(actor) ? 1 : 0);
+				native ? bridgeStatus.delta_time : 0.f, ctrl.IsAnimatorMuted(actor) ? 1 : 0,
+				filterSceneForces ? 1 : 0, static_cast<int>(sizeof(bridgeStatus.detail)), bridgeStatus.detail);
 			slot.pausedSampleBackend = slot.actual;
 		}
-		core.formation.slots[index].physicsBackend = native ? "native" : slot.actual == 0 ? "off" : "fallback: " + reason;
+		core.formation.slots[index].physicsBackend = native ? "native" : waitForNative ? "native pending: " + reason :
+			slot.actual == 0 ? "off" : "fallback: " + reason;
 		if (slot.reason != reason)
 		{
 			slot.reason = reason;

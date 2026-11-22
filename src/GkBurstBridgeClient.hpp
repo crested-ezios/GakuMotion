@@ -11,6 +11,7 @@ namespace GakuMotion
 	class BurstBridgeClient
 	{
 		HMODULE module_{};
+		bool supportsSceneForceFilter_{};
 		GbbApi api_{};
 		std::wstring path_;
 		bool attempted_{};
@@ -202,12 +203,13 @@ namespace GakuMotion
 				return false;
 			}
 			api_ = next;
+			supportsSceneForceFilter_ = GetProcAddress(module_, "GakuBurstBridge_SupportsSceneForceFilter") != nullptr;
 			reason = "discovering";
 			return true;
 		}
 
 		bool Publish(const IdolBoneBinding& b, const IdolController& ctrl, float time, int frame,
-		             bool beforeQuartz = false, bool sleeveDiagnostics = false)
+		             bool beforeQuartz = false, bool sleeveDiagnostics = false, bool filterSceneForces = false)
 		{
 			if (!Ensure()) return false;
 			if (faulted_) return false;
@@ -228,6 +230,7 @@ namespace GakuMotion
 			packet.flags = GBB_FRAME_INJECT;
 			if (beforeQuartz) packet.flags |= GBB_FRAME_BEFORE_QUARTZ;
 			if (sleeveDiagnostics) packet.flags |= GBB_FRAME_SLEEVE_DIAGNOSTICS;
+			if (filterSceneForces && supportsSceneForceFilter_) packet.flags |= GBB_FRAME_NO_SCENE_FORCES;
 			packet.actor = b.actor;
 			packet.animator = b.cachedAnimator;
 			packet.clip_time = time;
@@ -270,9 +273,8 @@ namespace GakuMotion
 					std::chrono::milliseconds(100))
 				{
 					// A main-thread hitch may expire the preceding packet before
-					// a job can consume the fresh one just published above. Use
-					// fallback for this frame, leaving that packet queued so a
-					// subsequent real pass can recover without resetting a fault.
+					// a job can consume the fresh one just published above.
+					// Leave it queued so the next job can confirm consumption.
 					reason = "native_pending_stale";
 					return false;
 				}

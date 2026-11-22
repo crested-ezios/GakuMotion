@@ -23,6 +23,7 @@ public:
     };
 private:
     HMODULE module_{}; GbbApiV3 api_{}; GbbConfig config_{};
+    bool supportsSceneForceFilter_{};
     std::wstring path_; bool attempted_{},stopped_{};
     std::deque<Slot> slots_{};
     static HMODULE Load(const wchar_t* path) {
@@ -100,10 +101,12 @@ public:
         if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_PIN,
             reinterpret_cast<LPCWSTR>(&Load),&pinned)) { reason="client_pin_failed"; return false; }
         if (ConfigureApi(next,&config_)!=GBB_OK) { reason="companion_configure_failed"; return false; }
-        api_=next; reason="discovering"; return true;
+        api_=next;
+        supportsSceneForceFilter_=GetProcAddress(module_,"GakuBurstBridge_SupportsSceneForceFilter")!=nullptr;
+        reason="discovering"; return true;
     }
     bool Publish(size_t index,const IdolBoneBinding& binding,const IdolController& ctrl,float time,int frame,
-        bool quartz=false,bool diagnostics=false) {
+        bool quartz=false,bool diagnostics=false,bool filterSceneForces=false) {
         if (!Ensure()) return false;
         if (slots_.size() <= index) slots_.resize(index + 1);
         auto& slot=slots_[index]; if (slot.faulted) return false;
@@ -126,6 +129,7 @@ public:
         packet.clip_time=time; packet.unity_frame=frame; packet.flags=GBB_FRAME_INJECT;
         if (quartz) packet.flags|=GBB_FRAME_BEFORE_QUARTZ;
         if (diagnostics) packet.flags|=GBB_FRAME_SLEEVE_DIAGNOSTICS;
+        if (filterSceneForces && supportsSceneForceFilter_) packet.flags|=GBB_FRAME_NO_SCENE_FORCES;
         for (size_t i=0;i<binding.boneTransforms.size() && packet.bone_count<GBB_MAX_BONES;++i) {
             if (!binding.boneTransforms[i] || i>=binding.boneHids.size()) continue;
             auto& pose=packet.bones[packet.bone_count++];

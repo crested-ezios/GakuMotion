@@ -207,8 +207,10 @@ static void RunActorPhysicsAndProbes(
 {
 	if (!core.formation.active && HasEnsemblePhysics())
 		for (size_t i = 0; i < g_ensemblePhysics.size(); ++i) ClearEnsemblePhysicsSlot(i, true);
+	const bool filterSceneForces = g_sceneOwner.AllowedContext() == GakuMotion::injection::Context::Photography;
 	if (core.formation.active)
-		DispatchEnsemblePhysics(core, activeActor, unityFrame >= 0 ? unityFrame : fallbackFrame, realDeltaTime, bodyBegin);
+		DispatchEnsemblePhysics(core, activeActor, unityFrame >= 0 ? unityFrame : fallbackFrame, realDeltaTime, bodyBegin,
+			filterSceneForces);
 	else if (core.IsTargetActor(activeActor))
 	{
 		auto binding = player.controller.bindings.find(activeActor);
@@ -271,13 +273,14 @@ static void RunActorPhysicsAndProbes(
 			bool native = requested == 2 && g_burstBridge.Publish(binding->second, player.controller,
 			                                                      player.currentTime, frame,
 			                                                      core.config.beforeQuartzExperiment,
-			                                                      core.config.sleeveMuscleDiagnostics);
-			if (native && g_physicsActual == 1)
-			{
-				g_fallbackPhysics.Restore(player.controller);
-				g_fallbackPhysics.Clear();
-			}
-			g_physicsActual = requested == 0 ? 0 : native ? 2 : 1;
+			                                                      core.config.sleeveMuscleDiagnostics, filterSceneForces);
+			const std::string reason = requested == 2 ? g_burstBridge.reason : requested == 1 ? "fallback" : "off";
+			const bool pending = IsNativePhysicsPending(requested, reason);
+			const bool waitForNative = filterSceneForces && pending;
+			const int actual = requested == 0 || waitForNative ? 0 : native ? 2 : 1;
+			if (g_physicsActual == 1 && actual != 1) g_fallbackPhysics.Restore(player.controller);
+			g_physicsActual = actual;
+			SyncFallbackAnimatorMute(player.controller, activeActor, binding->second, !native && !pending);
 			if (g_physicsActual == 1)
 			{
 				// Original engine jobs have completed at this LateUpdate callback.
@@ -318,8 +321,6 @@ static void RunActorPhysicsAndProbes(
 			d.bridge_failures = perf.failed_passes;
 			d.bridge_expired_skips = perf.expired_skips;
 			d.bridge_identity_skips = perf.identity_skips;
-			const std::string reason = requested == 2 ? g_burstBridge.reason : requested == 1 ? "fallback" : "off";
-			SyncFallbackAnimatorMute(player.controller, activeActor, binding->second, requested, native, reason);
 			if (reason != g_physicsReason)
 			{
 				g_physicsReason = reason;

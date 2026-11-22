@@ -5,7 +5,7 @@
 #include "GkGmlClient.hpp"
 #include "GakuPhysicsDiagnostics.h"
 namespace MultiBridgeFixture {
-    struct Context { GbbContext token{}; GbbStatus status{}; unsigned publishes{},clears{},destroys{}; };
+    struct Context { GbbContext token{}; GbbStatus status{}; unsigned publishes{},clears{},destroys{}; uint32_t flags{}; };
     inline std::array<Context,8> contexts;
     inline uint64_t next=1;
     inline int fail=-1, stale=-1;
@@ -23,6 +23,7 @@ namespace MultiBridgeFixture {
     inline int GBB_CALL Publish(GbbContext token,const GbbFrame* frame) {
         auto* c=Find(token); if (!c) return GBB_E_CONTEXT;
         const auto index=static_cast<int>(c-contexts.data()); ++c->publishes;
+        c->flags=frame->flags;
         if (index==fail) return GBB_E_FAULT;
         for (const auto& other : contexts) {
             if (&other == c || !other.token || other.status.actor != frame->actor) continue;
@@ -51,6 +52,9 @@ namespace MultiBridgeFixture {
 }
 namespace GakuMotion {
     struct BurstBridgeMultiClientTestAccess {
+        static void SetSceneForceFilterSupported(BurstBridgeMultiClient& client) {
+            client.supportsSceneForceFilter_=true;
+        }
         static void Install(BurstBridgeMultiClient& client) {
             using namespace MultiBridgeFixture;
             contexts={}; next=1; fail=stale=-1; refuseClear=refuseDestroy=false; shutdowns=0;
@@ -81,6 +85,15 @@ static void TestBurstBridgeMultiClient() {
     }
     const auto a=client.State(0).token,b=client.State(1).token,c=client.State(2).token;
     Check(a && b && c && a!=b && b!=c && a!=c,"three actors have distinct opaque context tokens");
+    Check(client.Publish(0,bindings[0],ctrl,1.f,60,false,false,true) &&
+        !(Find(a)->flags & GBB_FRAME_NO_SCENE_FORCES),
+        "older v3 bridge never receives an unknown flag");
+    BurstBridgeMultiClientTestAccess::SetSceneForceFilterSupported(client);
+    Check(client.Publish(0,bindings[0],ctrl,1.f,60,false,false,true) &&
+        (Find(a)->flags & GBB_FRAME_NO_SCENE_FORCES),
+        "supported bridge receives a filter request only for the selected actor packet");
+    Check(client.Publish(0,bindings[0],ctrl,1.f,60) && !(Find(a)->flags & GBB_FRAME_NO_SCENE_FORCES),
+        "an unfiltered frame does not inherit the previous filter request");
     Check(!client.Publish(5,bindings[2],ctrl,1.f,60) && client.State(5).faulted &&
         client.State(5).reason.find("Actor double fingerprint aliases another context") != std::string::npos,
         "duplicate native ownership fails closed and keeps the bridge rejection detail");
@@ -98,7 +111,7 @@ static void TestBurstBridgeMultiClient() {
     Check(client.Publish(1,bindings[1],ctrl,1.2f,62) && client.State(1).token!=b,"a lifecycle reset negotiates a fresh context");
     stale=0;
     Check(!client.Publish(0,bindings[0],ctrl,2.f,120) && client.State(0).reason=="native_pending_stale" && !client.State(0).faulted,
-        "stale native consumption falls back without resetting another context");
+        "stale native consumption reports pending without resetting another context");
     stale=-1;
     Check(client.Publish(0,bindings[0],ctrl,2.f,121),"fresh native consumption recovers after a scheduling skip");
     refuseDestroy=true;
@@ -147,8 +160,8 @@ namespace EnsemblePhysicsRuntimeFixture {
             binding.bindPoseCaptured = true;
         }
         BurstBridgeMultiClientTestAccess::Install(g_multiBurstBridge);
-        const auto publish = [&](size_t actorIndex, int frame) {
-            DispatchEnsemblePhysics(core, &actors[actorIndex], frame, 1.f / 60.f, std::chrono::steady_clock::now());
+        const auto publish = [&](size_t actorIndex, int frame, bool photography = false) {
+            DispatchEnsemblePhysics(core, &actors[actorIndex], frame, 1.f / 60.f, std::chrono::steady_clock::now(), photography);
         };
         for (size_t i = 0; i < actors.size(); ++i) publish(i, 60);
         const auto slot1 = g_multiBurstBridge.State(0).token;
@@ -184,6 +197,29 @@ namespace EnsemblePhysicsRuntimeFixture {
         publish(2, 63);
         Check(!Find(priorToken) && g_ensemblePhysics[1].actual == 2 && g_ensemblePhysics[2].actual == 2,
             "successful retirement retry admits both actors");
+
+        stale = 0;
+        publish(0, 70, true);
+        Check(g_ensemblePhysics[0].actual == 0 && g_ensemblePhysics[0].fallback.GetStats().frames == 0 &&
+            !core.TrackForSlot(0)->controller.fallbackMuteAnimator && g_multiBurstBridge.State(0).token == slot1 &&
+            core.formation.slots[0].physicsBackend == "native pending: native_pending_stale",
+            "pending native jobs in Photography keep the game graph active without running fallback");
+        stale = -1;
+        publish(0, 71, true);
+        Check(g_ensemblePhysics[0].actual == 2 && g_ensemblePhysics[0].fallback.GetStats().frames == 0,
+            "fresh native consumption resumes without a fallback write");
+        stale = 0;
+        publish(0, 77);
+        Check(g_ensemblePhysics[0].actual == 1 && g_ensemblePhysics[0].fallback.GetStats().frames == 1 &&
+            !core.TrackForSlot(0)->controller.fallbackMuteAnimator,
+            "pending native jobs outside Photography retain their existing fallback behavior");
+        stale = -1;
+        publish(0, 78);
+        fail = 0;
+        publish(0, 79, true);
+        Check(g_ensemblePhysics[0].actual == 1 && g_ensemblePhysics[0].fallback.GetStats().frames == 2 &&
+            core.TrackForSlot(0)->controller.fallbackMuteAnimator,
+            "a rejected native job in Photography activates the existing muted fallback");
         ClearSecondaryPhysics(true);
     }
 }
