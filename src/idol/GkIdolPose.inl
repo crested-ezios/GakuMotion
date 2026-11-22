@@ -57,7 +57,7 @@ namespace GakuMotion
 		b.face.enableMikuMouthFit = facialMikuMouthFit;
 		b.face.enableMikuEyeFit = facialMikuEyeFit;
 		b.face.facialFitAllowUnverified = facialMikuFitAllowUnverified;
-		b.face.Apply(b.actor, clip, facialTimeSeconds, faceApi);
+		b.face.Apply(b.actor, clip, facialTimeSeconds, faceApi, b.animatorControllerDetached || b.animatorWasDisabled);
 		// Roles come from the binding, never from pointer arithmetic on the
 		// compiled table: an external profile has no home there.
 		const unsigned fittedRole = b.face.fitRole;

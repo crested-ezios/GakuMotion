@@ -89,6 +89,9 @@ namespace GakuMotion
 		std::vector<float> ownedSavedWeights;
 		bool written{false};
 		bool ownsEyes{false};
+		bool boundIdleBlinkEnabled{false};
+		int idleBlinkIndex{-1};
+		std::chrono::steady_clock::time_point idleBlinkSince{};
 		void* facial{nullptr};
 		bool blinkCaptured{false}, blinkSuppressed{false};
 		bool savedUseBlink{false}, savedAutoDisabled{false};
@@ -247,7 +250,7 @@ namespace GakuMotion
 		// Capture the original face BEFORE Animator detach/disable/Rebind. New
 		// bindings only read; identity changes first release any existing ownership.
 		// Reused after Stop even when the bone binding itself remains valid.
-		void Prepare(void* actor, const MotionClip& clip, const FaceApi& api)
+		void Prepare(void* actor, const MotionClip& clip, const FaceApi& api, bool enableIdleBlink = false)
 		{
 			if (!api.Ready()) return;
 			facial_fit::Ensure();
@@ -255,7 +258,7 @@ namespace GakuMotion
 			if (current != model || boundClip != &clip || names != clip.blendshape_names || boundCharacterOverride != characterOverride ||
 				boundMikuMouthFit != enableMikuMouthFit || boundMikuEyeFit != enableMikuEyeFit ||
 				boundFacialFitAllowUnverified != facialFitAllowUnverified ||
-				boundFacialFitGeneration != facial_fit::generation)
+				boundFacialFitGeneration != facial_fit::generation || boundIdleBlinkEnabled != enableIdleBlink)
 			{
 				// Preserve this observer frame across the binding reset. Stop() still
 				// clears it, so an old write cannot masquerade as active playback.
@@ -275,11 +278,12 @@ namespace GakuMotion
 				diagnosticTime = clipTime;
 				diagnosticUnityFrame = unityFrame;
 				diagnosticModel = current;
-				if (!current || clip.blendshape_names.empty()) return;
+				if (!current || (clip.blendshape_names.empty() && !enableIdleBlink)) return;
 				const int count = api.getCount(current);
 				if (count <= 0 || count > 1024) return;
 				model = current;
 				boundClip = &clip;
+				boundIdleBlinkEnabled = enableIdleBlink;
 				names = clip.blendshape_names;
 				boundCharacterOverride = characterOverride;
 				boundMikuMouthFit = enableMikuMouthFit;
@@ -353,6 +357,23 @@ namespace GakuMotion
 					if (enableMikuMouthFit && externalFit.mouthClaim) families |= 4;
 					if (enableMikuEyeFit && externalFit.eyeClaim) { families |= 3; ownsEyes = true; }
 				}
+				if (enableIdleBlink && !ownsEyes &&
+				    std::count(modelNames.begin(), modelNames.end(), "b_eye.eye_001") == 1)
+				{
+					const bool authoredEyes = std::any_of(names.begin(), names.end(), [](const std::string& name) {
+						const auto* semantic = FacialSemantic(name);
+						if (name.starts_with("b_eye.") || (semantic && semantic->family == 2)) return true;
+						return name.starts_with(kMikuRawEyePrefix) &&
+							std::none_of(std::begin(kMikuRawEyeMarkers), std::end(kMikuRawEyeMarkers),
+								[&](const char* marker) { return name == marker; });
+					});
+					if (!authoredEyes) {
+						idleBlinkIndex = static_cast<int>(std::find(modelNames.begin(), modelNames.end(),
+							"b_eye.eye_001") - modelNames.begin());
+						families |= 2;
+						ownsEyes = true;
+					}
+				}
 				for (int j = 0; j < count; ++j)
 				{
 					const auto found = std::find(names.begin(), names.end(), modelNames[j]);
@@ -376,7 +397,15 @@ namespace GakuMotion
 			if (model) CaptureBlink(actor, api);
 		}
 
-		void Apply(void* actor, const MotionClip& clip, float time, const FaceApi& api)
+		static float IdleBlinkWeight(float seconds)
+		{
+			const float phase = std::fmod(seconds, 3.7f);
+			if (phase < 3.5f) return 0.f;
+			const float elapsed = phase - 3.5f;
+			return std::clamp(elapsed < .075f ? elapsed / .075f : (0.2f - elapsed) / .125f, 0.f, 1.f);
+		}
+
+		void Apply(void* actor, const MotionClip& clip, float time, const FaceApi& api, bool enableIdleBlink = false)
 		{
 			mikuFitDecision = !enableMikuMouthFit ? MikuFitDecision::Disabled
 				: HasMikuRawSource(clip.blendshape_names) ? MikuFitDecision::UnknownFace : MikuFitDecision::MissingRawSource;
@@ -412,9 +441,15 @@ namespace GakuMotion
 				diagnosticModel = current;
 				diagnosticStatus = current ? GAKU_FACE_COUNT_INVALID : GAKU_FACE_MODEL_MISSING;
 			}
-			Prepare(actor, clip, api);
+			Prepare(actor, clip, api, enableIdleBlink);
 			if (!model) return;
 			SuppressBlink(actor, api);
+			float idleBlink = 0.f;
+			if (idleBlinkIndex >= 0) {
+				const auto now = std::chrono::steady_clock::now();
+				if (idleBlinkSince == std::chrono::steady_clock::time_point{}) idleBlinkSince = now;
+				idleBlink = IdleBlinkWeight(std::chrono::duration<float>(now - idleBlinkSince).count());
+			}
 			if (observe) diagnosticStatus = GAKU_FACE_BOUND;
 			std::vector<float> weights;
 			clip.SampleBlendshapes(time, weights);
@@ -453,7 +488,9 @@ namespace GakuMotion
 			for (size_t i = 0; i < ownedIndices.size(); ++i)
 			{
 				const int slot = ownedClipSlots[i];
-				const float target = NativeWeight(facialWeights.Apply(ownedNames[i], adapted[i]));
+				const bool idleEye = idleBlinkIndex >= 0 && ExpressionFamily(ownedNames[i]) == 2;
+				const float target = idleEye ? NativeWeight(ownedIndices[i] == idleBlinkIndex ? idleBlink : 0.f)
+					: NativeWeight(facialWeights.Apply(ownedNames[i], adapted[i]));
 				size_t diagnosticSlot = slot >= 0 ? static_cast<size_t>(slot) : diagnosticChannels.size();
 				if (observe && slot < 0 && diagnosticChannels.size() < GAKU_FACE_DIAGNOSTICS_CAPACITY)
 				{

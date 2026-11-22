@@ -83,7 +83,7 @@ namespace GakuMotion
 			existing.face.enableMikuMouthFit = facialMikuMouthFit;
 			existing.face.enableMikuEyeFit = facialMikuEyeFit;
 			existing.face.facialFitAllowUnverified = facialMikuFitAllowUnverified;
-			existing.face.Prepare(actor, clip, faceApi);
+			existing.face.Prepare(actor, clip, faceApi, !PreserveAnimatorForSecondaryPhysics() && (animator || existing.cachedAnimator));
 			currentBinding = it->second;
 			return;
 		}
@@ -106,7 +106,7 @@ namespace GakuMotion
 		b.face.enableMikuMouthFit = facialMikuMouthFit;
 		b.face.enableMikuEyeFit = facialMikuEyeFit;
 		b.face.facialFitAllowUnverified = facialMikuFitAllowUnverified;
-		b.face.Prepare(actor, clip, faceApi);
+		b.face.Prepare(actor, clip, faceApi, !PreserveAnimatorForSecondaryPhysics() && animator);
 		if (animator) b.cachedAnimator = animator;
 		cachedAnimator = b.cachedAnimator;
 
