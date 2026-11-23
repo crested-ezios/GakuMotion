@@ -1,7 +1,7 @@
 {
   "name": "gakumotion-ui",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.2.0-beta.1",
   "type": "module",
   "description": "GakuMotion plugin panel UI (WebView2 + React) hosted inside the GakuLoader plugin content area.",
   "scripts": {

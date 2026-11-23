@@ -266,7 +266,7 @@ extern "C" GAKU_PLUGIN_EXPORT GakuStatus GakuPlugin_Query(
 	if (!output) return GAKU_E_INVALID_ARGUMENT;
 	if (outputSize < sizeof(GakuPluginDescriptor)) return GAKU_E_SIZE;
 	const GakuPluginDescriptor descriptor{GAKU_ABI_VERSION, sizeof(GakuPluginDescriptor),
-		"gakumotion", "GakuMotion", "0.1.1",
+		"gakumotion", "GakuMotion", "0.2.0-beta.1",
 		MotionActivate, MotionRuntimeReady, MotionTick, MotionActorTick,
 #if defined(GKMOTION_ENABLE_IMGUI) || defined(HAS_IMGUI)
 		RenderGmlMotion,
@@ -308,7 +308,7 @@ extern "C" GAKU_PLUGIN_EXPORT GakuStatus GakuPlugin_QueryMetadata(
 		0u,
 		kMaintainers,
 		"",
-		"stable",
+		"beta",
 		"Custom VMD/motion playback, facial retargeting, camera, and stage studio plugin for GakuLoader.",
 		static_cast<uint32_t>(std::size(kLocalizedSummaries)),
 		0u,

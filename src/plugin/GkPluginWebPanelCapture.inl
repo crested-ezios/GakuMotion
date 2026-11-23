@@ -341,7 +341,7 @@
 		hooks.captureScreenshot = WebPanelCaptureScreenshot;
 		hooks.getAudioEffectsState = WebPanelGetAudioEffectsState;
 		hooks.setAudioEffectPreset = WebPanelSetAudioEffectPreset;
-		hooks.pluginVersion = "0.1.1";
+		hooks.pluginVersion = "0.2.0-beta.1";
 		return hooks;
 	}
 

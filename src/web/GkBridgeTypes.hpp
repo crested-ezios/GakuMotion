@@ -117,7 +117,7 @@ namespace GakuMotion::webpanel
 		std::function<ScreenshotCaptureView()> captureScreenshot;
 		std::function<AudioEffectState()> getAudioEffectsState;
 		std::function<bool(const std::string& presetId, std::string& error)> setAudioEffectPreset;
-		std::string pluginVersion{"0.1.1"};
+		std::string pluginVersion{"0.2.0-beta.1"};
 	};
 
 	// -------------------------------------------------------------------------
