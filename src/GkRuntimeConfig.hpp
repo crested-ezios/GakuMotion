@@ -93,11 +93,11 @@ namespace GakuMotion
 		// Native is preferred by default. It requires the optional
 		// companion DLL and otherwise uses fallback; no private ABI lives here.
 		int secondaryPhysicsBackend{2}; // 0=off, 1=fallback, 2=native
-		bool beforeQuartzExperiment{false}; // Explicit opt-in; omission returns to OFF.
+		bool beforeQuartzExperiment{true}; // Internalized always-on for native injection.
 		bool sleeveMuscleDiagnostics{false}; // Bounded read-only native-reader samples.
 		int overridesEnabled{-1}; // 三态
 		int auxMode{-1}; // 三态：辅助骨驱动模式 0=normal 1=silence 2=identity 3=replay
-		int experimentalWaistSupport{1}; // default-on Waist_H geometry; missing preserves session state
+		int experimentalWaistSupport{1}; // Internalized always-on Waist_H geometry.
 		int muteNativeSoundEffects{-1}; // 三态：-1 未设置(默认开启), 0 关, 1 开
 		std::string overrideGlobalFile; // 可选自定义全局覆盖文件
 		std::string overrideMotionFile; // 可选自定义曲目覆盖文件

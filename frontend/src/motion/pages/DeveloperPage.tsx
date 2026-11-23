@@ -53,7 +53,7 @@ function ExperimentsTab() {
   const supports = (method: string) => capabilities.includes(method)
   const settings = experiments.settings
   return (
-    <PropertySection title="动作实验与视线控制" description="Miku 表情拟合、腰部支撑与眼部/头部追焦实验参数" divided={false} bodyClassName="p-3.5">
+    <PropertySection title="动作实验与视线控制" description="Miku 表情拟合与眼部/头部追焦实验参数" divided={false} bodyClassName="p-3.5">
       <div className="space-y-4">
         <div className="space-y-2">
           <p className="text-sm font-medium">Miku 拟合</p>
@@ -76,22 +76,6 @@ function ExperimentsTab() {
         </div>
         <Separator />
         <div className="space-y-2">
-          <label className="flex items-center gap-2 text-sm">
-            <Checkbox
-              checked={settings.waistSupport}
-              disabled={!supports('experiments.set')}
-              onCheckedChange={(checked) => void motionStore.setExperiment({ waistSupport: checked === true })}
-            />
-            腰部支撑
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <Checkbox
-              checked={settings.beforeQuartz}
-              disabled={!supports('experiments.set')}
-              onCheckedChange={(checked) => void motionStore.setExperiment({ beforeQuartz: checked === true })}
-            />
-            BeforeQuartz
-          </label>
           <div className="space-y-1 pt-1">
             <label className="flex items-center gap-2 text-sm">
               <Checkbox

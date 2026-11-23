@@ -1025,17 +1025,9 @@ namespace GakuMotion
 			};
 
 			// ---- 配置页回调 ----
-			ctx.fnSetExperimentalWaistSupport = [](void* self, bool enabled)
-			{
-				static_cast<MockGuiState*>(self)->experimentalWaistSupport = enabled;
-			};
 			ctx.fnSetPhysicsBackend = [](void* self, int backend)
 			{
 				static_cast<MockGuiState*>(self)->physicsBackend = backend;
-			};
-			ctx.fnSetBeforeQuartzExperiment = [](void* self, bool enabled)
-			{
-				static_cast<MockGuiState*>(self)->beforeQuartzExperiment = enabled;
 			};
 
 			return ctx;

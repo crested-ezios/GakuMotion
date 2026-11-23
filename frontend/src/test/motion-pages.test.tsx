@@ -72,6 +72,8 @@ describe('DeveloperPage', () => {
   it('defaults muteNativeSoundEffects on and toggles it via experiments.set', async () => {
     const user = userEvent.setup()
     render(<DeveloperPage />)
+    expect(screen.queryByRole('checkbox', { name: '腰部支撑' })).toBeNull()
+    expect(screen.queryByRole('checkbox', { name: 'BeforeQuartz' })).toBeNull()
     const checkbox = screen.getByRole('checkbox', { name: '播放 MMD 时屏蔽游戏音效（默认开启）' })
     expect(checkbox).toBeChecked()
     await user.click(checkbox)

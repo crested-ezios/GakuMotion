@@ -2198,12 +2198,14 @@ static void TestSecondaryPhysicsConfig()
 	core.config.Reload();
 	Check(core.config.preserveAnimatorForSecondaryPhysics == 0, "generated template keeps experiment off");
 	Check(core.config.secondaryPhysicsBackend == 2, "native is the default backend");
-	Check(!core.config.beforeQuartzExperiment && !core.config.sleeveMuscleDiagnostics,
-	      "generated template keeps BeforeQuartz and reader diagnostics off");
-	WriteTextFile(file, R"({"secondary_physics":{"before_quartz_experiment":true,"sleeve_muscle_diagnostics":true},"command":{"seq":1,"burst_trace":true}})");
+	Check(core.config.beforeQuartzExperiment && !core.config.sleeveMuscleDiagnostics,
+	      "generated template internalizes BeforeQuartz on native while keeping reader diagnostics off");
+	Check(RuntimeConfig::DefaultTemplate().find("before_quartz_experiment") == std::string::npos,
+	      "generated template omits obsolete before_quartz_experiment toggle");
+	WriteTextFile(file, R"({"secondary_physics":{"before_quartz_experiment":false,"sleeve_muscle_diagnostics":true},"command":{"seq":1,"burst_trace":true}})");
 	core.config.Reload();
 	Check(core.config.beforeQuartzExperiment && core.config.sleeveMuscleDiagnostics,
-	      "explicit boolean opt-in enables the two independent experiment flags");
+	      "native backend keeps internalized BeforeQuartz enabled even if stale config has false");
 	core.ConsumeConfigCommands();
 	Check(core.burstTraceRequestedSeq == 1 && !core.config.HasPendingCommands(),
 	      "bounded trace request survives command consumption for main-thread dispatch");
@@ -2213,14 +2215,14 @@ static void TestSecondaryPhysicsConfig()
 	Check(core.burstTraceRequestedSeq == 0, "same trace sequence cannot replay");
 	WriteTextFile(file, R"({"secondary_physics":{"before_quartz_experiment":"true","sleeve_muscle_diagnostics":1}})");
 	core.config.Reload();
-	Check(!core.config.beforeQuartzExperiment && !core.config.sleeveMuscleDiagnostics,
-	      "invalid types fail closed instead of retaining enabled experiment flags");
-	WriteTextFile(file, R"({"secondary_physics":{"before_quartz_experiment":true,"sleeve_muscle_diagnostics":true}})");
+	Check(core.config.beforeQuartzExperiment && !core.config.sleeveMuscleDiagnostics,
+	      "invalid sleeve diagnostics type fails closed while native BeforeQuartz remains internalized");
+	WriteTextFile(file, R"({"secondary_physics":{"sleeve_muscle_diagnostics":true}})");
 	core.config.Reload();
 	WriteTextFile(file, R"({"secondary_physics":{"backend":"native"}})");
 	core.config.Reload();
-	Check(!core.config.beforeQuartzExperiment && !core.config.sleeveMuscleDiagnostics,
-	      "removing explicit experiment keys restores the original native path");
+	Check(core.config.beforeQuartzExperiment && !core.config.sleeveMuscleDiagnostics,
+	      "removing diagnostics key restores clean native path with internalized BeforeQuartz");
 	core.ApplyDeclarativeConfig();
 	Check(core.config.secondaryPhysicsBackend == 2, "native backend selection is retained");
 	Check(core.player.controller.preserveAnimatorForSecondaryPhysics, "native keeps original solver graph running");
@@ -2242,52 +2244,43 @@ static void TestSecondaryPhysicsConfig()
 	core.ProcessPendingGuiCommands();
 	Check(core.config.secondaryPhysicsBackend == 2 && core.player.controller.preserveAnimatorForSecondaryPhysics &&
 	      core.guiPhysicsBackend.load() == 2, "GUI native selection applies graph policy and published selection");
-	Check(!core.guiBeforeQuartzExperiment.load(), "GUI BeforeQuartz starts disabled");
-	core.QueueBeforeQuartzExperiment(true);
-	Check(!core.config.beforeQuartzExperiment && !core.guiBeforeQuartzExperiment.load(),
-	      "GUI BeforeQuartz callback only queues until Unity main-thread processing");
-	core.ProcessPendingGuiCommands();
 	Check(core.config.beforeQuartzExperiment && core.guiBeforeQuartzExperiment.load(),
-	      "GUI BeforeQuartz opt-in applies and republishes the native experiment");
+	      "native backend automatically enables internalized BeforeQuartz");
 	core.QueueBeforeQuartzExperiment(false);
 	core.ProcessPendingGuiCommands();
-	Check(!core.config.beforeQuartzExperiment && !core.guiBeforeQuartzExperiment.load(),
-	      "GUI BeforeQuartz can return to the original native input path");
-	core.QueueBeforeQuartzExperiment(true);
-	core.ProcessPendingGuiCommands();
+	Check(core.config.beforeQuartzExperiment && core.guiBeforeQuartzExperiment.load(),
+	      "BeforeQuartz stays enforced ON for native backend");
 	core.QueuePhysicsBackend(1);
 	core.ProcessPendingGuiCommands();
 	Check(core.config.secondaryPhysicsBackend == 1 && !core.player.controller.preserveAnimatorForSecondaryPhysics,
 	      "GUI SpringBone selection releases native graph policy");
 	Check(!core.config.beforeQuartzExperiment && !core.guiBeforeQuartzExperiment.load(),
-	      "leaving native switches BeforeQuartz off and republishes the cleared checkbox");
+	      "leaving native turns off BeforeQuartz internally");
 	core.QueueBeforeQuartzExperiment(true);
 	core.ProcessPendingGuiCommands();
-	Check(!core.config.beforeQuartzExperiment, "queued BeforeQuartz opt-in cannot enable in fallback");
+	Check(!core.config.beforeQuartzExperiment, "BeforeQuartz cannot be turned on in fallback");
 	core.QueuePhysicsBackend(2);
 	core.ProcessPendingGuiCommands();
-	Check(!core.config.beforeQuartzExperiment, "returning to native does not restore an earlier opt-in");
+	Check(core.config.beforeQuartzExperiment && core.guiBeforeQuartzExperiment.load(),
+	      "returning to native automatically restores internalized BeforeQuartz");
 	core.QueuePhysicsBackend(1);
 	core.QueueBeforeQuartzExperiment(true);
 	core.ProcessPendingGuiCommands();
 	Check(!core.config.beforeQuartzExperiment,
-	      "stale GUI enable after a queued backend switch remains fail closed");
+	      "leaving native keeps BeforeQuartz off");
 	core.QueuePhysicsBackend(99);
 	core.ProcessPendingGuiCommands();
 	Check(core.config.secondaryPhysicsBackend == 1, "invalid GUI backend cannot alter current selection");
-	WriteTextFile(file, R"({"secondary_physics":{"backend":"native","before_quartz_experiment":true}})");
+	WriteTextFile(file, R"({"secondary_physics":{"backend":"native","before_quartz_experiment":false}})");
 	core.config.Reload();
 	core.ApplyDeclarativeConfig();
-	Check(core.guiBeforeQuartzExperiment.load(), "file opt-in republishes the GUI checkbox");
-	WriteTextFile(file, R"({"secondary_physics":{"backend":"native"}})");
-	core.config.Reload();
-	core.ApplyDeclarativeConfig();
-	Check(!core.guiBeforeQuartzExperiment.load(), "omitted experiment key clears the GUI checkbox on reload");
+	Check(core.config.beforeQuartzExperiment && core.guiBeforeQuartzExperiment.load(),
+	      "native backend ignores stale before_quartz_experiment false");
 	WriteTextFile(file, R"({"secondary_physics":{"backend":"off","before_quartz_experiment":true}})");
 	core.config.Reload();
 	core.ApplyDeclarativeConfig();
 	Check(!core.config.beforeQuartzExperiment && !core.guiBeforeQuartzExperiment.load(),
-	      "declarative physics off cannot retain an enabled BeforeQuartz experiment");
+	      "declarative physics off cannot retain BeforeQuartz");
 	fs::remove(file);
 }
 

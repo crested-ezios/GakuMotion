@@ -244,7 +244,7 @@ export const DEFAULT_EXPERIMENT_SETTINGS: ExperimentSettings = {
   mikuEyeFit: true,
   mikuFitAllowUnverified: false,
   waistSupport: true,
-  beforeQuartz: false,
+  beforeQuartz: true,
   muteNativeSoundEffects: true,
 }
 

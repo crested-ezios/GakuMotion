@@ -241,7 +241,7 @@ namespace GakuMotion
 
 		std::atomic<int> guiPhysicsBackend{2};
 		std::atomic_bool guiTextInputActive{false};
-		std::atomic<bool> guiBeforeQuartzExperiment{false};
+		std::atomic<bool> guiBeforeQuartzExperiment{true};
 		std::atomic<bool> guiExperimentalWaistSupport{true};
 		std::atomic<bool> guiMuteNativeSoundEffects{true};
 

@@ -382,13 +382,14 @@ namespace GakuMotion::webpanel
 		core_.config.facialMikuFitAllowUnverified = allow;
 		if (hasWaist)
 		{
-			core_.guiExperimentalWaistSupport.store(waist);
-			core_.QueueExperimentalWaistSupport(waist);
+			core_.guiExperimentalWaistSupport.store(true);
+			core_.QueueExperimentalWaistSupport(true);
 		}
 		if (hasBeforeQuartz)
 		{
-			core_.guiBeforeQuartzExperiment.store(beforeQuartz);
-			core_.QueueBeforeQuartzExperiment(beforeQuartz);
+			const bool active = core_.guiPhysicsBackend.load() == 2;
+			core_.guiBeforeQuartzExperiment.store(active);
+			core_.QueueBeforeQuartzExperiment(active);
 		}
 		if (hasMuteSe)
 		{
@@ -419,7 +420,8 @@ namespace GakuMotion::webpanel
 		if (!BoolParam(params, "enabled", enabled))
 			return CmdResult::Err("invalid_params", "enabled must be a boolean");
 		std::lock_guard<std::recursive_mutex> lock(core_.stateMutex);
-		core_.QueueExperimentalWaistSupport(enabled);
+		core_.guiExperimentalWaistSupport.store(true);
+		core_.QueueExperimentalWaistSupport(true);
 		return CmdResult::Ok();
 	}
 
@@ -431,7 +433,9 @@ namespace GakuMotion::webpanel
 		std::lock_guard<std::recursive_mutex> lock(core_.stateMutex);
 		if (enabled && core_.guiPhysicsBackend.load() != 2)
 			return CmdResult::Err("invalid_params", "BeforeQuartz 仅在原生注入后端可用");
-		core_.QueueBeforeQuartzExperiment(enabled);
+		const bool active = core_.guiPhysicsBackend.load() == 2;
+		core_.guiBeforeQuartzExperiment.store(active);
+		core_.QueueBeforeQuartzExperiment(active);
 		return CmdResult::Ok();
 	}
 } // namespace GakuMotion::webpanel

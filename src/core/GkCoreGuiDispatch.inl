@@ -153,11 +153,11 @@ namespace GakuMotion
 					experimentalSolePitchSettings;
 				break;
 			case GuiAction::ExperimentalWaistSupport:
-				config.experimentalWaistSupport = cmd.flag ? 1 : 0;
+				config.experimentalWaistSupport = 1;
 				ApplyDeclarativeConfig();
 				break;
 			case GuiAction::BeforeQuartzExperiment:
-				config.beforeQuartzExperiment = cmd.flag && config.secondaryPhysicsBackend == 2;
+				config.beforeQuartzExperiment = (config.secondaryPhysicsBackend == 2);
 				ApplyDeclarativeConfig();
 				break;
 			case GuiAction::MuteNativeSoundEffects:

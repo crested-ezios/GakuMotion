@@ -705,12 +705,9 @@ int main(int argc, char** argv)
 			"developer motion experiments stay hidden while developer mode is off");
 		app.core.gui.developerMode = true;
 		app.Settle(); app.Click("动作", 1); app.Settle();
-		const auto* waistCheckbox = app.ItemWithLabel("实验：腰部支撑（默认开启）");
-		Check(waistCheckbox && (waistCheckbox->status & ImGuiItemStatusFlags_Checked), "developer waist support is checked by default");
-		app.Click("实验：腰部支撑（默认开启）");
-		Check(!app.core.player.controller.IsExperimentalWaistSupportEnabled(), "developer waist checkbox disables support");
-		app.Click("实验：腰部支撑（默认开启）");
-		Check(app.core.player.controller.IsExperimentalWaistSupportEnabled(), "developer waist checkbox reenables support");
+		Check(!app.ItemWithLabel("实验：腰部支撑（默认开启）") && !app.ItemWithLabel("BeforeQuartz 实验 (优先于 Quartz 阶段估算)"),
+			"internalized waist support and BeforeQuartz toggles are removed from developer motion tab");
+		Check(app.core.player.controller.IsExperimentalWaistSupportEnabled(), "internalized waist support remains enabled by default");
 		const auto* fitCheckbox = app.ItemWithLabel("实验：Miku 嘴形拟合");
 		Check(fitCheckbox && (fitCheckbox->status & ImGuiItemStatusFlags_Checked) && app.core.player.controller.facialMikuMouthFit,
 			"developer Motion tab exposes the Miku experiment checked by default");

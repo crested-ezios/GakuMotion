@@ -284,8 +284,8 @@ namespace GakuMotion::webpanel
 		const std::string settingsJson = "{\"mikuMouthFit\":" + JBool(mouth) +
 			",\"mikuEyeFit\":" + JBool(eye) +
 			",\"mikuFitAllowUnverified\":" + JBool(allow) +
-			",\"waistSupport\":" + JBool(core_.guiExperimentalWaistSupport.load()) +
-			",\"beforeQuartz\":" + JBool(core_.guiBeforeQuartzExperiment.load()) +
+			",\"waistSupport\":true" +
+			",\"beforeQuartz\":" + JBool(core_.guiPhysicsBackend.load() == 2) +
 			",\"muteNativeSoundEffects\":" + JBool(core_.guiMuteNativeSoundEffects.load()) + "}";
 		return "{\"settings\":" + settingsJson +
 			",\"mouthFitStatus\":" + JString(mouthFitStatus) +

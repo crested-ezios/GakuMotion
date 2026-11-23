@@ -287,7 +287,7 @@ class FakeNativePhase2Bridge implements MotionBridgeClient {
             mikuEyeFit: true,
             mikuFitAllowUnverified: false,
             waistSupport: true,
-            beforeQuartz: false,
+            beforeQuartz: true,
           },
           mouthFitStatus: '尚未接管',
           eyeFitStatus: '尚未接管',

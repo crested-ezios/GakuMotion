@@ -77,15 +77,7 @@ namespace GakuMotion
 		ctx.statusLine = StatusSummary();
 		ctx.physicsBackend = guiPhysicsBackend.load();
 		ctx.beforeQuartzExperiment = guiBeforeQuartzExperiment.load();
-		ctx.fnSetBeforeQuartzExperiment = [](void* self, bool enabled)
-		{
-			static_cast<Core*>(self)->QueueBeforeQuartzExperiment(enabled);
-		};
 		ctx.experimentalWaistSupport = guiExperimentalWaistSupport.load();
-		ctx.fnSetExperimentalWaistSupport = [](void* self, bool enabled)
-		{
-			static_cast<Core*>(self)->QueueExperimentalWaistSupport(enabled);
-		};
 		ctx.muteNativeSoundEffects = guiMuteNativeSoundEffects.load();
 		ctx.fnSetMuteNativeSoundEffects = [](void* self, bool enabled)
 		{

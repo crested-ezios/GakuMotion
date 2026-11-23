@@ -292,14 +292,13 @@
 		}
 		const bool structuralChange =
 			slot.actor != actor || slot.session != core.injectionSession || slot.backend != requested ||
-			slot.beforeQuartz != core.config.beforeQuartzExperiment ||
 			slot.sleeveDiagnostics != core.config.sleeveMuscleDiagnostics ||
 			slot.motionFile != track->loadedMotionFile || slot.legacyOwner != legacyOwner;
 		const bool timelineDiscontinuity =
 			slot.seeks != core.player.SeekCount() || core.player.scrubbing ||
 			core.player.currentTime + .001f < slot.time;
 		const bool clearOnTimelineBoundary =
-			timelineDiscontinuity && (slot.beforeQuartz || !(useV3 || legacyOwner));
+			timelineDiscontinuity && !(useV3 || legacyOwner) && !(filterSceneForces && core.player.scrubbing);
 		if (structuralChange || clearOnTimelineBoundary)
 		{
 			if (slot.actor == actor)
@@ -312,7 +311,7 @@
 			{ core.formation.slots[index].physicsBackend = "capture_destroy_unconfirmed"; return; }
 			slot.actor = actor; slot.actorToken = actorToken;
 			slot.session = core.injectionSession; slot.backend = requested;
-			slot.beforeQuartz = core.config.beforeQuartzExperiment; slot.sleeveDiagnostics = core.config.sleeveMuscleDiagnostics;
+			slot.beforeQuartz = requested == 2; slot.sleeveDiagnostics = core.config.sleeveMuscleDiagnostics;
 			slot.motionFile = track->loadedMotionFile; slot.legacyOwner = legacyOwner;
 			if (legacyOwner) g_burstBridge.RetryUnavailable();
 		}
@@ -325,10 +324,11 @@
 		const float dt = slot.lastTick.time_since_epoch().count() == 0 ? 0.f : core.EffectiveSimulationDelta(realDeltaTime);
 		slot.lastTick = dispatchBegin;
 		bool native = false;
+		// PreQuartz sync is internalized unconditionally inside GakuBurstBridge for native injection.
 		if (useV3) native = g_multiBurstBridge.Publish(index, binding->second, ctrl, slot.time, frame,
-			slot.beforeQuartz, slot.sleeveDiagnostics, filterSceneForces);
+			false, slot.sleeveDiagnostics, filterSceneForces);
 		else if (legacyOwner) native = g_burstBridge.Publish(binding->second, ctrl, slot.time, frame,
-			slot.beforeQuartz, slot.sleeveDiagnostics, filterSceneForces);
+			false, slot.sleeveDiagnostics, filterSceneForces);
 		const std::string multiUnavailableReason = g_multiBurstBridge.reason.empty()
 			? std::string("fallback_legacy_bridge_master_only")
 			: ("fallback_legacy_bridge_master_only (" + g_multiBurstBridge.reason + ")");

@@ -230,10 +230,8 @@ namespace GakuMotion
 		{
 			if (v->IsBool()) preserveAnimatorForSecondaryPhysics = v->AsBool(false) ? 1 : 0;
 		}
-		if (const jsonlite::Value* v = root.FindPath("experimental_waist_support.enabled"))
-		{
-			if (v->IsBool()) experimentalWaistSupport = v->AsBool(false) ? 1 : 0;
-		}
+		// Waist support is internalized as always-on behavior.
+		experimentalWaistSupport = 1;
 		if (const jsonlite::Value* v = root.FindPath("native_audio.mute_sound_effects"))
 		{
 			if (v->IsBool()) muteNativeSoundEffects = v->AsBool(true) ? 1 : 0;
@@ -247,10 +245,9 @@ namespace GakuMotion
 				else if (v->stringValue == "native") secondaryPhysicsBackend = 2;
 			}
 		}
-		beforeQuartzExperiment = false;
+		// Pre-Quartz sync is internalized as always-on whenever native backend is active.
+		beforeQuartzExperiment = (secondaryPhysicsBackend == 2);
 		sleeveMuscleDiagnostics = false;
-		if (const auto* v = root.FindPath("secondary_physics.before_quartz_experiment"); v && v->IsBool())
-			beforeQuartzExperiment = v->boolValue;
 		if (const auto* v = root.FindPath("secondary_physics.sleeve_muscle_diagnostics"); v && v->IsBool())
 			sleeveMuscleDiagnostics = v->boolValue;
 		if (const jsonlite::Value* ov = root.Find("overrides"))

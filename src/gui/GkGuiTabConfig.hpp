@@ -9,11 +9,6 @@ namespace GakuMotion
 {
 	inline void GuiOverlay::DrawConfigTab(const GuiContext& ctx)
 	{
-		bool waistSupport = ctx.experimentalWaistSupport;
-		if (ImGui::Checkbox("腰侧支撑 [Experimental]", &waistSupport) && ctx.fnSetExperimentalWaistSupport)
-			ctx.fnSetExperimentalWaistSupport(ctx.self, waistSupport);
-		ImGui::TextWrapped("默认关闭。仅恢复腰侧辅助骨的位置和方向；已验收范围限星南指定服装与时刻，大腿扭转支撑尚未恢复。关闭或停止会恢复启用前姿态。");
-		ImGui::Separator();
 		ImGui::TextUnformatted("物理引擎后端");
 		int backend = ctx.physicsBackend;
 		if (ImGui::RadioButton("内建 SpringBone", &backend, 1) && ctx.fnSetPhysicsBackend)
@@ -27,15 +22,7 @@ namespace GakuMotion
 #ifdef GKMOTION_GUI_TEST
 		nativePhysicsRectMin = ImGui::GetItemRectMin(); nativePhysicsRectMax = ImGui::GetItemRectMax();
 #endif
-		ImGui::BeginDisabled(ctx.physicsBackend != 2);
-		bool beforeQuartz = ctx.beforeQuartzExperiment;
-		if (ImGui::Checkbox("BeforeQuartz 同源输入 [实验性]", &beforeQuartz) && ctx.fnSetBeforeQuartzExperiment)
-			ctx.fnSetBeforeQuartzExperiment(ctx.self, beforeQuartz);
-#ifdef GKMOTION_GUI_TEST
-		beforeQuartzRectMin = ImGui::GetItemRectMin(); beforeQuartzRectMax = ImGui::GetItemRectMax();
-#endif
-		ImGui::EndDisabled();
-		ImGui::TextWrapped("默认关闭。让 Quartz 与 Swing 消费同一份 MMD 身体姿态输入；仅原生注入可启用，切换后端会关闭此实验。");
+		// BeforeQuartz 同源输入与腰部支撑已内化为默认强制开启逻辑
 		ImGui::PushStyleColor(ImGuiCol_Text, GuiTheme::WarningColor());
 		ImGui::TextWrapped("警告：原生注入存在游戏崩溃风险，运行效果不稳定，依赖官方黑盒物理；游戏更新后可能失效。原生库不可用时会自动回退到内建 SpringBone。");
 		ImGui::PopStyleColor();

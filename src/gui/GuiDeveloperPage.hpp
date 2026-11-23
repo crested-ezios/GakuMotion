@@ -21,13 +21,6 @@ namespace GakuMotion
 			if (ImGui::BeginTabItem("动作"))
 			{
 				DrawMotionExperiments(ctx);
-				bool waistSupport = ctx.experimentalWaistSupport;
-				if (ImGui::Checkbox("实验：腰部支撑（默认开启）", &waistSupport))
-				{
-					if (ctx.fnSetExperimentalWaistSupport) ctx.fnSetExperimentalWaistSupport(ctx.self, waistSupport);
-				}
-				ImGui::TextWrapped("驱动 Waist_H 腰部辅助骨；关闭时恢复原姿态。开关在本次运行中生效，重启后读取 control.json。");
-				ImGui::Spacing();
 				bool muteSe = ctx.muteNativeSoundEffects;
 				if (ImGui::Checkbox("播放 MMD 时屏蔽游戏音效（默认开启）", &muteSe))
 				{
@@ -89,14 +82,6 @@ namespace GakuMotion
 				ImGui::Spacing();
 				ImGui::Separator();
 				ImGui::Spacing();
-
-				// 实验性底层物理开关
-				ImGui::Text("实验性底层特性:");
-				bool bq = ctx.beforeQuartzExperiment;
-				if (ImGui::Checkbox("BeforeQuartz 实验 (优先于 Quartz 阶段估算)", &bq))
-				{
-					if (ctx.fnSetBeforeQuartzExperiment) ctx.fnSetBeforeQuartzExperiment(ctx.self, bq);
-				}
 
 				ImGui::EndTabItem();
 			}

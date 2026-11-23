@@ -6,16 +6,13 @@ static void TestWaistSupportCore()
 	Core core;
 	Check(core.player.controller.IsExperimentalWaistSupportEnabled() && core.guiExperimentalWaistSupport.load(), "waist support starts enabled and published");
 	core.QueueExperimentalWaistSupport(false);
-	Check(core.player.controller.IsExperimentalWaistSupportEnabled(), "queued disable waits for main thread");
-	core.ProcessPendingGuiCommands();
-	core.QueueExperimentalWaistSupport(true);
-	Check(!core.player.controller.IsExperimentalWaistSupportEnabled(), "GUI queues without Unity-side mutation");
 	core.ProcessPendingGuiCommands();
 	Check(core.player.controller.IsExperimentalWaistSupportEnabled() && core.guiExperimentalWaistSupport.load(),
-	      "main-thread consumption enables and publishes waist support");
-	core.QueueExperimentalWaistSupport(false);
+	      "internalized waist support remains enabled across disable requests");
+	core.QueueExperimentalWaistSupport(true);
 	core.ProcessPendingGuiCommands();
-	Check(!core.player.controller.IsExperimentalWaistSupportEnabled(), "queued disable restores opt-out state");
+	Check(core.player.controller.IsExperimentalWaistSupportEnabled() && core.guiExperimentalWaistSupport.load(),
+	      "main-thread consumption keeps waist support enabled and published");
 
 	const auto directory = std::filesystem::temp_directory_path() / "gaku_waist_config_test";
 	const auto path = directory / "control.json";
@@ -31,13 +28,16 @@ static void TestWaistSupportCore()
 	Check(config.Reload() && config.experimentalWaistSupport == 1,
 	      "unrelated transport reload preserves session setting");
 	WriteTextFile(path, R"({"experimental_waist_support":{"enabled":false}})");
-	Check(config.Reload() && config.experimentalWaistSupport == 0, "explicit opt-out declaration loads");
+	Check(config.Reload() && config.experimentalWaistSupport == 1,
+	      "internalized waist support ignores legacy opt-out declaration");
 	RuntimeConfig defaults;
 	const auto templatePath = directory / "template.json";
 	WriteTextFile(templatePath, defaults.DefaultTemplate());
 	defaults.path = templatePath.string();
 	Check(defaults.Reload() && defaults.experimentalWaistSupport == 1,
 	      "generated startup template enables waist support");
+	Check(defaults.DefaultTemplate().find("experimental_waist_support") == std::string::npos,
+	      "generated startup template omits obsolete waist support toggle");
 	std::filesystem::remove(path);
 	std::filesystem::remove(templatePath);
 	std::filesystem::remove(directory);

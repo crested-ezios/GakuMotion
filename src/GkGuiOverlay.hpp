@@ -81,9 +81,7 @@ namespace GakuMotion
 		std::string statusLine;
 		int physicsBackend{2}; // Published selection, not the render thread's config.
 		bool beforeQuartzExperiment{true};
-		void (*fnSetBeforeQuartzExperiment)(void*, bool){nullptr};
 		bool experimentalWaistSupport{true};
-		void (*fnSetExperimentalWaistSupport)(void*, bool){nullptr};
 		bool muteNativeSoundEffects{true};
 		void (*fnSetMuteNativeSoundEffects)(void*, bool){nullptr};
 		int playlistMode{1};
@@ -279,7 +277,6 @@ namespace GakuMotion
 		ImGuiTextFilter motionFilter;
 #ifdef GKMOTION_GUI_TEST
 		ImVec2 scrubRectMin, scrubRectMax;
-		ImVec2 beforeQuartzRectMin, beforeQuartzRectMax;
 		ImVec2 fallbackPhysicsRectMin, fallbackPhysicsRectMax;
 		ImVec2 nativePhysicsRectMin, nativePhysicsRectMax;
 		void DrawSoleDiagnosticsForTest(const GuiContext& ctx) { DrawSoleTab(ctx); }

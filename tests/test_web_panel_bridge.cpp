@@ -1047,9 +1047,10 @@ static void TestExperimentsTelemetry()
 	Check(f.core.config.facialMikuMouthFit == 0 && f.core.config.facialMikuEyeFit == 1 &&
 		f.core.config.facialMikuFitAllowUnverified == 1, "Miku switches written");
 	const auto* waist = f.FindCommand(Core::GuiAction::ExperimentalWaistSupport);
-	Check(waist && !waist->flag, "waist support flag queued");
+	Check(waist && waist->flag && f.core.guiExperimentalWaistSupport.load(), "internalized waist support stays enabled");
 	Check(f.Ok(f.Req("experiments.set", "{\"patch\":{\"beforeQuartz\":true}}")), "BeforeQuartz accepted on native");
-	Check(f.FindCommand(Core::GuiAction::BeforeQuartzExperiment) != nullptr, "BeforeQuartz queued");
+	const auto* bq = f.FindCommand(Core::GuiAction::BeforeQuartzExperiment);
+	Check(bq && bq->flag && f.core.guiBeforeQuartzExperiment.load(), "internalized BeforeQuartz stays enabled on native");
 	f.core.guiPhysicsBackend.store(1);
 	Check(f.ErrorCode(f.Req("experiments.set", "{\"patch\":{\"beforeQuartz\":true}}")) == "invalid_params",
 		"BeforeQuartz rejected without native backend");

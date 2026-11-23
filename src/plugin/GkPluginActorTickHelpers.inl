@@ -231,15 +231,16 @@ static void RunActorPhysicsAndProbes(
 		else if (frame != g_physicsFrame || g_physicsActor != activeActor)
 		{
 			const int requested = core.config.secondaryPhysicsBackend;
+			const bool photography = filterSceneForces;
 			const bool structuralChange =
-				requested != g_physicsBackend || core.config.beforeQuartzExperiment != g_physicsBeforeQuartz ||
+				requested != g_physicsBackend ||
 				core.config.sleeveMuscleDiagnostics != g_physicsSleeveDiagnostics ||
 				activeActor != g_physicsActor || core.currentMotionIndex != g_physicsMotion;
 			const bool timelineDiscontinuity =
 				player.SeekCount() != g_physicsSeeks || player.scrubbing ||
 				player.currentTime + .001f < g_physicsTime;
 			const bool clearOnTimelineBoundary =
-				timelineDiscontinuity && (g_physicsBeforeQuartz || requested != 2);
+				timelineDiscontinuity && requested != 2 && !(photography && player.scrubbing);
 			if (structuralChange || clearOnTimelineBoundary)
 			{
 				if (g_physicsActor == activeActor)
@@ -251,7 +252,7 @@ static void RunActorPhysicsAndProbes(
 				ClearSecondaryPhysics();
 				g_burstBridge.RetryUnavailable();
 				g_physicsBackend = requested;
-				g_physicsBeforeQuartz = core.config.beforeQuartzExperiment;
+				g_physicsBeforeQuartz = requested == 2;
 				g_physicsSleeveDiagnostics = core.config.sleeveMuscleDiagnostics;
 				g_physicsMotion = core.currentMotionIndex;
 				g_physicsActor = activeActor;
@@ -270,9 +271,10 @@ static void RunActorPhysicsAndProbes(
 			const auto dispatchBegin = bodyEnd;
 			const float physicalDt = core.EffectiveSimulationDelta(realDeltaTime);
 			g_physicsLastTick = dispatchBegin;
+			// PreQuartz sync is internalized unconditionally inside GakuBurstBridge for native injection.
 			bool native = requested == 2 && g_burstBridge.Publish(binding->second, player.controller,
 			                                                      player.currentTime, frame,
-			                                                      core.config.beforeQuartzExperiment,
+			                                                      false,
 			                                                      core.config.sleeveMuscleDiagnostics, filterSceneForces);
 			const std::string reason = requested == 2 ? g_burstBridge.reason : requested == 1 ? "fallback" : "off";
 			const bool pending = IsNativePhysicsPending(requested, reason);

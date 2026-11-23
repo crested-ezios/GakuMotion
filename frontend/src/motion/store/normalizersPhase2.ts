@@ -92,7 +92,7 @@ export function normalizeExperimentsState(raw: unknown): ExperimentsState {
         s.mikuFitAllowUnverified,
         DEFAULT_EXPERIMENT_SETTINGS.mikuFitAllowUnverified,
       ),
-      waistSupport: asBool(s.waistSupport, DEFAULT_EXPERIMENT_SETTINGS.waistSupport),
+      waistSupport: true,
       beforeQuartz: asBool(s.beforeQuartz, DEFAULT_EXPERIMENT_SETTINGS.beforeQuartz),
       muteNativeSoundEffects: asBool(
         s.muteNativeSoundEffects,

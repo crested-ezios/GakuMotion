@@ -2,7 +2,7 @@ namespace GakuMotion
 {
 	inline void Core::ApplyDeclarativeConfig()
 	{
-		if (config.secondaryPhysicsBackend != 2) config.beforeQuartzExperiment = false;
+		config.beforeQuartzExperiment = (config.secondaryPhysicsBackend == 2);
 		guiPhysicsBackend.store(config.secondaryPhysicsBackend);
 		guiBeforeQuartzExperiment.store(config.beforeQuartzExperiment);
 		if (config.cameraDeclared && (!cameraConfigApplied || !(config.camera == appliedCamera)))
@@ -120,17 +120,13 @@ namespace GakuMotion
 			applied.auxMode = config.auxMode;
 			player.controller.SetAuxDriveMode(config.auxMode);
 		}
-		if (config.experimentalWaistSupport >= 0 &&
-			config.experimentalWaistSupport != applied.experimentalWaistSupport)
+		config.experimentalWaistSupport = 1;
+		if (applied.experimentalWaistSupport != 1 || !player.controller.IsExperimentalWaistSupportEnabled())
 		{
-			player.controller.SetExperimentalWaistSupportEnabled(config.experimentalWaistSupport != 0);
-			applied.experimentalWaistSupport = config.experimentalWaistSupport;
-			LogInfo(std::string("[GakuMotion][WaistSupport] experimental ") +
-				(config.experimentalWaistSupport
-					 ? "ON (scope-specific acceptance passed; broader scope unverified)"
-					 : "off"));
+			player.controller.SetExperimentalWaistSupportEnabled(true);
+			applied.experimentalWaistSupport = 1;
 		}
-		guiExperimentalWaistSupport.store(player.controller.IsExperimentalWaistSupportEnabled());
+		guiExperimentalWaistSupport.store(true);
 
 		if (config.muteNativeSoundEffects >= 0 &&
 			config.muteNativeSoundEffects != applied.muteNativeSoundEffects)
