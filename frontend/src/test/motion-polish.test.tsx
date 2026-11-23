@@ -282,10 +282,18 @@ describe('UX polish contracts (Phases 2-4)', () => {
     })
 
     // Import and re-open edit -> mock persists per-slot timing & openImportEdit marks slot 2+ placementEdited
+    const initialIds = new Set(motionStore.getState().library.entries.map((entry) => entry.id))
     await user.click(within(dialog).getByRole('button', { name: '导入' }))
-    await waitFor(() => expect(motionStore.getState().importUi.visible).toBe(false), { timeout: 3000 })
+    await waitFor(
+      () => {
+        const state = motionStore.getState()
+        expect(state.library.entries.some((entry) => !initialIds.has(entry.id))).toBe(true)
+        expect(state.importUi.visible).toBe(false)
+      },
+      { timeout: 3000 },
+    )
 
-    const createdId = motionStore.getState().library.entries[0].id
+    const createdId = motionStore.getState().library.entries.find((entry) => !initialIds.has(entry.id))!.id
     await motionStore.openImportEdit(createdId)
     const editDialog = await screen.findByTestId('import-dialog')
     form = motionStore.getState().importForm
