@@ -5,6 +5,7 @@
 #include "GkCaptureSafety.hpp"
 #include "GkGmlClient.hpp"
 #include "GakuMotion.hpp"
+#include "GakuPluginMetadata.h"
 #include "GkAudioPluginClient.hpp"
 #include "GkWicCover.hpp"
 #include "GkWebPanelBridge.hpp"
@@ -274,5 +275,56 @@ extern "C" GAKU_PLUGIN_EXPORT GakuStatus GakuPlugin_Query(
 #endif
 		MotionShutdown};
 	*output = descriptor;
+	return GAKU_OK;
+}
+
+extern "C" GAKU_PLUGIN_EXPORT GakuStatus GakuPlugin_QueryMetadata(
+	uint32_t requestedAbi, uint32_t outputSize, GakuPluginMetadataV1* output)
+{
+	if (requestedAbi != GAKU_METADATA_ABI_VERSION) return GAKU_E_VERSION;
+	if (!output) return GAKU_E_INVALID_ARGUMENT;
+	if (outputSize < sizeof(GakuPluginMetadataV1)) return GAKU_E_SIZE;
+
+	static const char* const kMaintainers[] = {"crested-ezios"};
+	static const GakuPluginLocalizedTextV1 kLocalizedSummaries[] = {
+		{"en", "Custom VMD/motion playback, facial retargeting, camera, and stage studio plugin for GakuLoader."},
+		{"zh-Hans", "适用于 GakuLoader 的自定义 VMD/动作回放、表情重定向、镜头与舞台摄影棚插件。"},
+		{"zh-Hant", "適用於 GakuLoader 的自訂 VMD/動作回放、表情重定向、鏡頭與舞台攝影棚外掛。"},
+		{"ja", "GakuLoader 向けのカスタム VMD・モーション再生、表情リターゲット、カメラおよびステージスタジオプラグイン。"},
+	};
+	static const GakuPluginDependencyV1 kDependencies[] = {
+		{"gakuaudio", "GakuAudio", ">=0.1.0", GAKU_DEPENDENCY_OPTIONAL, 0u},
+	};
+	static const char* const kAuxiliaryDlls[] = {
+		"GakuBurstBridge.dll",
+		"GakuMotion.VmdImporter.Native.dll",
+	};
+
+	const GakuPluginMetadataV1 metadata{
+		GAKU_METADATA_ABI_VERSION,
+		sizeof(GakuPluginMetadataV1),
+		"GakuMotion Contributors",
+		static_cast<uint32_t>(std::size(kMaintainers)),
+		0u,
+		kMaintainers,
+		"",
+		"stable",
+		"Custom VMD/motion playback, facial retargeting, camera, and stage studio plugin for GakuLoader.",
+		static_cast<uint32_t>(std::size(kLocalizedSummaries)),
+		0u,
+		kLocalizedSummaries,
+		"https://github.com/crested-ezios/GakuMotion",
+		"https://github.com/crested-ezios/GakuMotion/releases",
+		"https://github.com/crested-ezios/GakuMotion/issues",
+		"MIT",
+		"1.1.0",
+		static_cast<uint32_t>(std::size(kDependencies)),
+		0u,
+		kDependencies,
+		static_cast<uint32_t>(std::size(kAuxiliaryDlls)),
+		0u,
+		kAuxiliaryDlls,
+	};
+	*output = metadata;
 	return GAKU_OK;
 }

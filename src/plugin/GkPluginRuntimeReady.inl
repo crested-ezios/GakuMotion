@@ -262,5 +262,16 @@ void MotionRuntimeReady(void*)
 				                         ? "setWorldRotation (DEGRADED -- will back-subtract parent chain)"
 				                         : "NEITHER -- gkclip will not write bone rotations at all"));
 	}
+	{
+		GakuMotion::audio::AudioPluginClient::PluginAvailability audioAvail{};
+		if (g_audioPlugin.TryClaimUnavailableNotice(audioAvail, true) && g_hostContext.logInfo)
+		{
+			g_hostContext.logInfo(
+				"[GakuMotion][Audio] GakuAudio plugin unavailable via %s (state=%s); skipping %s probes and keeping MCI/offline fallback",
+				GAKU_SERVICE_PLUGINS,
+				GakuMotion::audio::AudioPluginClient::PluginStateName(audioAvail.state),
+				GAKU_SERVICE_AUDIO_CORE);
+		}
+	}
 	g_runtimeReady.store(true, std::memory_order_release);
 }

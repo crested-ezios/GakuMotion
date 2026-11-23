@@ -61,6 +61,17 @@ bool InitializeMotion()
 
 	// Phase 0：先探测宿主能力，任何回调都可能缺失，必须先验后调
 	ValidateHostContext();
+	{
+		GakuMotion::audio::AudioPluginClient::PluginAvailability audioAvail{};
+		if (g_audioPlugin.TryClaimUnavailableNotice(audioAvail, false) && g_hostContext.logInfo)
+		{
+			g_hostContext.logInfo(
+				"[GakuMotion][Audio] GakuAudio plugin unavailable via %s (state=%s); skipping %s probes and keeping MCI/offline fallback",
+				GAKU_SERVICE_PLUGINS,
+				GakuMotion::audio::AudioPluginClient::PluginStateName(audioAvail.state),
+				GAKU_SERVICE_AUDIO_CORE);
+		}
+	}
 
 	// 先把日志与回调接上，再初始化 Core；否则 Core::Initialize 的日志会丢失
 	auto& core = GakuMotion::Core::Instance();

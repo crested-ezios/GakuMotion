@@ -270,6 +270,7 @@
     <ClInclude Include="include\GakuBurstBridge.h" />
     <ClInclude Include="include\GakuFaceDiagnostics.h" />
     <ClInclude Include="include\GakuPlugin.h" />
+    <ClInclude Include="include\GakuPluginMetadata.h" />
     <ClInclude Include="include\GakuPaths.h" />
     <ClInclude Include="include\GakuPaths.hpp" />
     <ClInclude Include="include\GakuPhysicsDiagnostics.h" />

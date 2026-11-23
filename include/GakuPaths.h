@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+//
+// GakuLoader Public Plugin SDK
+// See the applicable MIT license notice.
+
 #pragma once
 #include "GakuPlugin.h"
 

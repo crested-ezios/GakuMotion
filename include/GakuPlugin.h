@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+//
+// GakuLoader Public Plugin SDK
+// See the applicable MIT license notice.
+
 #pragma once
 /* GakuLoader plugin ABI v1.
    Fixed-size, C-compatible negotiation; no STL, no ownership transfer, no
@@ -45,6 +50,7 @@ extern "C" {
 #define GAKU_SERVICE_HOTKEYS "gakuloader.hotkeys"
 #define GAKU_SERVICE_ACTOR_ENTRY "gakuloader.actor-entry"
 #define GAKU_SERVICE_RENDER_FRAME "gakuloader.render-frame"
+#define GAKU_SERVICE_RENDER_FRAME_STATUS "gakuloader.render-frame-status"
 
 typedef int32_t GakuStatus;
 #define GAKU_OK ((GakuStatus)0)
@@ -276,11 +282,23 @@ typedef struct GakuRenderFrameService {
     uint32_t abiVersion;
     uint32_t structSize;
     void* context;
-    /* Register an observer on UnityEngine.Rendering.RenderPipelineManager::DoRenderLoop_Internal.
+    /* Register an observer on UnityEngine.Rendering.RenderPipelineManager::DoRenderLoop_Internal
+       (or a non-conflicting fallback render boundary).
        One binding per owner; re-registering replaces it. Installed on-demand after runtime-ready. */
     GakuStatus (*registerObserver)(void* context, const GakuRenderFrameBinding* binding);
     GakuStatus (*unregisterObserver)(void* context);
 } GakuRenderFrameService;
+
+#define GAKU_RENDER_FRAME_HOOK_PENDING 0u
+#define GAKU_RENDER_FRAME_HOOK_ACTIVE 1u
+#define GAKU_RENDER_FRAME_HOOK_UNAVAILABLE 2u
+typedef struct GakuRenderFrameStatusService {
+    uint32_t abiVersion;
+    uint32_t structSize;
+    /* Returns GAKU_RENDER_FRAME_HOOK_* indicating whether the host's
+       render-frame boundary detour is pending, active, or unavailable. */
+    uint32_t (*getStatus)(void);
+} GakuRenderFrameStatusService;
 
 typedef struct GakuPluginDescriptor {
     uint32_t abiVersion; uint32_t structSize;

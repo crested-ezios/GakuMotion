@@ -2,6 +2,7 @@
 
 #include "../include/GakuAudio.h"
 #include "../include/GakuPlugin.h"
+#include "../include/GakuPluginMetadata.h"
 #include "../include/GkAudioMetadata.hpp"
 #include "GkAudioPlayback.hpp"
 #include "GkJsonLite.hpp"
@@ -47,6 +48,31 @@ namespace GakuMotion::audio
 	class AudioPluginClient
 	{
 	public:
+		struct PluginAvailability
+		{
+			bool registryChecked{false};
+			bool registryAvailable{false};
+			bool knownUnavailable{false};
+			GakuPluginLoadState state{GAKU_PLUGIN_STATE_NOT_FOUND};
+			std::string version;
+		};
+
+		static const char* PluginStateName(GakuPluginLoadState state)
+		{
+			switch (state)
+			{
+			case GAKU_PLUGIN_STATE_NOT_FOUND: return "not_found";
+			case GAKU_PLUGIN_STATE_DISABLED: return "disabled";
+			case GAKU_PLUGIN_STATE_DEPENDENCY_ERROR: return "dependency_error";
+			case GAKU_PLUGIN_STATE_INCOMPATIBLE: return "incompatible";
+			case GAKU_PLUGIN_STATE_QUERIED: return "queried";
+			case GAKU_PLUGIN_STATE_ACTIVATED: return "activated";
+			case GAKU_PLUGIN_STATE_RUNTIME_READY: return "runtime_ready";
+			case GAKU_PLUGIN_STATE_FAILED: return "failed";
+			default: return "unknown";
+			}
+		}
+
 		void BindHost(const GakuHostApi* hostApi)
 		{
 			std::lock_guard<std::mutex> lock(mutex_);
@@ -54,6 +80,8 @@ namespace GakuMotion::audio
 			directService_ = nullptr;
 			cachedService_ = nullptr;
 			queriedService_ = GakuAudioServiceV1{};
+			availability_ = PluginAvailability{};
+			unavailableNotified_ = false;
 		}
 
 		void BindDirectService(const GakuAudioServiceV1* service)
@@ -62,6 +90,25 @@ namespace GakuMotion::audio
 			directService_ = IsValidService(service) ? service : nullptr;
 			cachedService_ = directService_;
 			queriedService_ = GakuAudioServiceV1{};
+			availability_ = PluginAvailability{};
+			unavailableNotified_ = false;
+		}
+
+		PluginAvailability InspectPluginAvailability(bool refreshIfPending = false)
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			InspectHostPluginsLocked(refreshIfPending);
+			return availability_;
+		}
+
+		bool TryClaimUnavailableNotice(PluginAvailability& out, bool refreshIfPending = false)
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			InspectHostPluginsLocked(refreshIfPending);
+			out = availability_;
+			if (!availability_.knownUnavailable || unavailableNotified_) return false;
+			unavailableNotified_ = true;
+			return true;
 		}
 
 		void SetConfigRoot(const std::filesystem::path& configRoot)
@@ -299,6 +346,52 @@ namespace GakuMotion::audio
 			}
 		}
 
+		static bool IsUnavailablePluginState(GakuPluginLoadState state)
+		{
+			return state == GAKU_PLUGIN_STATE_NOT_FOUND ||
+				state == GAKU_PLUGIN_STATE_DISABLED ||
+				state == GAKU_PLUGIN_STATE_DEPENDENCY_ERROR ||
+				state == GAKU_PLUGIN_STATE_INCOMPATIBLE;
+		}
+
+		void InspectHostPluginsLocked(bool refreshIfPending)
+		{
+			if (directService_ || cachedService_) return;
+			if (availability_.knownUnavailable) return;
+			if (availability_.registryChecked && (!refreshIfPending || !availability_.registryAvailable)) return;
+			if (!hostApi_ || !hostApi_->queryService || !hostApi_->hostContext) return;
+
+			availability_.registryChecked = true;
+			GakuPluginsServiceV1 plugins{};
+			const GakuStatus st = hostApi_->queryService(
+				hostApi_->hostContext,
+				GAKU_SERVICE_PLUGINS,
+				GAKU_PLUGINS_SERVICE_VERSION,
+				sizeof(plugins),
+				&plugins);
+			if (st != GAKU_OK ||
+				plugins.abiVersion != GAKU_PLUGINS_SERVICE_VERSION ||
+				plugins.structSize < sizeof(GakuPluginsServiceV1) ||
+				!plugins.findPlugin)
+			{
+				return;
+			}
+
+			availability_.registryAvailable = true;
+			GakuPluginSummaryV1 summary{};
+			if (plugins.findPlugin("gakuaudio", sizeof(summary), &summary) != GAKU_OK ||
+				summary.abiVersion != GAKU_PLUGINS_SERVICE_VERSION ||
+				summary.structSize < sizeof(GakuPluginSummaryV1))
+			{
+				return;
+			}
+
+			availability_.state = summary.state;
+			summary.version[sizeof(summary.version) - 1] = '\0';
+			availability_.version = summary.version;
+			availability_.knownUnavailable = IsUnavailablePluginState(summary.state);
+		}
+
 		const GakuAudioServiceV1* Resolve()
 		{
 			std::lock_guard<std::mutex> lock(mutex_);
@@ -310,6 +403,8 @@ namespace GakuMotion::audio
 			if (directService_) return directService_;
 			if (cachedService_) return cachedService_;
 			if (!hostApi_ || !hostApi_->queryService || !hostApi_->hostContext) return nullptr;
+			InspectHostPluginsLocked(false);
+			if (availability_.knownUnavailable) return nullptr;
 
 			GakuAudioServiceV1 candidate{};
 			const GakuStatus st = hostApi_->queryService(
@@ -386,5 +481,7 @@ namespace GakuMotion::audio
 		std::filesystem::path configRoot_;
 		std::string desiredPresetId_{"flat"};
 		bool hasPendingOverride_{false};
+		PluginAvailability availability_{};
+		bool unavailableNotified_{false};
 	};
 } // namespace GakuMotion::audio
