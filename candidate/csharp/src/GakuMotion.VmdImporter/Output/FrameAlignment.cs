@@ -30,14 +30,15 @@ public static class FrameAlignment
 
     /// <summary>
     /// Source-side child offset directions of the real MMD model class (unit vectors).
-    /// Measured on the official ground truth (YYB/MMD model class).
+    /// Legs use a vertical neutral (0, -1, 0) reference rather than YYB's ~5° thigh /
+    /// ~1° shin inward rest tilt so neutral/FlowHMR legs do not artificially adduct.
     /// </summary>
     public static readonly IReadOnlyDictionary<string, Vector3> SourceOffsetDirections = new Dictionary<string, Vector3>
     {
-        ["左ひざ"] = new Vector3(+0.0862f, -0.9956f, -0.0329f),
-        ["右ひざ"] = new Vector3(-0.0862f, -0.9956f, -0.0329f),
-        ["左足首"] = new Vector3(+0.0170f, -0.9965f, -0.0840f),
-        ["右足首"] = new Vector3(-0.0170f, -0.9965f, -0.0840f),
+        ["左ひざ"] = new Vector3(0.0f, -1.0f, 0.0f),
+        ["右ひざ"] = new Vector3(0.0f, -1.0f, 0.0f),
+        ["左足首"] = new Vector3(0.0f, -1.0f, 0.0f),
+        ["右足首"] = new Vector3(0.0f, -1.0f, 0.0f),
         ["左ひじ"] = new Vector3(-0.1680042f, -0.1301597f, +0.0035826f),
         ["右ひじ"] = new Vector3(+0.1680042f, -0.1301597f, +0.0035826f),
         ["左手首"] = new Vector3(-0.1619331f, -0.1181167f, +0.0039037f),
