@@ -92,6 +92,7 @@ namespace GakuMotion
 		int preserveAnimatorForSecondaryPhysics{-1};
 		// Native is preferred by default. It requires the optional
 		// companion DLL and otherwise uses fallback; no private ABI lives here.
+		bool photographyNativeOnly{false};
 		int secondaryPhysicsBackend{2}; // 0=off, 1=fallback, 2=native
 		bool beforeQuartzExperiment{true}; // Internalized always-on for native injection.
 		bool sleeveMuscleDiagnostics{false}; // Bounded read-only native-reader samples.
