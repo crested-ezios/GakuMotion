@@ -69,19 +69,42 @@ Require(Translate(("あ", new[] { -.2f, .5f, 1.2f }))[M+"unsupported"].SequenceE
 Require(Translate(("あ", new float[3]), ("b_mouth.mouth_028", new float[3]))[M+"native_authored"].All(value => value == 1),
     "expanded explicit zero native authoring remains marked");
 
+const string S = "miku.rawmouth.extra.v1.";
+var extra = Translate(("あ", new[] { .5f, .5f, .5f }), ("にやり２", new[] { .3f, .2f, 0f }),
+    ("口角下げ", new[] { .1f, 0f, .4f }), ("mystery", new[] { 0f, .25f, 0f }));
+Require(extra[S+"present"].All(value => value == 1) &&
+    extra[S+"にやり2"].SequenceEqual(new[] { .3f, .2f, 0f }) &&
+    extra[S+"口角下げ"].SequenceEqual(new[] { .1f, 0f, .4f }),
+    "normalized smirk and downward corner inputs are preserved independently");
+Require(extra[S+"unsupported"].SequenceEqual(new[] { 0f, .25f, 0f }) &&
+    extra[M+"unsupported"].SequenceEqual(new[] { .3f, .25f, .4f }),
+    "raw v1 keeps the aggregate guard while the extra guard retains unknown activity");
+Require(Translate(("あ", new float[3]), ("にやり2", new[] { 0f, .1f, 0f }),
+    ("にやり２", new[] { 0f, 0f, .3f }))[S+"unsupported"].SequenceEqual(new[] { 0f, .1f, .3f }),
+    "duplicate normalized extra inputs stay protected");
+Require(Translate(("あ", new float[3]), ("口角下げ", new[] { -.1f, .25f, 1.2f }))[S+"unsupported"]
+    .SequenceEqual(new[] { 1f, 0f, 1f }), "invalid extra amounts stay protected");
+Require(!Translate(("まばたき", new float[3])).ContainsKey(S+"present"), "eye-only clips have no extra mouth intent");
+
 var curves = new Dictionary<string, IReadOnlyList<MorphKeyframe>>
 {
     ["あ"] = new[] { new MorphKeyframe("あ", 0, .2f), new MorphKeyframe("あ", 2, .8f), new MorphKeyframe("あ", 2, .9f) },
     ["∧"] = new[] { new MorphKeyframe("∧", 0, .04f), new MorphKeyframe("∧", 2, .08f) },
-    ["口角上げ"] = new[] { new MorphKeyframe("口角上げ", 0, .5f) }
+    ["口角上げ"] = new[] { new MorphKeyframe("口角上げ", 0, .5f) },
+    ["にやり２"] = new[] { new MorphKeyframe("にやり２", 0, 0f), new MorphKeyframe("にやり２", 2, .6f) },
+    ["口角下げ"] = new[] { new MorphKeyframe("口角下げ", 0, 0f), new MorphKeyframe("口角下げ", 2, .2f) }
 };
 var sampled = MouthSourceReader.Sample(curves, 30, 60, 7);
+var sampledExtra = MouthSourceReader.Sample(curves, 30, 60, 7, extraOnly: true);
 Require(sampled.Length == 7 * 18 && Math.Abs(sampled[2 * 18] - .55f) < 1e-6f && sampled[6 * 18] == .9f,
     "runtime source resampling uses source/clip fps, last duplicate, and endpoint hold");
 Require(sampled[2 * 18 + 8] == sampled[2 * 18] && Math.Abs(sampled[2 * 18 + 13] - .06f) < 1e-6f,
     "runtime source layout retains legacy raw8 then expanded rawmouth10");
 Require(sampled[15] == 1 && sampled[16] == 0 && sampled[17] == 0 && sampled[6] != 0,
     "runtime markers distinguish legacy and expanded source support");
+Require(sampled[2 * 18 + 16] == .3f && sampledExtra.Length == 7 * 4 &&
+    sampledExtra.AsSpan(2 * 4, 4).SequenceEqual(new[] { 1f, .3f, .1f, 0f }),
+    "extra frame-major order and resampling preserve the original aggregate marker");
 var cornerOnly = MouthSourceReader.Sample(new Dictionary<string, IReadOnlyList<MorphKeyframe>>
     { ["口角上げ"] = curves["口角上げ"] }, 30, 30, 3);
 Require(Enumerable.Range(0, 3).All(frame => cornerOnly[frame * 18 + 5] == 0 && cornerOnly[frame * 18 + 15] == 1),
@@ -139,6 +162,20 @@ try
         fixed (float* outputPointer = output)
             Require(read(pathPointer, 30, 60, 7, outputPointer, output.Length) == 1 && output.All(value => value == -123f),
                 "mouth source ABI contains file errors without output writes");
+
+        delegate* unmanaged<int> extraVersion = &NativeExports.MouthSourceExtraAbiVersion;
+        delegate* unmanaged<byte*, float, float, int, float*, int, int> readExtra = &NativeExports.ReadMouthSourceExtra;
+        output = Enumerable.Repeat(-123f, sampledExtra.Length + 1).ToArray();
+        Require(extraVersion() == 1, "extra source reader ABI version");
+        fixed (byte* pathPointer = sourceUtf8)
+        fixed (float* outputPointer = output)
+        {
+            Require(readExtra(pathPointer, 30, 60, 7, outputPointer, sampledExtra.Length - 1) == 3 &&
+                output.All(value => value == -123f), "extra reader refuses short buffers without writes");
+            Require(readExtra(pathPointer, 30, 60, 7, outputPointer, output.Length) == 0 &&
+                output.AsSpan(0, sampledExtra.Length).SequenceEqual(sampledExtra) && output[^1] == -123f,
+                "extra reader writes only the exact four frame-major channels");
+        }
     }
     Require(File.ReadAllBytes(sourcePath).SequenceEqual(expectedSource) && Directory.GetFiles(sourceDirectory).Length == 1,
         "runtime source extraction leaves the VMD and directory untouched");

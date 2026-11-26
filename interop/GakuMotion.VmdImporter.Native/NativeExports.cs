@@ -41,16 +41,30 @@ internal static unsafe class NativeExports
 
     [UnmanagedCallersOnly(EntryPoint = "GkMouthSource_Read")]
     public static int ReadMouthSource(byte* sourceUtf8, float sourceFps, float clipFps,
-        int frames, float* outputFrameMajor, int outputFloats)
+        int frames, float* outputFrameMajor, int outputFloats) =>
+        ReadMouthSourceChannels(sourceUtf8, sourceFps, clipFps, frames, outputFrameMajor, outputFloats, extraOnly: false);
+
+    [UnmanagedCallersOnly(EntryPoint = "GkMouthSourceExtra_AbiVersion")]
+    public static int MouthSourceExtraAbiVersion() => 1;
+
+    /// <summary>Returns present, にやり2, 口角下げ and residual unsupported values in frame-major order.</summary>
+    [UnmanagedCallersOnly(EntryPoint = "GkMouthSourceExtra_Read")]
+    public static int ReadMouthSourceExtra(byte* sourceUtf8, float sourceFps, float clipFps,
+        int frames, float* outputFrameMajor, int outputFloats) =>
+        ReadMouthSourceChannels(sourceUtf8, sourceFps, clipFps, frames, outputFrameMajor, outputFloats, extraOnly: true);
+
+    private static int ReadMouthSourceChannels(byte* sourceUtf8, float sourceFps, float clipFps,
+        int frames, float* outputFrameMajor, int outputFloats, bool extraOnly)
     {
         if (sourceUtf8 == null || outputFrameMajor == null ||
             !MouthSourceReader.ValidDimensions(sourceFps, clipFps, frames)) return InvalidArgument;
-        if (outputFloats < frames * MouthSourceReader.ChannelCount) return BufferTooSmall;
+        int channelCount = extraOnly ? MouthSourceReader.ExtraChannelCount : MouthSourceReader.ChannelCount;
+        if (outputFloats < frames * channelCount) return BufferTooSmall;
         try
         {
             string? sourcePath = Marshal.PtrToStringUTF8((nint)sourceUtf8);
             if (string.IsNullOrWhiteSpace(sourcePath)) return InvalidArgument;
-            float[] values = MouthSourceReader.Read(sourcePath, sourceFps, clipFps, frames);
+            float[] values = MouthSourceReader.Read(sourcePath, sourceFps, clipFps, frames, extraOnly);
             values.AsSpan().CopyTo(new Span<float>(outputFrameMajor, outputFloats));
             return Ok;
         }

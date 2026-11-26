@@ -103,6 +103,47 @@ static void TestRuntimeMouthSource()
     samples[static_cast<size_t>(fit.unsupportedSlot)] = .1f;
     Check(TryApplyPublishedMouthFit(fit, samples, "auto", available, adapted) == MikuFitDecision::UnsupportedSource && adapted == applied,
         "unsupported authored mouth intent has an explicit decision before any write");
+    {
+        const auto priorNames = clip.blendshape_names;
+        const auto priorWeights = clip.blendshape_weights;
+        auto softClip = clip;
+        Check(mouth_source::AppendExtras(softClip, {1, 0, .2f, 0, 1, .18f, .015f, 0}) &&
+            mouth_source::HasExtras(softClip) &&
+            std::equal(priorNames.begin(), priorNames.end(), softClip.blendshape_names.begin()) &&
+            std::equal(priorWeights.begin(), priorWeights.begin() + priorNames.size(), softClip.blendshape_weights.begin()),
+            "independent corner gesture samples append without changing earlier columns");
+        auto softFit = BindPublishedMouthFit(runtime_mouth_test::Face.faceName, softClip.blendshape_names, available);
+        ResolvePublishedMouthSlots(softFit, available);
+        for (int frame = 0; frame < 2; ++frame)
+        {
+            softClip.SampleBlendshapes(frame / 30.f, samples);
+            samples[softFit.inputSlots[0]] = 1.f;
+            samples[softFit.inputSlots[1]] = 0.f;
+            samples[softFit.unsupportedSlot] = frame == 0 ? .2f : .18f;
+            adapted.assign(available.size(), .92f);
+            Check(TryApplyPublishedMouthFit(softFit, samples, "auto", available, adapted) == MikuFitDecision::ExternalSoftA &&
+                adapted[0] > 0 && adapted[8] == 0 && adapted[9] == 0 && adapted[11] == .92f,
+                "both recognized A-like gestures produce a lightly open mouth with dental channels cleared");
+            const auto reject = [&](int slot, float replacement, MikuFitDecision expected, const char* message) {
+                const float prior = samples[slot];
+                samples[slot] = replacement;
+                adapted.assign(available.size(), .92f);
+                Check(TryApplyPublishedMouthFit(softFit, samples, "auto", available, adapted) == expected &&
+                    std::all_of(adapted.begin(), adapted.end(), [](float value) { return value == .92f; }), message);
+                samples[slot] = prior;
+            };
+            reject(softFit.extraSlots[mouth_source::ExtraUnsupported], .05f, MikuFitDecision::UnsupportedSource,
+                "an independent unknown input still prevents the reference correction");
+            reject(softFit.unsupportedSlot, .9f, MikuFitDecision::UnsupportedSource,
+                "independent inputs must account for the legacy unsupported marker");
+            reject(softFit.inputSlots[1], .30f, MikuFitDecision::UnsupportedSource,
+                "correction leaves dental vowel mixtures alone");
+            reject(softFit.nativeAuthoredSlot, 1.f, MikuFitDecision::NativeAuthored,
+                "native-authored mouth controls still win with the independent gesture source");
+        }
+        clip.SampleBlendshapes(0, samples);
+        adapted = applied;
+    }
     samples[static_cast<size_t>(fit.unsupportedSlot)] = 0;
     samples[static_cast<size_t>(fit.nativeAuthoredSlot)] = 1;
     Check(TryApplyPublishedMouthFit(fit, samples, "auto", available, adapted) == MikuFitDecision::NativeAuthored && adapted == applied,

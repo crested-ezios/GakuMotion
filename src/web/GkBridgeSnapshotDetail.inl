@@ -251,6 +251,7 @@ namespace GakuMotion::webpanel
 		case MikuFitDecision::InvalidRawSource: return "已回退：源数据不完整";
 		case MikuFitDecision::UnsupportedSource: return "已回退：源嘴形未覆盖";
 		case MikuFitDecision::UnsupportedEyeSource: return "已回退：源眼眉未覆盖";
+		case MikuFitDecision::ExternalSoftA: return "已应用：麟羽轻开口";
 		case MikuFitDecision::NativeAuthored: return "已回退：保留显式原生通道";
 		case MikuFitDecision::UnknownFace: return "已回退：实际脸型未匹配";
 		case MikuFitDecision::CharacterMismatch: return "已回退：角色身份不一致";

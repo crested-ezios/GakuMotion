@@ -123,6 +123,7 @@ bool InitializeMotion()
 		GakuMotion::csharp_import::SetPluginsRoot(WidePathToNarrow(g_hostContext.pluginsRoot));
 	}
 	GakuMotion::mouth_source::reader = GakuMotion::csharp_import::ReadMouthSource;
+	GakuMotion::mouth_source::extraReader = GakuMotion::csharp_import::ReadMouthSourceExtra;
 	GakuMotion::mouth_source::report = [](const char* directory, const char* status)
 	{
 		GM_INFO("[GakuMotion][MouthSource] track=%s status=%s", directory, status);

@@ -6,17 +6,18 @@ using System.Text;
 internal static class MouthSourceReader
 {
     internal const int ChannelCount = 18;
+    internal const int ExtraChannelCount = 4;
 
     internal static bool ValidDimensions(float sourceFps, float clipFps, int frames) =>
         float.IsFinite(sourceFps) && sourceFps > 0 && float.IsFinite(clipFps) && clipFps > 0 &&
         frames > 0 && frames <= 1_000_000;
 
-    internal static float[] Read(string sourcePath, float sourceFps, float clipFps, int frames)
+    internal static float[] Read(string sourcePath, float sourceFps, float clipFps, int frames, bool extraOnly = false)
     {
         if (string.IsNullOrWhiteSpace(sourcePath) || !ValidDimensions(sourceFps, clipFps, frames))
             throw new ArgumentException("Invalid mouth source path or dimensions");
         using var stream = File.OpenRead(sourcePath);
-        return Sample(ParseMorphs(stream), sourceFps, clipFps, frames);
+        return Sample(ParseMorphs(stream), sourceFps, clipFps, frames, extraOnly);
     }
 
     internal static IReadOnlyDictionary<string, IReadOnlyList<MorphKeyframe>> ParseMorphs(Stream stream)
@@ -58,7 +59,7 @@ internal static class MouthSourceReader
     }
 
     internal static float[] Sample(IReadOnlyDictionary<string, IReadOnlyList<MorphKeyframe>> tracks,
-        float sourceFps, float clipFps, int frames)
+        float sourceFps, float clipFps, int frames, bool extraOnly = false)
     {
         if (!ValidDimensions(sourceFps, clipFps, frames)) throw new ArgumentOutOfRangeException(nameof(frames));
         var sourceSamples = new Dictionary<string, float[]>(StringComparer.Ordinal);
@@ -67,14 +68,16 @@ internal static class MouthSourceReader
                 sourceSamples[track.Key] = MorphCurve.Sample(track.Value, frames, (double)sourceFps / clipFps);
         var channels = new Dictionary<string, float[]>(StringComparer.Ordinal);
         var map = GakumasMorphMap.Default;
-        MikuRawSource.Append(channels, sourceSamples, map, frames, out _, out _, out _);
-        MikuRawMouthSource.Append(channels, sourceSamples, map, frames);
-        var result = new float[checked(frames * ChannelCount)];
-        string[] names = MikuRawSource.Names.Concat(MikuRawMouthSource.Names).ToArray();
+        if (!extraOnly) MikuRawSource.Append(channels, sourceSamples, map, frames, out _, out _, out _);
+        MikuRawMouthSource.Append(channels, sourceSamples, map, frames, includeExtras: extraOnly);
+        int channelCount = extraOnly ? ExtraChannelCount : ChannelCount;
+        var result = new float[checked(frames * channelCount)];
+        string[] names = extraOnly ? MikuRawMouthSource.ExtraNames :
+            MikuRawSource.Names.Concat(MikuRawMouthSource.Names).ToArray();
         for (int channel = 0; channel < names.Length; channel++)
         {
             if (!channels.TryGetValue(names[channel], out float[]? values)) continue;
-            for (int frame = 0; frame < frames; frame++) result[frame * ChannelCount + channel] = values[frame];
+            for (int frame = 0; frame < frames; frame++) result[frame * channelCount + channel] = values[frame];
         }
         return result;
     }
