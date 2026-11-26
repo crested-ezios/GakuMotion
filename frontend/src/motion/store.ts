@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react'
+import { useRef, useSyncExternalStore } from 'react'
 import { getMotionBridge, setMotionBridge } from './bridge'
 import {
   BridgeError,
@@ -436,8 +436,53 @@ export class MotionStore {
 
 export const motionStore = new MotionStore()
 
-export function useMotionStore<T>(selector: (state: MotionAppState) => T): T {
-  return useSyncExternalStore(motionStore.subscribe, () => selector(motionStore.getState()))
+export function shallowEqual<T>(a: T, b: T): boolean {
+  if (Object.is(a, b)) return true
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false
+  if (Array.isArray(a) !== Array.isArray(b)) return false
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false
+    for (let i = 0; i < a.length; i += 1) {
+      if (!Object.is(a[i], b[i])) return false
+    }
+    return true
+  }
+  const keysA = Object.keys(a as Record<string, unknown>)
+  const keysB = Object.keys(b as Record<string, unknown>)
+  if (keysA.length !== keysB.length) return false
+  for (const key of keysA) {
+    if (
+      !Object.prototype.hasOwnProperty.call(b, key) ||
+      !Object.is((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key])
+    ) {
+      return false
+    }
+  }
+  return true
+}
+
+export function useMotionStore<T>(
+  selector: (state: MotionAppState) => T,
+  equalityFn: (a: T, b: T) => boolean = Object.is,
+): T {
+  const selectionRef = useRef<{ hasValue: boolean; value: T }>({
+    hasValue: false,
+    value: undefined as T,
+  })
+  const getSnapshot = () => {
+    const next = selector(motionStore.getState())
+    if (selectionRef.current.hasValue && equalityFn(selectionRef.current.value, next)) {
+      return selectionRef.current.value
+    }
+    selectionRef.current.hasValue = true
+    selectionRef.current.value = next
+    return next
+  }
+  return useSyncExternalStore(motionStore.subscribe, getSnapshot)
+}
+
+export function useMotionShallow<T>(selector: (state: MotionAppState) => T): T {
+  return useMotionStore(selector, shallowEqual)
 }
 
 export function useSupported(method: MotionMethodName): boolean {

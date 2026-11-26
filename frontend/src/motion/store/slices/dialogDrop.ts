@@ -1,15 +1,67 @@
+import type { DropPeek } from '../../protocol'
 import { isSupportedImageExtension, isSupportedLibraryFile } from '../../validation'
 import type { SliceBundle, StoreContext } from '../context'
 import { normalizeDropPeek } from '../normalizersPhase2'
 import type { DialogTarget } from '../types'
 
+const DROP_IDLE_POLL_MS = 300
+const DROP_ACTIVE_POLL_MS = 150
+const DROP_HIDDEN_POLL_MS = 1000
+
+function sameDropPeek(a: DropPeek, b: DropPeek): boolean {
+  return (
+    a.visual === b.visual &&
+    a.fileCount === b.fileCount &&
+    a.accepted === b.accepted &&
+    a.hostElevated === b.hostElevated &&
+    a.hostBlocked === b.hostBlocked
+  )
+}
+
 export function createDialogDropSlice(ctx: StoreContext): SliceBundle<ReturnType<typeof buildActions>> {
   let dialogTimer: ReturnType<typeof setInterval> | null = null
   let dialogId = 0
   let dialogTarget: DialogTarget | null = null
-  let dropTimer: ReturnType<typeof setInterval> | null = null
+  let dropTimer: ReturnType<typeof setTimeout> | null = null
+  let dropWatchRunning = false
+  let dropTickInFlight = false
+  let dropResyncRequested = false
+  let wasDropActive = false
+  let idlePollCounter = 0
+  let visibilityListening = false
   let dropWatchCount = 0
   let dropTargetActive = false
+
+  const isDocumentHidden = (): boolean =>
+    typeof document !== 'undefined' && document.hidden === true
+
+  const clearDropTimer = (): void => {
+    if (dropTimer) {
+      clearTimeout(dropTimer)
+      dropTimer = null
+    }
+  }
+
+  const scheduleNextDropTick = (delayMs: number): void => {
+    clearDropTimer()
+    if (!dropWatchRunning) return
+    dropTimer = setTimeout(() => {
+      dropTimer = null
+      void tickDrop()
+    }, delayMs)
+  }
+
+  const onVisibilityChange = (): void => {
+    if (!dropWatchRunning || isDocumentHidden()) return
+    scheduleNextDropTick(0)
+  }
+
+  const detachVisibilityListener = (): void => {
+    if (visibilityListening && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      visibilityListening = false
+    }
+  }
 
   const finishDialog = (): void => {
     if (dialogTimer) {
@@ -51,27 +103,66 @@ export function createDialogDropSlice(ctx: StoreContext): SliceBundle<ReturnType
   }
 
   const tickDrop = async (): Promise<void> => {
-    const ready = actions.canAcceptDrop()
-    if (ready !== dropTargetActive) {
-      dropTargetActive = ready
-      if (!ready && ctx.getState().drop.visual !== 'none') {
-        ctx.set({ drop: { visual: 'none', fileCount: 0, accepted: 0, hostElevated: false, hostBlocked: false } })
-      }
-      try {
-        await ctx.client().request('drop.setTarget', { enabled: ready })
-      } catch {
-        dropTargetActive = false
-      }
+    if (!dropWatchRunning) return
+    if (dropTickInFlight) {
+      dropResyncRequested = true
+      return
     }
-    if (!ready) return
+    if (isDocumentHidden()) {
+      scheduleNextDropTick(DROP_HIDDEN_POLL_MS)
+      return
+    }
+
+    dropTickInFlight = true
+    let nextDelay = DROP_IDLE_POLL_MS
     try {
-      const peek = normalizeDropPeek(await ctx.client().request('drop.peek'))
-      ctx.set({ drop: peek })
-      const poll = await ctx.client().request('drop.poll')
-      const files = Array.isArray(poll?.files) ? poll.files : []
-      if (files.length > 0) actions.handleDropFiles(files)
-    } catch {
-      // Transient polling failures are non-fatal; the next tick retries.
+      const ready = actions.canAcceptDrop()
+      if (ready !== dropTargetActive) {
+        dropTargetActive = ready
+        if (!ready && ctx.getState().drop.visual !== 'none') {
+          ctx.set({ drop: { visual: 'none', fileCount: 0, accepted: 0, hostElevated: false, hostBlocked: false } })
+        }
+        try {
+          await ctx.client().request('drop.setTarget', { enabled: ready })
+        } catch {
+          dropTargetActive = false
+        }
+      }
+      if (ready && dropWatchRunning) {
+        try {
+          const peek = normalizeDropPeek(await ctx.client().request('drop.peek'))
+          if (!dropWatchRunning) return
+          if (!sameDropPeek(ctx.getState().drop, peek)) {
+            ctx.set({ drop: peek })
+          }
+          const dragOrPending = peek.visual !== 'none' || peek.fileCount > 0
+          // Poll drop.poll immediately during an active drag / pending batch (and on the tick
+          // immediately following one); when idle, back off drop.poll to every other tick.
+          const shouldPoll = dragOrPending || wasDropActive || idlePollCounter % 2 === 0
+          idlePollCounter = dragOrPending ? 0 : (idlePollCounter + 1) % 2
+          wasDropActive = dragOrPending
+          if (dragOrPending) nextDelay = DROP_ACTIVE_POLL_MS
+          if (shouldPoll) {
+            const poll = await ctx.client().request('drop.poll')
+            const files = Array.isArray(poll?.files) ? poll.files : []
+            if (files.length > 0) actions.handleDropFiles(files)
+          }
+        } catch {
+          // Transient polling failures are non-fatal; the next tick retries.
+        }
+      } else {
+        wasDropActive = false
+        idlePollCounter = 0
+      }
+    } finally {
+      dropTickInFlight = false
+      if (dropWatchRunning) {
+        const delay = dropResyncRequested ? 0 : nextDelay
+        dropResyncRequested = false
+        scheduleNextDropTick(delay)
+      } else {
+        dropResyncRequested = false
+      }
     }
   }
 
@@ -136,16 +227,22 @@ export function createDialogDropSlice(ctx: StoreContext): SliceBundle<ReturnType
       },
 
       startDropWatch: (): void => {
-        if (dropTimer || !ctx.supports('drop.setTarget') || !ctx.supports('drop.poll')) return
-        dropTimer = setInterval(() => void tickDrop(), 200)
+        if (dropWatchRunning || !ctx.supports('drop.setTarget') || !ctx.supports('drop.poll')) return
+        dropWatchRunning = true
+        if (typeof document !== 'undefined' && !visibilityListening) {
+          document.addEventListener('visibilitychange', onVisibilityChange)
+          visibilityListening = true
+        }
         void tickDrop()
       },
 
       stopDropWatch: (): void => {
-        if (dropTimer) {
-          clearInterval(dropTimer)
-          dropTimer = null
-        }
+        dropWatchRunning = false
+        dropResyncRequested = false
+        wasDropActive = false
+        idlePollCounter = 0
+        clearDropTimer()
+        detachVisibilityListener()
         if (dropTargetActive) {
           dropTargetActive = false
           void ctx.client().request('drop.setTarget', { enabled: false }).catch(() => {})
@@ -156,7 +253,7 @@ export function createDialogDropSlice(ctx: StoreContext): SliceBundle<ReturnType
       },
 
       syncDropTarget: (): void => {
-        if (!dropTimer) return
+        if (!dropWatchRunning) return
         if (actions.canAcceptDrop() !== dropTargetActive) {
           void tickDrop()
         }
@@ -196,10 +293,12 @@ export function createDialogDropSlice(ctx: StoreContext): SliceBundle<ReturnType
       clearInterval(dialogTimer)
       dialogTimer = null
     }
-    if (dropTimer) {
-      clearInterval(dropTimer)
-      dropTimer = null
-    }
+    dropWatchRunning = false
+    dropResyncRequested = false
+    wasDropActive = false
+    idlePollCounter = 0
+    clearDropTimer()
+    detachVisibilityListener()
     dropWatchCount = 0
     dropTargetActive = false
     dialogTarget = null

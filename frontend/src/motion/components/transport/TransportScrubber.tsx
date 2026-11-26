@@ -2,7 +2,7 @@ import * as React from 'react'
 import { Slider as BaseSlider } from '@base-ui/react/slider'
 import { RiAlertFill } from '@remixicon/react'
 import { cn } from '@/lib/utils'
-import { motionStore } from '../../store'
+import { motionStore, useMotionStore } from '../../store'
 import { formatTransportTime, framePosition } from '../../time'
 
 export function TransportScrubber({
@@ -10,8 +10,6 @@ export function TransportScrubber({
   duration,
   fps,
   totalFrames,
-  displayTime,
-  scrubActive,
   scrubEnabled,
   actionError,
   showSourceNotice,
@@ -23,8 +21,6 @@ export function TransportScrubber({
   duration: number
   fps: number
   totalFrames: number
-  displayTime: number
-  scrubActive: boolean
   scrubEnabled: boolean
   actionError: string | null
   showSourceNotice: boolean
@@ -32,6 +28,10 @@ export function TransportScrubber({
   navigationError: string | null
   precisionOpen: boolean
 }) {
+  const playerTime = useMotionStore((state) => state.player.time)
+  const scrubActive = useMotionStore((state) => state.scrub.active)
+  const scrubValue = useMotionStore((state) => state.scrub.value)
+  const displayTime = scrubActive ? scrubValue : playerTime
   const [hoverInfo, setHoverInfo] = React.useState<{ ratio: number; seconds: number } | null>(null)
 
   const handleTrackPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {

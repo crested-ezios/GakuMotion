@@ -1,5 +1,29 @@
 namespace GakuMotion::webpanel
 {
+	namespace detail_json
+	{
+		inline void AppendNum(std::string& out, double value)
+		{
+			if (!std::isfinite(value))
+			{
+				out.push_back('0');
+				return;
+			}
+			char buffer[48]{};
+			int len = 0;
+			if (value == std::floor(value) && std::fabs(value) < 9.0e15)
+				len = std::snprintf(buffer, sizeof(buffer), "%lld", static_cast<long long>(value));
+			else
+				len = std::snprintf(buffer, sizeof(buffer), "%.17g", value);
+			if (len > 0) out.append(buffer, static_cast<size_t>(len));
+		}
+
+		inline void AppendBool(std::string& out, bool value)
+		{
+			out += (value ? "true" : "false");
+		}
+	} // namespace detail_json
+
 	inline std::string Bridge::BuildHello() const
 	{
 		std::string methods = "[";
@@ -60,29 +84,50 @@ namespace GakuMotion::webpanel
 
 	inline std::string Bridge::LibraryJsonLocked() const
 	{
-		std::string entries = "[";
+		std::string entries;
+		entries.reserve(core_.motions.size() * 256 + 2);
+		entries.push_back('[');
 		for (size_t i = 0; i < core_.motions.size(); ++i)
 		{
 			const auto& entry = core_.motions[i];
-			if (i) entries += ",";
+			if (i) entries.push_back(',');
 			const int posCount = entry.isGroup || !entry.positions.empty()
 				? (std::max)(entry.positionCount, static_cast<int>(entry.positions.size()))
 				: (std::max)(1, entry.positionCount);
-			entries += "{\"id\":" + JString(entry.name) + ",\"title\":" + JString(entry.title) +
-				",\"subtitle\":" + JString(entry.subtitle) +
-				",\"directory\":" + JString(entry.dir) +
-				",\"durationSeconds\":" + JNum(entry.durationSeconds) +
-				",\"totalFrames\":" + JNum(entry.totalFrames) +
-				",\"hasMotion\":true,\"hasFacial\":" + JBool(entry.hasFacial) +
-				",\"hasCamera\":" + JBool(entry.hasCamera) +
-				",\"hasAudio\":" + JBool(entry.hasAudio) +
-				",\"audioFile\":" + JString(entry.audioFile) +
-				",\"hasCover\":" + JBool(entry.hasCover) +
-				",\"isGroup\":" + JBool(entry.isGroup) +
-				",\"positionCount\":" + JNum(posCount) +
-				",\"positions\":" + MotionPositionsJson(entry.positions, entry.timing) + "}";
+			entries += "{\"id\":";
+			AppendEscaped(entries, entry.name);
+			entries += ",\"title\":";
+			AppendEscaped(entries, entry.title);
+			entries += ",\"subtitle\":";
+			AppendEscaped(entries, entry.subtitle);
+			entries += ",\"directory\":";
+			AppendEscaped(entries, entry.dir);
+			entries += ",\"durationSeconds\":";
+			detail_json::AppendNum(entries, entry.durationSeconds);
+			entries += ",\"totalFrames\":";
+			detail_json::AppendNum(entries, entry.totalFrames);
+			entries += ",\"hasMotion\":true,\"hasFacial\":";
+			detail_json::AppendBool(entries, entry.hasFacial);
+			entries += ",\"hasCamera\":";
+			detail_json::AppendBool(entries, entry.hasCamera);
+			entries += ",\"hasAudio\":";
+			detail_json::AppendBool(entries, entry.hasAudio);
+			entries += ",\"audioFile\":";
+			AppendEscaped(entries, entry.audioFile);
+			entries += ",\"hasCover\":";
+			detail_json::AppendBool(entries, entry.hasCover);
+			entries += ",\"isGroup\":";
+			detail_json::AppendBool(entries, entry.isGroup);
+			entries += ",\"positionCount\":";
+			detail_json::AppendNum(entries, posCount);
+			entries += ",\"positions\":";
+			if (entry.positions.empty())
+				entries += "[]";
+			else
+				entries += MotionPositionsJson(entry.positions, entry.timing);
+			entries.push_back('}');
 		}
-		entries += "]";
+		entries.push_back(']');
 		return "{\"revision\":" + JNum(static_cast<double>(core_.libraryRevision)) +
 			",\"entries\":" + entries +
 			",\"refreshing\":" + JBool(core_.libraryScan.valid()) +
@@ -220,9 +265,8 @@ namespace GakuMotion::webpanel
 			",\"usePerModeTransforms\":" + JBool(settings.usePerModeTransforms) + "}";
 	}
 
-	inline std::string Bridge::CameraJsonLocked() const
+	inline std::string Bridge::CameraSnapshotJsonLocked(const CameraController::Snapshot& snapshot) const
 	{
-		const auto snapshot = core_.camera.ReadSnapshot();
 		return "{\"settings\":" + CameraSettingsJson(snapshot.settings) +
 			",\"available\":" + JBool(snapshot.available) +
 			",\"owned\":" + JBool(snapshot.owned) +
@@ -230,6 +274,11 @@ namespace GakuMotion::webpanel
 			",\"error\":" + JString(snapshot.error) +
 			",\"followTargetError\":" + JString(snapshot.followTargetError) +
 			",\"notice\":" + JString(core_.cameraNotice) + "}";
+	}
+
+	inline std::string Bridge::CameraJsonLocked() const
+	{
+		return CameraSnapshotJsonLocked(core_.camera.ReadSnapshot());
 	}
 
 	inline std::string Bridge::StageSettingsJson(const StageSettings& settings)
@@ -259,35 +308,74 @@ namespace GakuMotion::webpanel
 			",\"customNodeControl\":" + JBool(settings.customNodeControl) + "}";
 	}
 
-	inline std::string Bridge::StageNodesJsonLocked() const
+	inline std::string Bridge::StageNodesFromVector(const std::vector<StageCandidate>& candidates)
 	{
-		std::vector<StageCandidate> candidates;
-		{
-			std::lock_guard<std::mutex> stageLock(core_.stageManager.stageMutex);
-			candidates = core_.stageManager.candidates;
-		}
-		std::string nodes = "[";
+		std::string nodes;
+		nodes.reserve(candidates.size() * 280 + 2);
+		nodes.push_back('[');
 		for (size_t i = 0; i < candidates.size(); ++i)
 		{
 			const auto& candidate = candidates[i];
-			if (i) nodes += ",";
-			nodes += "{\"index\":" + JNum(static_cast<double>(i)) +
-				",\"instanceId\":" + JNum(candidate.instanceId) +
-				",\"name\":" + JString(candidate.name) +
-				",\"displayName\":" + JString(candidate.displayName) +
-				",\"parentIndex\":" + JNum(candidate.parentIndex) +
-				",\"depth\":" + JNum(candidate.depth) +
-				",\"hasChildren\":" + JBool(candidate.hasChildren) +
-				",\"originalActive\":" + JBool(candidate.originalActive) +
-				",\"currentlyActive\":" + JBool(candidate.currentlyActive) +
-				",\"userMuted\":" + JBool(candidate.userMuted) +
-				",\"isIdentifiedBackground\":" + JBool(candidate.isIdentifiedBackground) +
-				",\"isColliderLocked\":" + JBool(candidate.isColliderLocked) +
-				",\"isLightingRoot\":" + JBool(candidate.isLightingRoot) +
-				",\"isLightingNode\":" + JBool(candidate.isLightingNode) + "}";
+			if (i) nodes.push_back(',');
+			nodes += "{\"index\":";
+			detail_json::AppendNum(nodes, static_cast<double>(i));
+			nodes += ",\"instanceId\":";
+			detail_json::AppendNum(nodes, candidate.instanceId);
+			nodes += ",\"name\":";
+			AppendEscaped(nodes, candidate.name);
+			nodes += ",\"displayName\":";
+			AppendEscaped(nodes, candidate.displayName);
+			nodes += ",\"parentIndex\":";
+			detail_json::AppendNum(nodes, candidate.parentIndex);
+			nodes += ",\"depth\":";
+			detail_json::AppendNum(nodes, candidate.depth);
+			nodes += ",\"hasChildren\":";
+			detail_json::AppendBool(nodes, candidate.hasChildren);
+			nodes += ",\"originalActive\":";
+			detail_json::AppendBool(nodes, candidate.originalActive);
+			nodes += ",\"currentlyActive\":";
+			detail_json::AppendBool(nodes, candidate.currentlyActive);
+			nodes += ",\"userMuted\":";
+			detail_json::AppendBool(nodes, candidate.userMuted);
+			nodes += ",\"isIdentifiedBackground\":";
+			detail_json::AppendBool(nodes, candidate.isIdentifiedBackground);
+			nodes += ",\"isColliderLocked\":";
+			detail_json::AppendBool(nodes, candidate.isColliderLocked);
+			nodes += ",\"isLightingRoot\":";
+			detail_json::AppendBool(nodes, candidate.isLightingRoot);
+			nodes += ",\"isLightingNode\":";
+			detail_json::AppendBool(nodes, candidate.isLightingNode);
+			nodes.push_back('}');
 		}
-		nodes += "]";
+		nodes.push_back(']');
 		return nodes;
+	}
+
+	inline std::string Bridge::StageNodesJsonLocked() const
+	{
+		std::lock_guard<std::mutex> stageLock(core_.stageManager.stageMutex);
+		return StageNodesFromVector(core_.stageManager.candidates);
+	}
+
+	inline std::string Bridge::StageJsonFromPartsLocked(const StageSettings& settings, const std::string& sceneName,
+		const std::string& statusNotice, const std::string& mountedKey, const std::string& nodesJson) const
+	{
+		std::string out;
+		out.reserve(nodesJson.size() + 512);
+		out += "{\"settings\":";
+		out += StageSettingsJson(settings);
+		out += ",\"sceneName\":";
+		AppendEscaped(out, sceneName);
+		out += ",\"statusNotice\":";
+		AppendEscaped(out, statusNotice);
+		out += ",\"mountedKey\":";
+		AppendEscaped(out, mountedKey);
+		out += ",\"loadNotice\":";
+		AppendEscaped(out, core_.stageLoadNotice);
+		out += ",\"candidates\":";
+		out += nodesJson;
+		out.push_back('}');
+		return out;
 	}
 
 	inline std::string Bridge::StageJsonWithNodesLocked(const std::string& nodesJson) const
@@ -301,12 +389,7 @@ namespace GakuMotion::webpanel
 			statusNotice = core_.stageManager.statusNotice;
 			mountedKey = core_.stageManager.mountedStageKey;
 		}
-		return "{\"settings\":" + StageSettingsJson(settings) +
-			",\"sceneName\":" + JString(sceneName) +
-			",\"statusNotice\":" + JString(statusNotice) +
-			",\"mountedKey\":" + JString(mountedKey) +
-			",\"loadNotice\":" + JString(core_.stageLoadNotice) +
-			",\"candidates\":" + nodesJson + "}";
+		return StageJsonFromPartsLocked(settings, sceneName, statusNotice, mountedKey, nodesJson);
 	}
 
 	inline std::string Bridge::StageJsonLocked() const

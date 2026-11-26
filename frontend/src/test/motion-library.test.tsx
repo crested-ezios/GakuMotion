@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LibraryPage } from '@/motion/pages/LibraryPage'
@@ -396,5 +396,38 @@ describe('LibraryPage', () => {
       expect(pos.motion.candidates).toContain('C:\\Pool\\appended_both.vmd')
       expect(pos.facial.candidates).toContain('C:\\Pool\\appended_both.vmd')
     }
+  })
+
+  it('virtualizes libraries over 25 rows and avoids duplicate gk-disc-sheen SVG IDs', () => {
+    const entries = Array.from({ length: 60 }, (_, idx) => ({
+      id: `virt-track-${idx}`,
+      title: `Virtual Track ${idx + 1}`,
+      directory: `gakumas-local/motions/virt-track-${idx}`,
+      durationSeconds: 180,
+      totalFrames: 10800,
+      hasMotion: true,
+      hasFacial: false,
+      hasCamera: false,
+      hasAudio: false,
+      isGroup: false,
+      positionCount: 1,
+      positions: [],
+    }))
+
+    act(() => {
+      bridge.push('library.changed', {
+        revision: 99,
+        entries,
+        refreshing: false,
+        notice: '',
+      })
+    })
+
+    const { container } = render(<LibraryPage />)
+    expect(screen.getByTestId('library-count')).toHaveTextContent('显示 60 / 60 个曲目')
+    const renderedRows = container.querySelectorAll('[data-testid^="library-row-virt-track-"]')
+    expect(renderedRows.length).toBeGreaterThan(0)
+    expect(renderedRows.length).toBeLessThan(60)
+    expect(container.querySelectorAll('#gk-disc-sheen').length).toBe(0)
   })
 })

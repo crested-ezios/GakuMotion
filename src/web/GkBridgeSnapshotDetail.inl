@@ -252,6 +252,7 @@ namespace GakuMotion::webpanel
 		case MikuFitDecision::UnsupportedSource: return "已回退：源嘴形未覆盖";
 		case MikuFitDecision::UnsupportedEyeSource: return "已回退：源眼眉未覆盖";
 		case MikuFitDecision::ExternalSoftA: return "已应用：麟羽轻开口";
+		case MikuFitDecision::ExternalMouthV2: return "已应用：麟羽扩展口型";
 		case MikuFitDecision::NativeAuthored: return "已回退：保留显式原生通道";
 		case MikuFitDecision::UnknownFace: return "已回退：实际脸型未匹配";
 		case MikuFitDecision::CharacterMismatch: return "已回退：角色身份不一致";
@@ -350,13 +351,18 @@ namespace GakuMotion::webpanel
 			",\"physicsBackend\":" + JNum(core_.guiPhysicsBackend.load()) + "}";
 	}
 
+	inline std::string Bridge::BuildAppearanceJsonFromInfo(const AppearanceInfo& info)
+	{
+		return "{\"theme\":" + JNum(info.theme) +
+			",\"uiScale\":" + JNum(info.uiScale) +
+			",\"dpiScale\":1,\"scaleLimited\":false}";
+	}
+
 	inline std::string Bridge::BuildAppearanceJson() const
 	{
 		AppearanceInfo info;
 		if (hooks_.appearance) info = hooks_.appearance();
-		return "{\"theme\":" + JNum(info.theme) +
-			",\"uiScale\":" + JNum(info.uiScale) +
-			",\"dpiScale\":1,\"scaleLimited\":false}";
+		return BuildAppearanceJsonFromInfo(info);
 	}
 
 	inline std::string Bridge::ClockJsonLocked(std::string* outMeta) const
@@ -386,27 +392,38 @@ namespace GakuMotion::webpanel
 		return meta + ",\"evaluatedFrameSerial\":" + JNum(static_cast<double>(snap.evaluatedFrameSerial)) + "}";
 	}
 
+	inline std::string Bridge::BuildAudioEffectJsonFromState(const AudioEffectState& state)
+	{
+		const std::string& activeId = state.activeId.empty() ? std::string("flat") : state.activeId;
+		std::string list = "[";
+		if (state.presets.empty())
+		{
+			list += "{\"id\":\"flat\",\"name\":" + JString("原声") +
+				",\"category\":\"flat\",\"description\":" + JString("直通输出") + "}";
+		}
+		else
+		{
+			for (size_t i = 0; i < state.presets.size(); ++i)
+			{
+				if (i) list += ",";
+				const auto& p = state.presets[i];
+				list += "{\"id\":" + JString(p.id) +
+					",\"name\":" + JString(p.name) +
+					",\"category\":" + JString(p.category) +
+					",\"description\":" + JString(p.description) + "}";
+			}
+		}
+		list += "]";
+		return "{\"available\":" + JBool(state.available) +
+			",\"activeId\":" + JString(activeId) +
+			",\"presets\":" + list + "}";
+	}
+
 	inline std::string Bridge::BuildAudioEffectJson() const
 	{
 		AudioEffectState st;
 		if (hooks_.getAudioEffectsState) st = hooks_.getAudioEffectsState();
-		if (st.activeId.empty()) st.activeId = "flat";
-		if (st.presets.empty())
-			st.presets.push_back({"flat", "原声", "flat", "直通输出"});
-		std::string list = "[";
-		for (size_t i = 0; i < st.presets.size(); ++i)
-		{
-			if (i) list += ",";
-			const auto& p = st.presets[i];
-			list += "{\"id\":" + JString(p.id) +
-				",\"name\":" + JString(p.name) +
-				",\"category\":" + JString(p.category) +
-				",\"description\":" + JString(p.description) + "}";
-		}
-		list += "]";
-		return "{\"available\":" + JBool(st.available) +
-			",\"activeId\":" + JString(st.activeId) +
-			",\"presets\":" + list + "}";
+		return BuildAudioEffectJsonFromState(st);
 	}
 
 	inline std::string Bridge::BuildSnapshotLocked() const

@@ -42,7 +42,6 @@ namespace GakuMotion::webpanel
 		std::string response;
 		try { response = DispatchRequest(requestJson); }
 		catch (...) { response = MakeError(0, "internal", "Unhandled bridge exception"); }
-		forceDomainRefresh_.store(true, std::memory_order_release);
 		const uint64_t needed = static_cast<uint64_t>(response.size()) + 1;
 		if (needed > 0xFFFFFFFFull) return GAKU_E_LIMIT;
 		if (requiredBytes) *requiredBytes = static_cast<uint32_t>(needed);
@@ -147,7 +146,12 @@ namespace GakuMotion::webpanel
 		CmdResult result;
 		try { result = Dispatch(method, params ? *params : emptyParams); }
 		catch (...) { result = CmdResult::Err("internal", "Unhandled method exception"); }
-		if (result.ok) return MakeOk(id, result.body);
+		if (result.ok)
+		{
+			if (IsSlowDomainMutatingMethod(method))
+				forceDomainRefresh_.store(true, std::memory_order_release);
+			return MakeOk(id, result.body);
+		}
 		return MakeError(id, result.code, result.message, result.details);
 	}
 

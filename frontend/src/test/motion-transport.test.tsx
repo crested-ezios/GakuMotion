@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/tooltip'
@@ -205,5 +205,30 @@ describe('TransportBar', () => {
     // Switching back restores cover image
     await motionStore.selectMotion('hikari-no-saki', false)
     await waitFor(() => expect(screen.getByTestId('transport-cover-img')).toBeInTheDocument())
+  })
+
+  it('isolates 10Hz player.time and clock.changed updates to TransportScrubber without re-rendering TransportBar', async () => {
+    await motionStore.selectMotion('hikari-no-saki', false)
+    const rightSpy = vi.fn()
+    const origChild = await import('@/motion/components/transport/TransportRightControls')
+    vi.spyOn(origChild, 'TransportRightControls').mockImplementation((props) => {
+      rightSpy()
+      return <div data-testid="mock-right-controls" data-speed={props.speed} />
+    })
+
+    renderBar()
+    const initialRenders = rightSpy.mock.calls.length
+    const basePlayer = motionStore.getState().player
+    const baseClock = motionStore.getState().clock
+
+    act(() => {
+      for (let i = 1; i <= 5; i += 1) {
+        bridge.push('player.stateChanged', { ...basePlayer, time: i * 0.5 })
+        bridge.push('clock.changed', { ...baseClock, evaluatedFrameSerial: 100 + i })
+      }
+    })
+
+    expect(rightSpy.mock.calls.length).toBe(initialRenders)
+    expect(screen.getByRole('slider', { name: '播放进度' })).toHaveAttribute('aria-valuenow', '2.5')
   })
 })

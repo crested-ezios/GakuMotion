@@ -224,7 +224,6 @@
     font-size: var(--gaku-text-base, 14px);
     line-height: 1.45;
     -webkit-font-smoothing: antialiased;
-    text-rendering: optimizeLegibility;
   }
   ::selection {
     background: hsl(var(--primary) / 0.25);

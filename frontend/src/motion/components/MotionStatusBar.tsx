@@ -8,17 +8,21 @@ import { useMotionStore } from '../store'
 
 // Studio context header bar: active track, active scene, and resource warnings.
 export function MotionStatusBar() {
-  const player = useMotionStore((state) => state.player)
-  const loaded = useMotionStore((state) => state.loaded)
-  const library = useMotionStore((state) => state.library)
-  const selectedKey = useMotionStore((state) => state.selectedLibraryKey)
+  const playerTitle = useMotionStore((state) => state.player.title)
+  const loadedMotionKey = useMotionStore((state) => state.loaded.motionKey)
+  const sourceMissing = useMotionStore((state) => state.loaded.sourceMissing)
+  const sourceChanged = useMotionStore((state) => state.loaded.sourceChanged)
+  const selectedTitle = useMotionStore((state) => {
+    if (state.loaded.motionKey || !state.selectedLibraryKey) return ''
+    return state.library.entries.find((entry) => entry.id === state.selectedLibraryKey)?.title ?? ''
+  })
   const stageSceneName = useMotionStore((state) => state.stage.sceneName)
 
   let trackName = '未加载曲目'
-  if (loaded.motionKey) {
-    trackName = player.title
-  } else if (selectedKey) {
-    trackName = library.entries.find((entry) => entry.id === selectedKey)?.title ?? trackName
+  if (loadedMotionKey) {
+    trackName = playerTitle
+  } else if (selectedTitle) {
+    trackName = selectedTitle
   }
 
   return (
@@ -26,10 +30,10 @@ export function MotionStatusBar() {
       className="flex min-h-[42px] shrink-0 flex-wrap items-center justify-end gap-2.5 bg-background px-5 py-2 text-xs"
       data-testid="motion-status-bar"
     >
-      {(loaded.sourceMissing || loaded.sourceChanged) && (
+      {(sourceMissing || sourceChanged) && (
         <Badge variant="warning" className="gap-1 rounded-[4px]">
           <RiAlertFill className="size-3.5" />
-          <span>{loaded.sourceMissing ? '源文件缺失' : '源文件已变更'}</span>
+          <span>{sourceMissing ? '源文件缺失' : '源文件已变更'}</span>
         </Badge>
       )}
 

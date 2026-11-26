@@ -20,14 +20,7 @@ export function DefaultAlbumCover({ className, testId }: DefaultAlbumCoverProps)
         aria-hidden="true"
         className="size-[76%] opacity-90"
       >
-        <defs>
-          <radialGradient id="gk-disc-sheen" cx="35%" cy="30%" r="70%">
-            <stop offset="0%" stopColor="currentColor" stopOpacity="0.28" />
-            <stop offset="60%" stopColor="currentColor" stopOpacity="0.08" />
-            <stop offset="100%" stopColor="currentColor" stopOpacity="0.02" />
-          </radialGradient>
-        </defs>
-        <circle cx="32" cy="32" r="26" fill="url(#gk-disc-sheen)" stroke="currentColor" strokeOpacity="0.28" strokeWidth="1.5" />
+        <circle cx="32" cy="32" r="26" fill="currentColor" fillOpacity="0.08" stroke="currentColor" strokeOpacity="0.28" strokeWidth="1.5" />
         <circle cx="32" cy="32" r="19" stroke="currentColor" strokeOpacity="0.14" strokeWidth="1" />
         <circle cx="32" cy="32" r="13" stroke="currentColor" strokeOpacity="0.14" strokeWidth="1" />
         <circle cx="32" cy="32" r="7.5" fill="currentColor" fillOpacity="0.18" stroke="currentColor" strokeOpacity="0.45" strokeWidth="1.5" />

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MotionMockBridgeClient, type MockCapabilityProfile } from '@/motion/mock'
 import { BridgeError } from '@/motion/protocol'
-import { MotionStore } from '@/motion/store'
+import { MotionStore, shallowEqual } from '@/motion/store'
 
 async function startedStore(capabilityProfile: MockCapabilityProfile = 'full') {
   const bridge = new MotionMockBridgeClient({ capabilityProfile })
@@ -246,6 +246,35 @@ describe('MotionStore camera and stage', () => {
     })
     await store.selectActor(101)
     expect(store.getState().actionError).toContain('角色名单已变化')
+    bridge.close()
+  })
+
+  it('compares shallow records and arrays accurately in shallowEqual', () => {
+    expect(shallowEqual({ a: 1, b: 'x' }, { a: 1, b: 'x' })).toBe(true)
+    expect(shallowEqual({ a: 1, b: 'x' }, { a: 2, b: 'x' })).toBe(false)
+    expect(shallowEqual({ a: 1 }, { a: 1, b: 2 })).toBe(false)
+    expect(shallowEqual([1, 2, 3], [1, 2, 3])).toBe(true)
+    expect(shallowEqual([1, 2, 3], [1, 2, 4])).toBe(false)
+    expect(shallowEqual(null, {})).toBe(false)
+  })
+
+  it('skips drop polling while document.hidden is true and resumes when visible', async () => {
+    const { bridge, store } = await startedStore()
+    const spy = vi.spyOn(bridge, 'request')
+    const hiddenSpy = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+
+    store.retainDropWatch()
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    const hiddenCalls = spy.mock.calls.filter((c) => c[0] === 'drop.peek' || c[0] === 'drop.poll')
+    expect(hiddenCalls.length).toBe(0)
+
+    hiddenSpy.mockReturnValue(false)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    const visibleCalls = spy.mock.calls.filter((c) => c[0] === 'drop.peek' || c[0] === 'drop.poll')
+    expect(visibleCalls.length).toBeGreaterThan(0)
+
+    store.releaseDropWatch()
     bridge.close()
   })
 })

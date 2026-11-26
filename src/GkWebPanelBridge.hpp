@@ -96,6 +96,7 @@ namespace GakuMotion::webpanel
 
 		// ---- dispatch ----------------------------------------------------------
 
+		static bool IsSlowDomainMutatingMethod(const std::string& method);
 		CmdResult Dispatch(const std::string& method, const jsonlite::Value& params);
 
 		// ---- command helpers ----------------------------------------------------
@@ -202,9 +203,13 @@ namespace GakuMotion::webpanel
 		std::string FormationJsonLocked() const;
 		static std::string CameraTransformJson(const CameraModeTransform& transform);
 		static std::string CameraSettingsJson(const CameraSettings& settings);
+		std::string CameraSnapshotJsonLocked(const CameraController::Snapshot& snapshot) const;
 		std::string CameraJsonLocked() const;
 		static std::string StageSettingsJson(const StageSettings& settings);
+		static std::string StageNodesFromVector(const std::vector<StageCandidate>& candidates);
 		std::string StageNodesJsonLocked() const;
+		std::string StageJsonFromPartsLocked(const StageSettings& settings, const std::string& sceneName,
+			const std::string& statusNotice, const std::string& mountedKey, const std::string& nodesJson) const;
 		std::string StageJsonWithNodesLocked(const std::string& nodesJson) const;
 		std::string StageJsonLocked() const;
 		std::string FacialJsonLocked() const;
@@ -222,12 +227,33 @@ namespace GakuMotion::webpanel
 		static const char* MikuStatusText(MikuFitDecision decision);
 		std::string ExperimentsJsonLocked() const;
 		std::string TelemetryJsonLocked() const;
+		static std::string BuildAppearanceJsonFromInfo(const AppearanceInfo& info);
 		std::string BuildAppearanceJson() const;
 		std::string ClockJsonLocked(std::string* outMeta = nullptr) const;
+		static std::string BuildAudioEffectJsonFromState(const AudioEffectState& state);
 		std::string BuildAudioEffectJson() const;
 		std::string BuildSnapshotLocked() const;
 
 		// ---- UI tick: async polling + change events -------------------------------
+
+		struct CachedStageNode
+		{
+			int instanceId{0};
+			int parentIndex{-1};
+			int depth{0};
+			uint8_t flags{0};
+			std::string name;
+			std::string displayName;
+		};
+		struct CachedActorEntry
+		{
+			uint64_t token{0};
+			void* actor{nullptr};
+			std::string character;
+			std::string displayName;
+			std::string shortName;
+			std::string presetName;
+		};
 
 		static uint64_t NextSessionId();
 		void ResetChangeTracking();
@@ -286,6 +312,117 @@ namespace GakuMotion::webpanel
 		bool lastPolledImportActive_{false};
 		bool lastPolledImportFinished_{false};
 		float lastPolledImportProgress_{-1.0f};
+
+		// Lightweight pre-serialization dirty-check caches (avoid 10Hz/60Hz JSON churn).
+		bool domainCacheValid_{false};
+		bool lastPermInjectionAllowed_{false};
+		std::string lastPermInjectionStatus_;
+		PlaybackState lastPlayerState_{PlaybackState::Stopped};
+		std::string lastPlayerLoadedKey_;
+		uint64_t lastPlayerLibRev_{0};
+		float lastPlayerTime_{0.0f};
+		float lastPlayerDuration_{0.0f};
+		uint32_t lastPlayerTotalFrames_{0};
+		float lastPlayerFps_{0.0f};
+		float lastPlayerSpeed_{1.0f};
+		float lastPlayerVolume_{1.0f};
+		PlaylistMode lastPlayerPlaylistMode_{};
+		GakuMotionClockSnapshotV1 lastClockSnapshot_{};
+		bool lastClockSnapshotValid_{false};
+
+		uint64_t lastLibRev_{0};
+		size_t lastLibCount_{0};
+		bool lastLibScanning_{false};
+		std::string lastLibPlaylistNotice_;
+
+		std::string lastLoadedKey_;
+		uint64_t lastLoadedGen_{0};
+		uint64_t lastLoadedSession_{0};
+		bool lastLoadedSourceMissing_{false};
+		bool lastLoadedSourceChanged_{false};
+
+		int lastPlaylistMode_{-1};
+		std::string lastPlaylistNotice_;
+
+		uint64_t lastActorsEpoch_{0};
+		void* lastActorsTarget_{nullptr};
+		void* lastActorsBound_{nullptr};
+		std::vector<CachedActorEntry> lastActorsEntries_;
+
+		StageFormation lastFormationState_;
+		bool lastFormationHasLoadedMotion_{false};
+
+		CameraController::Snapshot lastCameraSnapshot_;
+		std::string lastCameraNotice_;
+
+		std::vector<CachedStageNode> lastStageNodesCache_;
+		StageSettings lastStageSettings_;
+		std::string lastStageSceneName_;
+		std::string lastStageStatusNotice_;
+		std::string lastStageMountedKey_;
+		std::string lastStageLoadNotice_;
+
+		FacialWeights lastFacialWeights_;
+		std::string lastFacialNotice_;
+
+		Vector3 lastInitialPosition_{0.0f, 0.0f, 0.0f};
+		std::string lastInitialPositionNotice_;
+
+		bool lastImportActive_{false};
+		bool lastImportFinished_{false};
+		bool lastImportSucceeded_{false};
+		float lastImportProgressVal_{-1.0f};
+		std::string lastImportStage_;
+		std::string lastImportStatusText_;
+		std::string lastImportErrorDetail_;
+		std::string lastImportKey_;
+
+		int lastAppearanceTheme_{-1};
+		float lastAppearanceUiScale_{-1.0f};
+
+		int lastGazeMode_{-1};
+		bool lastGazeDesktop_{true};
+		float lastGazeEye_{0.0f};
+		float lastGazeHead_{0.0f};
+		float lastGazeBody_{0.0f};
+		bool lastGazeRuntimeAvail_{false};
+		bool lastGazeVrifyAvail_{false};
+		bool lastGazeVrifyActive_{false};
+		std::string lastGazeNotice_;
+
+		uint64_t lastBoneRevision_{0};
+		size_t lastBoneCount_{0};
+		bool lastBoneMasterEnabled_{true};
+		std::string lastBoneNotice_;
+
+		SoleMeasurementSettings lastSoleSettings_;
+		uint64_t lastSoleGen_{0};
+		std::string lastSoleNotice_;
+		uint64_t lastSoleActorToken_{0};
+		SoleMeasurementSnapshot lastSoleSnapshot_;
+
+		sole_pitch::Settings lastSolePitchSettings_;
+		sole_pitch::Snapshot lastSolePitchSnapshot_;
+		std::string lastSolePitchNotice_;
+
+		studio::Settings lastStudioSettings_;
+		uint64_t lastStudioRevision_{0};
+		std::string lastStudioLightingNotice_;
+		std::string lastStudioVideoNotice_;
+
+		unsigned lastExpMikuSnapshot_{0};
+		int lastExpMikuMouth_{-1};
+		int lastExpMikuEye_{-1};
+		int lastExpMikuAllow_{-1};
+		bool lastExpCtrlMouth_{false};
+		bool lastExpCtrlEye_{false};
+		bool lastExpCtrlAllow_{false};
+		bool lastExpPlaying_{false};
+		bool lastExpBeforeQuartz_{false};
+		bool lastExpMuteSe_{false};
+		std::string lastExpNotice_;
+
+		AudioEffectState lastAudioEffectState_;
 	};
 } // namespace GakuMotion::webpanel
 

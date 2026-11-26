@@ -1,5 +1,35 @@
 namespace GakuMotion::webpanel
 {
+	inline bool Bridge::IsSlowDomainMutatingMethod(const std::string& method)
+	{
+		// Read-only queries, UI-only polls, and high-frequency transport/clock updates
+		// must not trigger a full slow-domain refresh on every RPC.
+		if (method == "bridge.hello" || method == "bridge.ping" || method == "motion.hello" ||
+			method == "state.get" || method == "telemetry.get" || method == "appearance.get" ||
+			method == "dialog.pickFile" || method == "dialog.poll" ||
+			method == "drop.setTarget" || method == "drop.poll" || method == "drop.peek" ||
+			method == "shell.setTextInputActive" ||
+			method == "library.openFolder" || method == "library.probeFiles" ||
+			method == "library.startEdit" || method == "library.probeAudio" ||
+			method == "library.getCover" || method == "library.readImagePreview" ||
+			method == "screenshot.capabilities" || method == "screenshot.capture" ||
+			method == "actors.getPortrait" ||
+			method == "bone.tree" || method == "bone.get" ||
+			method == "gaze.get" ||
+			method == "sole.get" || method == "sole.read" ||
+			method == "solePitch.get" ||
+			method == "studio.get" ||
+			method == "experiments.get" ||
+			method == "clock.setRunMode" || method == "clock.configure" ||
+			method == "player.seek" || method == "player.seekFrame" || method == "player.stepFrame" ||
+			method == "player.scrubBegin" || method == "player.scrubUpdate" || method == "player.scrubEnd" ||
+			method == "player.setSpeed" || method == "player.setVolume" || method == "player.saveVolume")
+		{
+			return false;
+		}
+		return true;
+	}
+
 	inline CmdResult Bridge::Dispatch(const std::string& method, const jsonlite::Value& params)
 	{
 		if (method == "bridge.hello")

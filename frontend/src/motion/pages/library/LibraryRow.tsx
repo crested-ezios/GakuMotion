@@ -47,14 +47,14 @@ export interface LibraryRowProps {
   canEdit: boolean
   canDelete: boolean
   style?: React.CSSProperties
-  onSelect: () => void
-  onDoubleClick: () => void
-  onContextMenu: (event: React.MouseEvent<HTMLDivElement>) => void
-  onPlay: () => void
+  onSelect: (id: string) => void
+  onDoubleClick: (id: string) => void
+  onContextMenu: (event: React.MouseEvent<HTMLDivElement>, entry: LibraryEntry) => void
+  onPlay: (entry: LibraryEntry) => void
   onPause: () => void
-  onPreview: () => void
-  onEdit: () => void
-  onDelete: () => void
+  onPreview: (id: string) => void
+  onEdit: (id: string) => void
+  onDelete: (id: string) => void
 }
 
 function LibraryRowCover({
@@ -132,7 +132,7 @@ function LibraryRowCover({
   )
 }
 
-export function LibraryRow({
+export const LibraryRow = React.memo(function LibraryRow({
   entry,
   index,
   selected,
@@ -152,8 +152,8 @@ export function LibraryRow({
   onEdit,
   onDelete,
 }: LibraryRowProps) {
-  const tags = trackTags(entry)
-  const subtitleText = formatSubtitle(entry.subtitle)
+  const tags = React.useMemo(() => trackTags(entry), [entry.hasMotion, entry.hasFacial, entry.hasCamera, entry.hasAudio])
+  const subtitleText = React.useMemo(() => formatSubtitle(entry.subtitle), [entry.subtitle])
   const isPlaying = loadedStatus === 'playing'
   const isPaused = loadedStatus === 'paused' || loadedStatus === 'preview'
 
@@ -165,18 +165,18 @@ export function LibraryRow({
       style={style}
       onClick={(event) => {
         event.stopPropagation()
-        onSelect()
+        onSelect(entry.id)
       }}
       onDoubleClick={(event) => {
         event.stopPropagation()
-        onDoubleClick()
+        onDoubleClick(entry.id)
       }}
-      onContextMenu={onContextMenu}
+      onContextMenu={(event) => onContextMenu(event, entry)}
       className={cn(
-        'group relative flex h-[var(--gaku-row-height,56px)] select-none items-center gap-3.5 rounded-lg px-3 text-left transition-all duration-150',
+        'group relative flex h-[var(--gaku-row-height,56px)] select-none items-center gap-3.5 rounded-lg border px-3 text-left transition-colors duration-150',
         selected
-          ? 'bg-card shadow-[0_2px_8px_rgba(0,0,0,0.06)] dark:shadow-[0_2px_10px_rgba(0,0,0,0.28)]'
-          : 'hover:bg-card hover:shadow-[0_2px_8px_rgba(0,0,0,0.06)] dark:hover:shadow-[0_2px_10px_rgba(0,0,0,0.28)]',
+          ? 'border-border/70 bg-card'
+          : 'border-transparent hover:border-border/50 hover:bg-card/85',
       )}
     >
       {/* 状态 / 序号：仅响应 Hover（click 后主动 blur，避免鼠标移开后停留在暂停按钮） */}
@@ -223,7 +223,7 @@ export function LibraryRow({
             title={isPaused ? '继续播放' : '播放'}
             onClick={(event) => {
               event.currentTarget.blur()
-              onPlay()
+              onPlay(entry)
             }}
             className={cn(
               'absolute inset-0 flex items-center justify-center rounded-md opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40',
@@ -286,7 +286,7 @@ export function LibraryRow({
             disabled={busy || !canSelect}
             aria-label={`预览 ${entry.title}`}
             title="加载预览"
-            onClick={onPreview}
+            onClick={() => onPreview(entry.id)}
           >
             <RiEyeLine className="size-4" />
           </Button>
@@ -298,7 +298,7 @@ export function LibraryRow({
             disabled={busy || !canEdit}
             aria-label={`编辑 ${entry.title}`}
             title="管理轨道与同步"
-            onClick={onEdit}
+            onClick={() => onEdit(entry.id)}
           >
             <RiPencilLine className="size-4" />
           </Button>
@@ -310,7 +310,7 @@ export function LibraryRow({
             disabled={busy || !canDelete}
             aria-label={`删除 ${entry.title}`}
             title="删除"
-            onClick={onDelete}
+            onClick={() => onDelete(entry.id)}
           >
             <RiDeleteBinLine className="size-4" />
           </Button>
@@ -339,4 +339,4 @@ export function LibraryRow({
       </div>
     </div>
   )
-}
+})

@@ -38,7 +38,8 @@ const FACIAL_KNOBS: Array<{ key: keyof FacialWeights; label: string; hint: strin
 export function MotionPage() {
   const formation = useMotionStore((state) => state.formation)
   const facial = useMotionStore((state) => state.facial)
-  const player = useMotionStore((state) => state.player)
+  const playerTitle = useMotionStore((state) => state.player.title)
+  const playerFps = useMotionStore((state) => state.player.fps)
   const loaded = useMotionStore((state) => state.loaded)
   const libraryEntries = useMotionStore((state) => state.library.entries)
   const boneCount = useMotionStore((state) => state.bone.overrides.length)
@@ -124,7 +125,7 @@ export function MotionPage() {
             <div className="min-w-0 space-y-0.5">
               <div className="flex flex-wrap items-center gap-2">
                 <h1 className="truncate text-lg font-semibold text-foreground">
-                  {loadedEntry?.title ?? (loaded.motionKey ? player.title : '尚未加载动作素材')}
+                  {loadedEntry?.title ?? (loaded.motionKey ? playerTitle : '尚未加载动作素材')}
                 </h1>
                 {loadedEntry?.isGroup && (
                   <Badge variant="group" className="shrink-0 rounded px-1.5 py-0 text-[10px] leading-4">
@@ -133,7 +134,7 @@ export function MotionPage() {
                 )}
                 {loadedEntry && (
                   <span className="rounded-[4px] border border-border bg-muted/60 px-2 py-0.5 text-xs tabular-nums text-muted-foreground">
-                    {formatMmSs(loadedEntry.durationSeconds)} · {loadedEntry.totalFrames} 帧 · {Number(player.fps.toPrecision(4))} fps
+                    {formatMmSs(loadedEntry.durationSeconds)} · {loadedEntry.totalFrames} 帧 · {Number(playerFps.toPrecision(4))} fps
                   </span>
                 )}
               </div>

@@ -14,7 +14,7 @@ import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { PLAY_MODES } from '../protocol'
-import { motionStore, useMotionStore } from '../store'
+import { motionStore, useMotionShallow, useMotionStore } from '../store'
 import { validTimeline } from '../time'
 import { AlbumCover } from './AlbumCover'
 import { CoverEditorModal } from './CoverEditorModal'
@@ -39,25 +39,36 @@ function playModeIcon(mode: number) {
 }
 
 export function TransportBar() {
-  const player = useMotionStore((state) => state.player)
-  const scrub = useMotionStore((state) => state.scrub)
+  // Subscribe only to low-frequency player fields so 10Hz player.time updates stay isolated in TransportScrubber.
+  const player = useMotionShallow((state) => ({
+    state: state.player.state,
+    title: state.player.title,
+    duration: state.player.duration,
+    fps: state.player.fps,
+    totalFrames: state.player.totalFrames,
+    playMode: state.player.playMode,
+    speed: state.player.speed,
+    volume: state.player.volume,
+  }))
   const loaded = useMotionStore((state) => state.loaded)
-  const libraryEntries = useMotionStore((state) => state.library.entries)
+  const currentEntry = useMotionStore(
+    (state) => state.library.entries.find((entry) => entry.id === state.loaded.motionKey) ?? null,
+  )
   const libraryRevision = useMotionStore((state) => state.library.revision)
   const musicVolumeSupport = useMotionStore((state) => state.musicVolumeSupport)
   const musicVolumeNotice = useMotionStore((state) => state.musicVolumeNotice)
   const navigationError = useMotionStore((state) => state.navigationError)
   const actionError = useMotionStore((state) => state.actionError)
   const cameraPending = useMotionStore((state) => state.cameraPending)
-  const clock = useMotionStore((state) => state.clock)
+  const clockRunMode = useMotionStore((state) => state.clock.runMode)
   const audioEffect = useMotionStore((state) => state.audioEffect)
-  const coverCache = useMotionStore((state) => state.coverCache)
   const capabilities = useMotionStore((state) => state.capabilities)
   const seekStepSeconds = useMotionStore((state) => state.seekStepSeconds)
   const precisionOpen = useMotionStore((state) => state.precisionPanelOpen)
   const precisionPinned = useMotionStore((state) => state.precisionPanelPinned)
+  const cameraModeIndex = useMotionStore(() => motionStore.cameraQuickModeIndex())
 
-  const supports = (method: string) => capabilities.includes(method)
+  const supports = React.useCallback((method: string) => capabilities.includes(method), [capabilities])
   const hasClip = validTimeline(player.totalFrames, player.fps)
   const duration = player.duration > 0 ? player.duration : 0
   const scrubEnabled = hasClip && duration > 0 && supports('player.scrubBegin')
@@ -66,22 +77,19 @@ export function TransportBar() {
   const isPlaying = player.state === 'playing'
   const isPaused = player.state === 'paused'
   const isPreview = player.state === 'preview'
-  const displayTime = scrub.active ? scrub.value : player.time
 
-  const currentEntry = React.useMemo(
-    () => libraryEntries.find((entry) => entry.id === loaded.motionKey) ?? null,
-    [libraryEntries, loaded.motionKey],
-  )
   const currentEntryId = currentEntry?.id ?? ''
   const hasCachedCover = useMotionStore((state) =>
     currentEntryId ? Object.prototype.hasOwnProperty.call(state.coverCache, currentEntryId) : true,
+  )
+  const currentCoverUri = useMotionStore((state) =>
+    currentEntryId ? (state.coverCache[currentEntryId] ?? '') : '',
   )
   React.useEffect(() => {
     if (currentEntry && (currentEntry.hasCover || currentEntry.hasAudio) && !hasCachedCover) {
       void motionStore.ensureTrackCover(currentEntry.id)
     }
   }, [currentEntry?.id, currentEntry?.hasCover, currentEntry?.hasAudio, hasCachedCover, libraryRevision])
-  const currentCoverUri = currentEntry?.id ? (coverCache[currentEntry.id] ?? '') : ''
   const currentSubtitle = React.useMemo(() => {
     if (!currentEntry?.subtitle) return ''
     return currentEntry.subtitle
@@ -91,7 +99,6 @@ export function TransportBar() {
       .join(' / ')
   }, [currentEntry?.subtitle])
 
-  const cameraModeIndex = motionStore.cameraQuickModeIndex()
   const playModeLabels = PLAY_MODES
   const normalizedPlayMode =
     player.playMode >= 0 && player.playMode < playModeLabels.length ? player.playMode : 1
@@ -108,8 +115,6 @@ export function TransportBar() {
           duration={duration}
           fps={player.fps}
           totalFrames={player.totalFrames}
-          displayTime={displayTime}
-          scrubActive={scrub.active}
           scrubEnabled={scrubEnabled}
           actionError={actionError}
           showSourceNotice={showSourceNotice}
@@ -158,7 +163,7 @@ export function TransportBar() {
                 >
                   {player.title}
                 </div>
-                {clock.runMode === 'recording' && (
+                {clockRunMode === 'recording' && (
                   <span
                     data-testid="transport-recording-badge"
                     className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-micro font-medium text-amber-600 dark:text-amber-400"

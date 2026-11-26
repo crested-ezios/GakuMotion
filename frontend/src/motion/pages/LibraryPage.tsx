@@ -22,7 +22,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import type { LibraryEntry, PlaybackStatus } from '../protocol'
+import type { LibraryEntry } from '../protocol'
 import { motionStore, useMotionStore } from '../store'
 import { ContextMenu, type ContextMenuEntry } from '../components/ContextMenu'
 import { CoverEditorModal } from '../components/CoverEditorModal'
@@ -31,7 +31,27 @@ import { LibraryRow } from './library/LibraryRow'
 import { LibraryToolbar, filterAndSortEntries } from './library/LibraryToolbar'
 
 const ROW_HEIGHT = 56
-const VIRTUALIZE_THRESHOLD = 200
+const ROW_GAP = 4
+const ROW_STRIDE = ROW_HEIGHT + ROW_GAP
+const OVERSCAN = 5
+const WINDOW_BAND = 2
+const VIRTUALIZE_THRESHOLD = 25
+const VIRTUAL_ROW_STYLE: React.CSSProperties = { height: ROW_HEIGHT }
+
+function computeVisibleRange(
+  scrollTop: number,
+  viewportHeight: number,
+  totalCount: number,
+): { start: number; end: number } {
+  if (totalCount <= 0) return { start: 0, end: 0 }
+  const effectiveHeight = viewportHeight > 0 ? viewportHeight : 480
+  const rawStart = Math.max(0, Math.floor(scrollTop / ROW_STRIDE) - OVERSCAN)
+  const rawEnd = Math.min(totalCount, Math.ceil((scrollTop + effectiveHeight) / ROW_STRIDE) + OVERSCAN)
+  // Quantize to 2-row bands so steady scrolling only re-renders when crossing a band boundary.
+  const start = Math.floor(rawStart / WINDOW_BAND) * WINDOW_BAND
+  const end = Math.min(totalCount, Math.ceil(rawEnd / WINDOW_BAND) * WINDOW_BAND)
+  return { start, end }
+}
 
 export function LibraryPage() {
   const library = useMotionStore((state) => state.library)
@@ -59,7 +79,7 @@ export function LibraryPage() {
     entry: LibraryEntry | null
   }>({ open: false, x: 0, y: 0, entry: null })
 
-  const supports = (method: string) => capabilities.includes(method)
+  const supports = React.useCallback((method: string) => capabilities.includes(method), [capabilities])
   const busy = library.refreshing || importBusy
 
   React.useEffect(() => {
@@ -76,40 +96,117 @@ export function LibraryPage() {
     [library.entries, search, filter, sort],
   )
 
-  // Lightweight windowing for large libraries.
+  // Windowing for libraries larger than VIRTUALIZE_THRESHOLD.
   const scrollRef = React.useRef<HTMLDivElement>(null)
-  const [scrollTop, setScrollTop] = React.useState(0)
-  const [viewportHeight, setViewportHeight] = React.useState(480)
+  const viewportHeightRef = React.useRef(480)
+  const scrollRafRef = React.useRef<number | null>(null)
+  const [scrollRange, setScrollRange] = React.useState<{ start: number; end: number }>({ start: 0, end: 24 })
+
+  const visibleCount = visibleEntries.length
+  const virtualize = visibleCount > VIRTUALIZE_THRESHOLD
+  const hasTable = visibleCount > 0
+  const visibleCountRef = React.useRef(visibleCount)
+  const virtualizeRef = React.useRef(virtualize)
+  visibleCountRef.current = visibleCount
+  virtualizeRef.current = virtualize
+
+  const syncScrollWindow = React.useCallback((totalCount: number, isVirtualized: boolean) => {
+    if (!isVirtualized) return
+    const el = scrollRef.current
+    const scrollTop = el ? el.scrollTop : 0
+    const height = el && el.clientHeight > 0 ? el.clientHeight : viewportHeightRef.current
+    viewportHeightRef.current = height
+    const next = computeVisibleRange(scrollTop, height, totalCount)
+    setScrollRange((prev) => (prev.start === next.start && prev.end === next.end ? prev : next))
+  }, [])
+
   React.useEffect(() => {
+    if (!hasTable) return
     const element = scrollRef.current
     if (!element) return
-    const observer = new ResizeObserver(() => setViewportHeight(element.clientHeight))
+    const update = () => {
+      if (element.clientHeight > 0) viewportHeightRef.current = element.clientHeight
+      syncScrollWindow(visibleCountRef.current, virtualizeRef.current)
+    }
+    const observer = new ResizeObserver(update)
     observer.observe(element)
-    setViewportHeight(element.clientHeight)
+    update()
     return () => observer.disconnect()
-  }, [visibleEntries.length])
+  }, [hasTable, syncScrollWindow])
 
-  const virtualize = visibleEntries.length > VIRTUALIZE_THRESHOLD
-  const startIndex = virtualize ? Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - 5) : 0
-  const endIndex = virtualize
-    ? Math.min(visibleEntries.length, Math.ceil((scrollTop + viewportHeight) / ROW_HEIGHT) + 5)
-    : visibleEntries.length
-  const rendered = visibleEntries.slice(startIndex, endIndex)
+  React.useEffect(() => {
+    syncScrollWindow(visibleCount, virtualize)
+  }, [visibleCount, virtualize, syncScrollWindow])
+
+  React.useEffect(
+    () => () => {
+      if (scrollRafRef.current !== null) {
+        cancelAnimationFrame(scrollRafRef.current)
+        scrollRafRef.current = null
+      }
+    },
+    [],
+  )
+
+  const handleTableScroll = React.useCallback(() => {
+    if (!virtualizeRef.current) return
+    if (scrollRafRef.current !== null) return
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = null
+      syncScrollWindow(visibleCountRef.current, virtualizeRef.current)
+    })
+  }, [syncScrollWindow])
+
+  const startIndex = virtualize ? Math.min(scrollRange.start, visibleCount) : 0
+  const endIndex = virtualize ? Math.min(scrollRange.end, visibleCount) : visibleCount
+  const rendered = React.useMemo(
+    () => visibleEntries.slice(startIndex, endIndex),
+    [visibleEntries, startIndex, endIndex],
+  )
 
   const deleteChanged = motionStore.deleteGuardChanged()
 
-  const loadedStatusFor = (entry: LibraryEntry): PlaybackStatus | null => {
-    if (loaded.motionKey !== entry.id) return null
-    return playerState
-  }
-
-  const handlePlayEntry = (entry: LibraryEntry) => {
-    if (loaded.motionKey === entry.id && (playerState === 'paused' || playerState === 'preview')) {
+  const handlePlayEntry = React.useCallback((entry: LibraryEntry) => {
+    const st = motionStore.getState()
+    if (st.loaded.motionKey === entry.id && (st.player.state === 'paused' || st.player.state === 'preview')) {
       void motionStore.play()
     } else {
       void motionStore.selectMotion(entry.id, true)
     }
-  }
+  }, [])
+
+  const handleRowSelect = React.useCallback((id: string) => {
+    motionStore.selectLibrary(id)
+  }, [])
+
+  const handleRowDoubleClick = React.useCallback((id: string) => {
+    void motionStore.selectMotion(id, true)
+  }, [])
+
+  const handleRowContextMenu = React.useCallback(
+    (event: React.MouseEvent<HTMLDivElement>, entry: LibraryEntry) => {
+      event.preventDefault()
+      motionStore.selectLibrary(entry.id)
+      setContextMenu({ open: true, x: event.clientX, y: event.clientY, entry })
+    },
+    [],
+  )
+
+  const handleRowPause = React.useCallback(() => {
+    void motionStore.pause()
+  }, [])
+
+  const handleRowPreview = React.useCallback((id: string) => {
+    void motionStore.selectMotion(id, false)
+  }, [])
+
+  const handleRowEdit = React.useCallback((id: string) => {
+    void motionStore.openImportEdit(id)
+  }, [])
+
+  const handleRowDelete = React.useCallback((id: string) => {
+    motionStore.requestDelete(id)
+  }, [])
 
   const cycleTitleSort = () => {
     motionStore.setLibrarySort(sort === 'title' ? 'default' : 'title')
@@ -230,7 +327,7 @@ export function LibraryPage() {
           role="table"
           aria-label="演出曲库列表"
           className="-mx-2 min-h-0 flex-1 overflow-y-auto px-2"
-          onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+          onScroll={handleTableScroll}
           onClick={() => motionStore.selectLibrary(null)}
           data-testid="library-table-scroll"
         >
@@ -238,7 +335,7 @@ export function LibraryPage() {
           <div
             role="row"
             onClick={(event) => event.stopPropagation()}
-            className="sticky top-0 z-10 flex items-center gap-3.5 bg-background/95 px-3 py-2 text-xs font-medium text-muted-foreground backdrop-blur-sm"
+            className="sticky top-0 z-10 flex items-center gap-3.5 bg-background px-3 py-2 text-xs font-medium text-muted-foreground"
           >
             <div role="columnheader" className="w-8 shrink-0 text-center">
               #
@@ -279,36 +376,34 @@ export function LibraryPage() {
           </div>
 
           <div role="rowgroup" className="space-y-1 py-1.5">
-            {virtualize && startIndex > 0 && <div aria-hidden style={{ height: startIndex * ROW_HEIGHT }} />}
+            {virtualize && startIndex > 0 && (
+              <div aria-hidden style={{ height: startIndex * ROW_STRIDE - ROW_GAP }} />
+            )}
             {rendered.map((entry, idx) => (
               <LibraryRow
                 key={entry.id}
                 entry={entry}
                 index={startIndex + idx}
                 selected={selectedKey === entry.id}
-                loadedStatus={loadedStatusFor(entry)}
+                loadedStatus={loaded.motionKey === entry.id ? playerState : null}
                 busy={busy}
                 canSelect={supports('library.select')}
                 canPause={supports('player.pause')}
                 canEdit={supports('library.startEdit')}
                 canDelete={supports('library.delete')}
-                style={virtualize ? { height: ROW_HEIGHT } : undefined}
-                onSelect={() => motionStore.selectLibrary(entry.id)}
-                onDoubleClick={() => void motionStore.selectMotion(entry.id, true)}
-                onContextMenu={(event) => {
-                  event.preventDefault()
-                  motionStore.selectLibrary(entry.id)
-                  setContextMenu({ open: true, x: event.clientX, y: event.clientY, entry })
-                }}
-                onPlay={() => handlePlayEntry(entry)}
-                onPause={() => void motionStore.pause()}
-                onPreview={() => void motionStore.selectMotion(entry.id, false)}
-                onEdit={() => void motionStore.openImportEdit(entry.id)}
-                onDelete={() => motionStore.requestDelete(entry.id)}
+                style={virtualize ? VIRTUAL_ROW_STYLE : undefined}
+                onSelect={handleRowSelect}
+                onDoubleClick={handleRowDoubleClick}
+                onContextMenu={handleRowContextMenu}
+                onPlay={handlePlayEntry}
+                onPause={handleRowPause}
+                onPreview={handleRowPreview}
+                onEdit={handleRowEdit}
+                onDelete={handleRowDelete}
               />
             ))}
-            {virtualize && endIndex < visibleEntries.length && (
-              <div aria-hidden style={{ height: (visibleEntries.length - endIndex) * ROW_HEIGHT }} />
+            {virtualize && endIndex < visibleCount && (
+              <div aria-hidden style={{ height: Math.max(0, (visibleCount - endIndex) * ROW_STRIDE - ROW_GAP) }} />
             )}
           </div>
         </div>
