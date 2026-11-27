@@ -7,17 +7,27 @@ internal static class MouthSourceReader
 {
     internal const int ChannelCount = 18;
     internal const int ExtraChannelCount = 4;
+    internal const int V2ChannelCount = 14;
+
+    internal enum Layout { Legacy, Extra, V2 }
+
+    internal static int Count(Layout layout) => layout switch
+    {
+        Layout.Extra => ExtraChannelCount,
+        Layout.V2 => V2ChannelCount,
+        _ => ChannelCount
+    };
 
     internal static bool ValidDimensions(float sourceFps, float clipFps, int frames) =>
         float.IsFinite(sourceFps) && sourceFps > 0 && float.IsFinite(clipFps) && clipFps > 0 &&
         frames > 0 && frames <= 1_000_000;
 
-    internal static float[] Read(string sourcePath, float sourceFps, float clipFps, int frames, bool extraOnly = false)
+    internal static float[] Read(string sourcePath, float sourceFps, float clipFps, int frames, Layout layout = Layout.Legacy)
     {
         if (string.IsNullOrWhiteSpace(sourcePath) || !ValidDimensions(sourceFps, clipFps, frames))
             throw new ArgumentException("Invalid mouth source path or dimensions");
         using var stream = File.OpenRead(sourcePath);
-        return Sample(ParseMorphs(stream), sourceFps, clipFps, frames, extraOnly);
+        return Sample(ParseMorphs(stream), sourceFps, clipFps, frames, layout);
     }
 
     internal static IReadOnlyDictionary<string, IReadOnlyList<MorphKeyframe>> ParseMorphs(Stream stream)
@@ -59,7 +69,7 @@ internal static class MouthSourceReader
     }
 
     internal static float[] Sample(IReadOnlyDictionary<string, IReadOnlyList<MorphKeyframe>> tracks,
-        float sourceFps, float clipFps, int frames, bool extraOnly = false)
+        float sourceFps, float clipFps, int frames, Layout layout = Layout.Legacy)
     {
         if (!ValidDimensions(sourceFps, clipFps, frames)) throw new ArgumentOutOfRangeException(nameof(frames));
         var sourceSamples = new Dictionary<string, float[]>(StringComparer.Ordinal);
@@ -68,12 +78,20 @@ internal static class MouthSourceReader
                 sourceSamples[track.Key] = MorphCurve.Sample(track.Value, frames, (double)sourceFps / clipFps);
         var channels = new Dictionary<string, float[]>(StringComparer.Ordinal);
         var map = GakumasMorphMap.Default;
-        if (!extraOnly) MikuRawSource.Append(channels, sourceSamples, map, frames, out _, out _, out _);
-        MikuRawMouthSource.Append(channels, sourceSamples, map, frames, includeExtras: extraOnly);
-        int channelCount = extraOnly ? ExtraChannelCount : ChannelCount;
+        if (layout == Layout.V2) MikuRawMouthSource.AppendV2(channels, sourceSamples, map, frames);
+        else
+        {
+            if (layout == Layout.Legacy) MikuRawSource.Append(channels, sourceSamples, map, frames, out _, out _, out _);
+            MikuRawMouthSource.Append(channels, sourceSamples, map, frames, includeExtras: layout == Layout.Extra);
+        }
+        int channelCount = Count(layout);
         var result = new float[checked(frames * channelCount)];
-        string[] names = extraOnly ? MikuRawMouthSource.ExtraNames :
-            MikuRawSource.Names.Concat(MikuRawMouthSource.Names).ToArray();
+        string[] names = layout switch
+        {
+            Layout.Extra => MikuRawMouthSource.ExtraNames,
+            Layout.V2 => MikuRawMouthSource.V2Names,
+            _ => MikuRawSource.Names.Concat(MikuRawMouthSource.Names).ToArray()
+        };
         for (int channel = 0; channel < names.Length; channel++)
         {
             if (!channels.TryGetValue(names[channel], out float[]? values)) continue;

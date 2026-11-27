@@ -61,6 +61,12 @@ Require(expanded[M+"unsupported"].All(value => value == 0), "fitted close/corner
 Require(expanded[P+"unsupported"].Any(value => value != 0), "legacy five-vowel unsupported behavior is preserved");
 Require(Translate(("口角上げ", new float[3]))[M+"present"].All(value => value == 1), "authored zero corner-only source is present");
 Require(!Translate(("たれ目", new[] { .3f, .3f, .3f })).ContainsKey(M+"present"), "eye-only source creates no mouth intent");
+var flagged = Translate(("あ", new[] { .4f, .5f, .6f }), ("腰相対on", new[] { 1f, 1f, 1f }),
+    ("Ｇ警告ＯＦＦ", new[] { 1f, 1f, 1f }), ("C警告off", new[] { 1f, 1f, 1f }),
+    ("口角下げ", new[] { 0f, .25f, 0f }));
+Require(flagged[M+"unsupported"].SequenceEqual(new[] { 0f, .25f, 0f }),
+    "model setup switches do not block mouth fitting, while unsupported mouth actions do");
+Require(flagged[P+"unsupported"].All(value => value == 1), "legacy five-vowel classification remains intact");
 foreach (var name in new[] { "mystery", "a" })
     Require(Translate(("あ", new float[3]), (name, new[] { 0f, .25f, .5f }))[M+"unsupported"]
         .SequenceEqual(new[] { 0f, .25f, .5f }), "expanded unknown/duplicate activity remains explicit");
@@ -86,6 +92,57 @@ Require(Translate(("あ", new float[3]), ("口角下げ", new[] { -.1f, .25f, 1.
     .SequenceEqual(new[] { 1f, 0f, 1f }), "invalid extra amounts stay protected");
 Require(!Translate(("まばたき", new float[3])).ContainsKey(S+"present"), "eye-only clips have no extra mouth intent");
 
+const string V2 = "miku.rawmouth.v2.";
+var expandedV2 = Translate(("あ", new[] { .4f, .5f, .6f }),
+    ("にやり２", new[] { .3f, .2f, 0f }), ("口角下げ", new[] { .1f, 0f, .4f }),
+    ("にやり", new[] { .7f, .1f, .2f }), ("にっこり", new[] { .6f, .3f, .4f }),
+    ("口横広げ", new[] { .2f, .5f, .6f }),
+    ("∧", new[] { .2f, .3f, .4f }), ("ん", new[] { .1f, .7f, .6f }), ("▲", new[] { .7f, 0f, .2f }),
+    ("ワ", new[] { .2f, .5f, .3f }), ("大口", new[] { .6f, .3f, 0f }), ("叫び", new[] { 0f, .4f, .9f }),
+    ("謎の口型", new[] { 0f, .25f, 0f }));
+Require(expandedV2[V2+"present"].All(value => value == 1) &&
+    expandedV2[V2+"a"].SequenceEqual(new[] { .4f, .5f, .6f }) &&
+    expandedV2[V2+"smirk"].SequenceEqual(new[] { .3f, .2f, 0f }) &&
+    expandedV2[V2+"corner_down"].SequenceEqual(new[] { .1f, 0f, .4f }),
+    "mouth v2 preserves the vowel and distinguishes the smirk and downward corner");
+Require(expandedV2[V2+"∧"].SequenceEqual(new[] { .7f, .7f, .6f }) &&
+    expandedV2[V2+"smile"].SequenceEqual(new[] { .7f, .5f, .6f }) &&
+    expandedV2[V2+"wide_open"].SequenceEqual(new[] { .6f, .5f, .9f }),
+    "mouth v2 combines independent closure, smile and wide-open gestures by max");
+Require(expandedV2[V2+"unsupported"].SequenceEqual(new[] { 0f, .25f, 0f }) &&
+    expandedV2[S+"unsupported"].Where((value, frame) => frame != 1).All(value => value > 0),
+    "mouth v2 isolates remaining unknown actions, while the old extra guard retains its old scope");
+Require(Translate(("にっこり", new[] { 0f, .8f, 0f }))[V2+"present"].All(value => value == 1),
+    "smile-only source has v2 mouth intent");
+var omega = Translate(("ω", new[] { .25f, .5f, 1f }), ("い", new[] { .4f, .5f, .6f }));
+Require(omega[V2+"smile"].SequenceEqual(new[] { .25f, .5f, 1f }) &&
+    omega[V2+"i"].SequenceEqual(new[] { .4f, .5f, .6f }) && omega[V2+"unsupported"].All(value => value == 0),
+    "the omega mouth widens and lifts the corners without replacing the vowel");
+var heldI = Translate(("い", new[] { .2f, .4f, .8f }), ("いー", new[] { 0f, .6f, .2f }));
+Require(heldI[V2+"i"].SequenceEqual(new[] { .2f, .6f, .8f }) && heldI[V2+"unsupported"].All(value => value == 0),
+    "a prolonged I action contributes to its vowel without making duplicate bare-I aliases");
+foreach (var nonMouth in new[] { "照れ", "眉太", "キリッ", "ｷﾘｯ", "瞳小", "右ウィンク", "しいたけ",
+    "ウィンク右2", "ウィンク右２", "見開き" })
+{
+    float[] active = { .25f, .5f, .75f };
+    Require(!Translate((nonMouth, active)).ContainsKey(V2+"present") &&
+        Translate(("あ", new float[3]), (nonMouth, active))[V2+"unsupported"].All(value => value == 0),
+        "known eye and decoration morphs do not claim or block the v2 mouth: " + nonMouth);
+}
+Require(Translate(("にやり2", new[] { .0f, .4f, .0f }), ("にやり２", new[] { .0f, .0f, .2f }))
+    [V2+"unsupported"].SequenceEqual(new[] { 0f, .4f, .2f }), "mouth v2 rejects duplicate spellings");
+Require(Translate(("ワ", new[] { -.01f, .3f, 1.01f }))[V2+"unsupported"].SequenceEqual(new[] { 1f, 0f, 1f }),
+    "mouth v2 rejects out-of-range known source values");
+var endpointNoise = Translate(("あ", new[] { -6.9e-7f, 1.0000008f, 1.2f }));
+Require(endpointNoise[V2+"a"].SequenceEqual(new[] { 0f, 1f, 0f }) &&
+    endpointNoise[V2+"unsupported"].SequenceEqual(new[] { 0f, 0f, 1f }) &&
+    endpointNoise[M+"unsupported"].All(value => value == 1),
+    "v2 clamps only endpoint noise while legacy guards and severe overshoots remain intact");
+Require(Translate(("あ", new[] { -1e-6f, -1.1e-6f, 1.0000011f }))[V2+"unsupported"]
+    .SequenceEqual(new[] { 0f, 1f, 1f }), "v2 tolerance is limited to one millionth of the source range");
+Require(Translate(("口角下げ", new float[3]), ("b_mouth.mouth_028", new float[3]))[V2+"native_authored"]
+    .All(value => value == 1), "v2 protects explicit zero native mouth authorship");
+
 var curves = new Dictionary<string, IReadOnlyList<MorphKeyframe>>
 {
     ["あ"] = new[] { new MorphKeyframe("あ", 0, .2f), new MorphKeyframe("あ", 2, .8f), new MorphKeyframe("あ", 2, .9f) },
@@ -95,7 +152,8 @@ var curves = new Dictionary<string, IReadOnlyList<MorphKeyframe>>
     ["口角下げ"] = new[] { new MorphKeyframe("口角下げ", 0, 0f), new MorphKeyframe("口角下げ", 2, .2f) }
 };
 var sampled = MouthSourceReader.Sample(curves, 30, 60, 7);
-var sampledExtra = MouthSourceReader.Sample(curves, 30, 60, 7, extraOnly: true);
+var sampledExtra = MouthSourceReader.Sample(curves, 30, 60, 7, MouthSourceReader.Layout.Extra);
+var sampledV2 = MouthSourceReader.Sample(curves, 30, 60, 7, MouthSourceReader.Layout.V2);
 Require(sampled.Length == 7 * 18 && Math.Abs(sampled[2 * 18] - .55f) < 1e-6f && sampled[6 * 18] == .9f,
     "runtime source resampling uses source/clip fps, last duplicate, and endpoint hold");
 Require(sampled[2 * 18 + 8] == sampled[2 * 18] && Math.Abs(sampled[2 * 18 + 13] - .06f) < 1e-6f,
@@ -105,6 +163,12 @@ Require(sampled[15] == 1 && sampled[16] == 0 && sampled[17] == 0 && sampled[6] !
 Require(sampled[2 * 18 + 16] == .3f && sampledExtra.Length == 7 * 4 &&
     sampledExtra.AsSpan(2 * 4, 4).SequenceEqual(new[] { 1f, .3f, .1f, 0f }),
     "extra frame-major order and resampling preserve the original aggregate marker");
+Require(MikuRawMouthSource.V2Names.SequenceEqual(new[]
+    { "a", "i", "u", "e", "o", "∧", "口角上げ", "smirk", "corner_down", "smile", "wide_open", "present",
+        "unsupported", "native_authored" }.Select(name => V2 + name)) &&
+    sampledV2.Length == 7 * 14 && Math.Abs(sampledV2[2 * 14] - .55f) < 1e-6f &&
+    sampledV2.AsSpan(2 * 14 + 6, 8).SequenceEqual(new[] { .5f, .3f, .1f, 0f, 0f, 1f, 0f, 0f }),
+    "mouth v2 has the exact 14-column frame-major name and value order");
 var cornerOnly = MouthSourceReader.Sample(new Dictionary<string, IReadOnlyList<MorphKeyframe>>
     { ["口角上げ"] = curves["口角上げ"] }, 30, 30, 3);
 Require(Enumerable.Range(0, 3).All(frame => cornerOnly[frame * 18 + 5] == 0 && cornerOnly[frame * 18 + 15] == 1),
@@ -175,6 +239,20 @@ try
             Require(readExtra(pathPointer, 30, 60, 7, outputPointer, output.Length) == 0 &&
                 output.AsSpan(0, sampledExtra.Length).SequenceEqual(sampledExtra) && output[^1] == -123f,
                 "extra reader writes only the exact four frame-major channels");
+        }
+
+        delegate* unmanaged<int> v2Version = &NativeExports.MouthSourceV2AbiVersion;
+        delegate* unmanaged<byte*, float, float, int, float*, int, int> readV2 = &NativeExports.ReadMouthSourceV2;
+        output = Enumerable.Repeat(-123f, sampledV2.Length + 1).ToArray();
+        Require(v2Version() == 2, "mouth source v2 reader ABI version");
+        fixed (byte* pathPointer = sourceUtf8)
+        fixed (float* outputPointer = output)
+        {
+            Require(readV2(pathPointer, 30, 60, 7, outputPointer, sampledV2.Length - 1) == 3 &&
+                output.All(value => value == -123f), "v2 reader refuses short buffers without writes");
+            Require(readV2(pathPointer, 30, 60, 7, outputPointer, output.Length) == 0 &&
+                output.AsSpan(0, sampledV2.Length).SequenceEqual(sampledV2) && output[^1] == -123f,
+                "v2 reader writes only the exact 14 frame-major channels");
         }
     }
     Require(File.ReadAllBytes(sourcePath).SequenceEqual(expectedSource) && Directory.GetFiles(sourceDirectory).Length == 1,

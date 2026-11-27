@@ -177,6 +177,7 @@ internal static class MorphTranslator
         report.MikuRawInvalidFrames = rawInvalid;
         report.MikuRawUnsupportedNames = rawUnsupported;
         MikuRawMouthSource.Append(channels, sourceSamples, map, frames);
+        MikuRawMouthSource.AppendV2(channels, sourceSamples, map, frames);
         // Eye/brow intent is captured the same way the vowels are: the fit
         // replaces the whole family, so a clip that names a fitted key only
         // through the native mapping would otherwise lose it.

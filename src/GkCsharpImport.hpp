@@ -87,6 +87,12 @@ namespace GakuMotion::csharp_import
 			return function;
 		}
 
+		inline MouthSourceFn& MouthSourceV2Read()
+		{
+			static MouthSourceFn function{nullptr};
+			return function;
+		}
+
 		inline std::string& Detail()
 		{
 			static std::string detail;
@@ -280,6 +286,9 @@ namespace GakuMotion::csharp_import
 				auto extraAbi = reinterpret_cast<AbiFn>(GetProcAddress(module, "GkMouthSourceExtra_AbiVersion"));
 				MouthSourceExtraRead() = extraAbi && extraAbi() == 1
 					? reinterpret_cast<MouthSourceFn>(GetProcAddress(module, "GkMouthSourceExtra_Read")) : nullptr;
+				auto mouthV2Abi = reinterpret_cast<AbiFn>(GetProcAddress(module, "GkMouthSourceV2_AbiVersion"));
+				MouthSourceV2Read() = mouthV2Abi && mouthV2Abi() == 2
+					? reinterpret_cast<MouthSourceFn>(GetProcAddress(module, "GkMouthSourceV2_Read")) : nullptr;
 				const size_t slash = candidate.find_last_of(L"/\\");
 				ModuleDir() = slash == std::wstring::npos ? std::wstring() : candidate.substr(0, slash);
 				ModuleDirUtf8() = Utf8(ModuleDir());
@@ -325,6 +334,14 @@ namespace GakuMotion::csharp_import
 		std::lock_guard<std::mutex> lock(detail::Mutex());
 		if (!detail::LoadLocked(detail::PluginsRoot()) || !detail::MouthSourceExtraRead()) return 5;
 		return detail::MouthSourceExtraRead()(path, sourceFps, clipFps, frames, output, outputFloats);
+	}
+
+	inline int32_t ReadMouthSourceV2(const char* path, float sourceFps, float clipFps,
+		int32_t frames, float* output, int32_t outputFloats)
+	{
+		std::lock_guard<std::mutex> lock(detail::Mutex());
+		if (!detail::LoadLocked(detail::PluginsRoot()) || !detail::MouthSourceV2Read()) return 5;
+		return detail::MouthSourceV2Read()(path, sourceFps, clipFps, frames, output, outputFloats);
 	}
 
 	inline bool Busy()

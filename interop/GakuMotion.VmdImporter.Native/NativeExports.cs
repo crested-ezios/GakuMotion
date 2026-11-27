@@ -42,7 +42,8 @@ internal static unsafe class NativeExports
     [UnmanagedCallersOnly(EntryPoint = "GkMouthSource_Read")]
     public static int ReadMouthSource(byte* sourceUtf8, float sourceFps, float clipFps,
         int frames, float* outputFrameMajor, int outputFloats) =>
-        ReadMouthSourceChannels(sourceUtf8, sourceFps, clipFps, frames, outputFrameMajor, outputFloats, extraOnly: false);
+        ReadMouthSourceChannels(sourceUtf8, sourceFps, clipFps, frames, outputFrameMajor, outputFloats,
+            MouthSourceReader.Layout.Legacy);
 
     [UnmanagedCallersOnly(EntryPoint = "GkMouthSourceExtra_AbiVersion")]
     public static int MouthSourceExtraAbiVersion() => 1;
@@ -51,20 +52,30 @@ internal static unsafe class NativeExports
     [UnmanagedCallersOnly(EntryPoint = "GkMouthSourceExtra_Read")]
     public static int ReadMouthSourceExtra(byte* sourceUtf8, float sourceFps, float clipFps,
         int frames, float* outputFrameMajor, int outputFloats) =>
-        ReadMouthSourceChannels(sourceUtf8, sourceFps, clipFps, frames, outputFrameMajor, outputFloats, extraOnly: true);
+        ReadMouthSourceChannels(sourceUtf8, sourceFps, clipFps, frames, outputFrameMajor, outputFloats,
+            MouthSourceReader.Layout.Extra);
+
+    [UnmanagedCallersOnly(EntryPoint = "GkMouthSourceV2_AbiVersion")]
+    public static int MouthSourceV2AbiVersion() => 2;
+
+    /// <summary>Returns the eleven v2 inputs followed by the present, unsupported, and native authored markers.</summary>
+    [UnmanagedCallersOnly(EntryPoint = "GkMouthSourceV2_Read")]
+    public static int ReadMouthSourceV2(byte* sourceUtf8, float sourceFps, float clipFps,
+        int frames, float* outputFrameMajor, int outputFloats) =>
+        ReadMouthSourceChannels(sourceUtf8, sourceFps, clipFps, frames, outputFrameMajor, outputFloats,
+            MouthSourceReader.Layout.V2);
 
     private static int ReadMouthSourceChannels(byte* sourceUtf8, float sourceFps, float clipFps,
-        int frames, float* outputFrameMajor, int outputFloats, bool extraOnly)
+        int frames, float* outputFrameMajor, int outputFloats, MouthSourceReader.Layout layout)
     {
         if (sourceUtf8 == null || outputFrameMajor == null ||
             !MouthSourceReader.ValidDimensions(sourceFps, clipFps, frames)) return InvalidArgument;
-        int channelCount = extraOnly ? MouthSourceReader.ExtraChannelCount : MouthSourceReader.ChannelCount;
-        if (outputFloats < frames * channelCount) return BufferTooSmall;
+        if (outputFloats < frames * MouthSourceReader.Count(layout)) return BufferTooSmall;
         try
         {
             string? sourcePath = Marshal.PtrToStringUTF8((nint)sourceUtf8);
             if (string.IsNullOrWhiteSpace(sourcePath)) return InvalidArgument;
-            float[] values = MouthSourceReader.Read(sourcePath, sourceFps, clipFps, frames, extraOnly);
+            float[] values = MouthSourceReader.Read(sourcePath, sourceFps, clipFps, frames, layout);
             values.AsSpan().CopyTo(new Span<float>(outputFrameMajor, outputFloats));
             return Ok;
         }

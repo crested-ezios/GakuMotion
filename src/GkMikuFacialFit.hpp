@@ -28,7 +28,7 @@ namespace GakuMotion
                                  // and the packed snapshot mask are keyed by ordinal, so a
                                  // new value may only ever grow the tail.
                                  ExternalApplied, ExternalUnverified, MissingRawEyeSource,
-                                 UnsupportedEyeSource, ExternalSoftA };
+                                 UnsupportedEyeSource, ExternalSoftA, ExternalMouthV2 };
     inline const char* MikuFitDecisionName(MikuFitDecision value)
     {
         switch (value) {
@@ -48,6 +48,7 @@ namespace GakuMotion
         case MikuFitDecision::MissingRawEyeSource: return "missing_raw_eye_source";
         case MikuFitDecision::UnsupportedEyeSource: return "unsupported_source_eye";
         case MikuFitDecision::ExternalSoftA: return "applied_krnh_soft_a";
+        case MikuFitDecision::ExternalMouthV2: return "applied_krnh_mouth_v2";
         }
         return "unknown";
     }
@@ -219,11 +220,19 @@ namespace GakuMotion
         std::vector<float> inputs, output;
         std::array<int, mouth_source::ExtraNames.size()> extraSlots{-1, -1, -1, -1};
         std::array<int, 5> vowelSlots{-1, -1, -1, -1, -1};
+        std::array<int, mouth_source::V2Names.size()> v2Slots{};
         int softAOutput{-1};
+        int oldAuthoredSlot{-1}, smileSlot{-1};
         int presentSlot{-1}, unsupportedSlot{-1}, nativeAuthoredSlot{-1};
         MikuFitDecision bindingDecision{MikuFitDecision::UnknownFace};
-        bool claim{};
+        bool claim{}, krnh{}, useV2{};
     };
+
+    inline float SmoothMouthWeight(float value, float low, float high)
+    {
+        const float t = std::clamp((value - low) / (high - low), 0.f, 1.f);
+        return t * t * (3.f - 2.f * t);
+    }
 
     inline PublishedMouthFit BindPublishedMouthFit(const std::string& faceName,
         const std::vector<std::string>& clipNames, const std::vector<std::string>& modelNames)
@@ -238,16 +247,30 @@ namespace GakuMotion
             !face.outputCount || face.outputCount > GAKU_MOUTH_FIT_MAX_OUTPUTS ||
             !face.knotCount || face.knotCount > GAKU_MOUTH_FIT_MAX_KNOTS ||
             !face.inputNames || !face.outputNames || !face.tableSha256) return fit;
-        fit.presentSlot = FindClipSlot(clipNames, std::string(kPublishedMouthPrefix) + "present");
-        fit.unsupportedSlot = FindClipSlot(clipNames, std::string(kPublishedMouthPrefix) + "unsupported");
-        fit.nativeAuthoredSlot = FindClipSlot(clipNames, std::string(kPublishedMouthPrefix) + "native_authored");
+        fit.krnh = std::strcmp(face.character, "krnh") == 0 &&
+            std::strcmp(face.faceName, "mdl_chr_krnh-base-0000_face") == 0;
+        if (fit.krnh)
+        {
+            for (size_t index = 0; index < fit.v2Slots.size(); ++index)
+            {
+                const char* name = mouth_source::V2Names[index];
+                fit.v2Slots[index] = std::count(clipNames.begin(), clipNames.end(), name) == 1
+                    ? FindClipSlot(clipNames, name) : -1;
+            }
+            fit.useV2 = std::all_of(fit.v2Slots.begin(), fit.v2Slots.end(), [](int slot) { return slot >= 0; });
+        }
+        const std::string prefix = fit.useV2 ? mouth_source::V2Prefix : kPublishedMouthPrefix;
+        fit.presentSlot = FindClipSlot(clipNames, prefix + "present");
+        fit.unsupportedSlot = FindClipSlot(clipNames, prefix + "unsupported");
+        fit.nativeAuthoredSlot = FindClipSlot(clipNames, prefix + "native_authored");
+        fit.oldAuthoredSlot = FindClipSlot(clipNames, std::string(kPublishedMouthPrefix) + "native_authored");
         fit.bindingDecision = MikuFitDecision::MissingRawSource;
         if (fit.presentSlot < 0 || fit.unsupportedSlot < 0 || fit.nativeAuthoredSlot < 0) return fit;
         constexpr const char* vowels[]{"a", "i", "u", "e", "o"};
         for (uint32_t input = 0; input < face.inputCount; ++input)
         {
             if (!face.inputNames[input] || !face.inputNames[input][0]) return fit;
-            const std::string name = std::string(kPublishedMouthPrefix) + face.inputNames[input];
+            const std::string name = prefix + face.inputNames[input];
             if (std::count(clipNames.begin(), clipNames.end(), name) != 1) return fit;
             fit.inputSlots.push_back(FindClipSlot(clipNames, name));
             for (size_t vowel = 0; vowel < std::size(vowels); ++vowel)
@@ -263,7 +286,7 @@ namespace GakuMotion
         }
         fit.inputs.resize(face.inputCount);
         fit.output.resize(face.outputCount);
-        if (std::strcmp(face.character, "krnh") == 0 && std::strcmp(face.faceName, "mdl_chr_krnh-base-0000_face") == 0)
+        if (fit.krnh)
         {
             for (size_t extra = 0; extra < fit.extraSlots.size(); ++extra)
                 if (std::count(clipNames.begin(), clipNames.end(), mouth_source::ExtraNames[extra]) == 1)
@@ -282,6 +305,7 @@ namespace GakuMotion
         if (!fit.claim) return;
         for (uint32_t output = 0; output < fit.face->outputCount; ++output)
             fit.outputSlots.push_back(FindClipSlot(available, fit.face->outputNames[output]));
+        fit.smileSlot = fit.krnh ? FindClipSlot(available, "b_mouth.mouth_002") : -1;
     }
 
     inline MikuFitDecision TryApplyPublishedMouthFit(PublishedMouthFit& fit,
@@ -298,6 +322,12 @@ namespace GakuMotion
         if (!std::isfinite(authored) || authored < 0 || !std::isfinite(unsupported) || unsupported < 0)
             return MikuFitDecision::InvalidRawSource;
         if (authored != 0) return MikuFitDecision::NativeAuthored;
+        if (fit.useV2 && fit.oldAuthoredSlot >= 0)
+        {
+            const float previousAuthored = sample(fit.oldAuthoredSlot);
+            if (!std::isfinite(previousAuthored) || previousAuthored < 0) return MikuFitDecision::InvalidRawSource;
+            if (previousAuthored != 0) return MikuFitDecision::NativeAuthored;
+        }
         for (size_t channel = 0; channel < fit.inputSlots.size(); ++channel)
         {
             const float value = sample(fit.inputSlots[channel]);
@@ -307,7 +337,36 @@ namespace GakuMotion
         float profileMix = 1.f;
         float softA = 0.f;
         float openness = 0.f;
-        if (unsupported != 0)
+        float smileResidual = 0.f;
+        bool adaptedGesture = false;
+        if (fit.useV2)
+        {
+            if (unsupported != 0) return MikuFitDecision::UnsupportedSource;
+            const float smirk = sample(fit.v2Slots[mouth_source::V2Smirk]);
+            const float down = sample(fit.v2Slots[mouth_source::V2CornerDown]);
+            const float smile = sample(fit.v2Slots[mouth_source::V2Smile]);
+            const float wide = sample(fit.v2Slots[mouth_source::V2WideOpen]);
+            if (!(smirk >= 0 && smirk <= 1 && down >= 0 && down <= 1 &&
+                  smile >= 0 && smile <= 1 && wide >= 0 && wide <= 1)) return MikuFitDecision::InvalidRawSource;
+            adaptedGesture = smirk > 0 || down > 0 || smile > 0 || wide > 0;
+            if (adaptedGesture && fit.softAOutput >= 0 &&
+                std::all_of(fit.vowelSlots.begin(), fit.vowelSlots.end(), [](int slot) { return slot >= 0; }))
+            {
+                auto& a = fit.inputs[fit.vowelSlots[0]];
+                const float gesture = (std::max)(smirk, down);
+                float other = 0.f;
+                for (size_t vowel = 1; vowel < fit.vowelSlots.size(); ++vowel)
+                    other += fit.inputs[fit.vowelSlots[vowel]];
+                // Keep the no-teeth A reference on weak corner gestures.
+                // Everywhere else the fitted vowel owns the dental output.
+                softA = SmoothMouthWeight(a, .04f, .26f) * (1.f - SmoothMouthWeight(other, .03f, .18f)) *
+                    (1.f - SmoothMouthWeight(gesture, .24f, .34f)) * SmoothMouthWeight(gesture, 0.f, .10f);
+                openness = .28f * a;
+                a = (std::max)(a, .75f * wide);
+                smileResidual = .15f * (std::max)(smile, smirk) * (1.f - .5f * down);
+            }
+        }
+        else if (unsupported != 0)
         {
             if (fit.softAOutput < 0 || sample(fit.extraSlots[mouth_source::ExtraPresent]) != 1.f ||
                 sample(fit.extraSlots[mouth_source::ExtraUnsupported]) != 0.f ||
@@ -321,20 +380,16 @@ namespace GakuMotion
             if (gesture <= 0 || gesture > unsupported + .00001f ||
                 unsupported > smirk + cornerDown + .00001f)
                 return MikuFitDecision::UnsupportedSource;
-            const auto smooth = [](float value, float low, float high) {
-                const float t = std::clamp((value - low) / (high - low), 0.f, 1.f);
-                return t * t * (3.f - 2.f * t);
-            };
             const float a = fit.inputs[fit.vowelSlots[0]];
             float other = 0.f;
             for (size_t vowel = 1; vowel < fit.vowelSlots.size(); ++vowel)
                 other += fit.inputs[fit.vowelSlots[vowel]];
             // Only weak corner gestures on short A-like syllables have a
             // no-teeth reference. Crossfade out toward mixed vowels.
-            profileMix = smooth(a, .04f, .26f) * (1.f - smooth(other, .03f, .18f)) *
-                (1.f - smooth(gesture, .24f, .34f));
+            profileMix = SmoothMouthWeight(a, .04f, .26f) * (1.f - SmoothMouthWeight(other, .03f, .18f)) *
+                (1.f - SmoothMouthWeight(gesture, .24f, .34f));
             if (profileMix == 0) return MikuFitDecision::UnsupportedSource;
-            softA = smooth(gesture, 0.f, .10f);
+            softA = SmoothMouthWeight(gesture, 0.f, .10f);
             openness = .28f * a;
         }
         if (adapted.size() != available.size() || fit.outputSlots.size() != fit.output.size() ||
@@ -349,12 +404,17 @@ namespace GakuMotion
             if (available[output].rfind("b_mouth.mouth_", 0) == 0) adapted[output] *= 1.f - profileMix;
         for (size_t output = 0; output < fit.output.size(); ++output)
             adapted[static_cast<size_t>(fit.outputSlots[output])] += profileMix * (1.f - softA) * fit.output[output];
+        if (smileResidual > 0 && fit.smileSlot >= 0)
+        {
+            float& weight = adapted[fit.smileSlot];
+            weight = std::clamp(weight + (1.f - softA) * smileResidual, 0.f, 1.f);
+        }
         if (softA > 0)
         {
             adapted[fit.outputSlots[fit.softAOutput]] += profileMix * softA * openness;
             return MikuFitDecision::ExternalSoftA;
         }
-        return MikuFitDecision::ExternalApplied;
+        return adaptedGesture ? MikuFitDecision::ExternalMouthV2 : MikuFitDecision::ExternalApplied;
     }
 
     inline MikuFitDecision CheckExternalEyeSource(const ExternalFacialFit& fit,

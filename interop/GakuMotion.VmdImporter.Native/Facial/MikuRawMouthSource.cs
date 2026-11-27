@@ -9,6 +9,13 @@ internal static class MikuRawMouthSource
     private const string ExtraPrefix = "miku.rawmouth.extra.v1.";
     internal static readonly string[] ExtraNames =
         { ExtraPrefix + "present", ExtraPrefix + "にやり2", ExtraPrefix + "口角下げ", ExtraPrefix + "unsupported" };
+    private const string V2Prefix = "miku.rawmouth.v2.";
+    internal static readonly string[] V2Names = InputNames
+        .Concat(new[] { "smirk", "corner_down", "smile", "wide_open", "present", "unsupported", "native_authored" })
+        .Select(name => V2Prefix + name).ToArray();
+    // Distinct authored gestures can feed the same output slot. They combine
+    // by max, while multiple spellings of one gesture are rejected.
+    private static readonly int[] V2OutputSlots = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 9, 5, 5, 9, 10, 10, 9, 1 };
 
     internal static int CanonicalInput(string name)
     {
@@ -25,6 +32,18 @@ internal static class MikuRawMouthSource
         "口角下げ" => 1,
         _ => -1
     };
+
+    private static bool IsNativeAuthored(string normalized) =>
+        normalized.StartsWith("b_mouth.", StringComparison.Ordinal) || normalized == "tooth";
+
+    private static bool IsNonMouth(string name, string normalized) =>
+        MikuRawEyeKeys.IndexOf(name) >= 0 || MikuRawEyeSource.IsNativeEyeChannel(name) ||
+        normalized is "腰相対on" or "g警告off" or "c警告off";
+
+    private static bool BlocksUnmappedInput(string name, GakumasMorphMap map) =>
+        !map.TryResolve(name, out var targets) || targets.Count == 0 ||
+        targets.Any(target => target.Name.StartsWith("b_mouth.", StringComparison.Ordinal) ||
+            target.Name is "mmd2.a" or "mmd2.i" or "mmd2.u" or "mmd2.e" or "mmd2.o");
 
     internal static bool Append(Dictionary<string, float[]> channels,
         Dictionary<string, float[]> sourceSamples, GakumasMorphMap map, int frames, bool includeExtras = true)
@@ -55,7 +74,7 @@ internal static class MikuRawMouthSource
         foreach (var pair in sourceSamples)
         {
             string normalized = GakumasMorphMap.Normalize(pair.Key).ToLowerInvariant();
-            nativeAuthored |= normalized.StartsWith("b_mouth.", StringComparison.Ordinal) || normalized == "tooth";
+            nativeAuthored |= IsNativeAuthored(normalized);
             int input = CanonicalInput(pair.Key);
             if (input >= 0)
             {
@@ -69,11 +88,8 @@ internal static class MikuRawMouthSource
                 }
                 continue;
             }
-            if (MikuRawEyeKeys.IndexOf(pair.Key) >= 0 || MikuRawEyeSource.IsNativeEyeChannel(pair.Key)) continue;
-            bool resolved = map.TryResolve(pair.Key, out var targets);
-            bool blocked = !resolved || targets.Count == 0 || targets.Any(target =>
-                target.Name.StartsWith("b_mouth.", StringComparison.Ordinal) ||
-                target.Name is "mmd2.a" or "mmd2.i" or "mmd2.u" or "mmd2.e" or "mmd2.o");
+            if (IsNonMouth(pair.Key, normalized)) continue;
+            bool blocked = BlocksUnmappedInput(pair.Key, map);
             int extraInput = includeExtras ? CanonicalExtra(normalized) : -1;
             if (!blocked && extraInput < 0) continue;
             for (int frame = 0; frame < frames; frame++)
@@ -107,5 +123,78 @@ internal static class MikuRawMouthSource
             channels[ExtraNames[3]] = residual;
         }
         return true;
+    }
+
+    internal static void AppendV2(Dictionary<string, float[]> channels,
+        Dictionary<string, float[]> sourceSamples, GakumasMorphMap map, int frames)
+    {
+        const int present = 11, unsupported = 12, nativeAuthored = 13;
+        // Stored VMD weights and interpolation can leave tiny errors at 0
+        // and 1. Keep a narrow tolerance for supported actions only.
+        const float endpointTolerance = 1e-6f;
+        var groups = Enumerable.Range(0, V2OutputSlots.Length).Select(_ => new List<float[]>()).ToArray();
+        var blocked = new List<float[]>();
+        bool authored = false;
+        foreach (var pair in sourceSamples)
+        {
+            string normalized = GakumasMorphMap.Normalize(pair.Key).ToLowerInvariant();
+            authored |= IsNativeAuthored(normalized);
+            int input = CanonicalInput(pair.Key);
+            if (input < 0)
+            {
+                int extra = CanonicalExtra(normalized);
+                input = extra >= 0 ? InputNames.Length + extra : normalized switch
+                {
+                    "にやり" => 9,
+                    "ワ" or "ﾜ" => 10,
+                    "にっこり" => 11,
+                    "ん" => 12,
+                    "▲" => 13,
+                    "口横広げ" => 14,
+                    "大口" => 15,
+                    "叫び" => 16,
+                    "ω" => 17,
+                    "いー" => 18,
+                    _ => -1
+                };
+            }
+            if (input >= 0) groups[input].Add(pair.Value);
+            else if (normalized is not ("照れ" or "眉太" or "キリッ" or "ｷﾘｯ" or "瞳小" or
+                         "右ウィンク" or "しいたけ" or "ウィンク右2" or "ウィンク右２" or "見開き") &&
+                     !IsNonMouth(pair.Key, normalized) && BlocksUnmappedInput(pair.Key, map))
+                blocked.Add(pair.Value);
+        }
+        if (!groups.Any(group => group.Count != 0)) return;
+
+        var residual = new float[frames];
+        foreach (float[] track in blocked)
+            for (int frame = 0; frame < frames; frame++)
+                residual[frame] = Math.Max(residual[frame], float.IsFinite(track[frame])
+                    ? Math.Clamp(Math.Abs(track[frame]), 0f, 1f) : 1f);
+        var values = Enumerable.Range(0, present).Select(_ => new float[frames]).ToArray();
+        for (int input = 0; input < groups.Length; input++)
+        {
+            var group = groups[input];
+            float[] output = values[V2OutputSlots[input]];
+            foreach (float[] track in group)
+            {
+                for (int frame = 0; frame < frames; frame++)
+                {
+                    float value = track[frame];
+                    if (!float.IsFinite(value) || value < -endpointTolerance || value > 1f + endpointTolerance)
+                    {
+                        residual[frame] = 1f;
+                        continue;
+                    }
+                    value = Math.Clamp(value, 0f, 1f);
+                    if (group.Count > 1) residual[frame] = Math.Max(residual[frame], value);
+                    else output[frame] = Math.Max(output[frame], value);
+                }
+            }
+        }
+        for (int input = 0; input < values.Length; input++) channels[V2Names[input]] = values[input];
+        channels[V2Names[present]] = Enumerable.Repeat(1f, frames).ToArray();
+        channels[V2Names[unsupported]] = residual;
+        channels[V2Names[nativeAuthored]] = Enumerable.Repeat(authored ? 1f : 0f, frames).ToArray();
     }
 }

@@ -17,6 +17,7 @@ namespace GakuMotion::mouth_source
     using Reader = int32_t (*)(const char*, float, float, int32_t, float*, int32_t);
     inline Reader reader{};
     inline Reader extraReader{};
+    inline Reader v2Reader{};
     inline void (*report)(const char*, const char*){};
 
     inline bool HasFamily(const MotionClip& clip, size_t first, size_t count)
@@ -71,55 +72,66 @@ namespace GakuMotion::mouth_source
         return true;
     }
 
-    inline bool HasExtras(const MotionClip& clip)
+    template<size_t Count>
+    inline bool HasNamedFamily(const MotionClip& clip, const std::array<const char*, Count>& names)
     {
-        return std::all_of(ExtraNames.begin(), ExtraNames.end(), [&](const char* name) {
+        return std::all_of(names.begin(), names.end(), [&](const char* name) {
             return std::count(clip.blendshape_names.begin(), clip.blendshape_names.end(), name) == 1;
         });
     }
 
-    inline bool AppendExtras(MotionClip& clip, const std::vector<float>& source)
+    inline bool HasExtras(const MotionClip& clip) { return HasNamedFamily(clip, ExtraNames); }
+
+    template<size_t Count>
+    inline bool AppendNamedFamily(MotionClip& clip, const std::vector<float>& source,
+        const std::array<const char*, Count>& channels, size_t presentColumn)
     {
         const size_t frames = clip.total_frames;
         const size_t previousCount = clip.blendshape_names.size();
-        constexpr size_t count = ExtraNames.size();
-        if (!frames || !HasFamily(clip, 8, 10) || previousCount > 1024 - count ||
-            previousCount * frames != clip.blendshape_weights.size() || source.size() != frames * count ||
+        if (!frames || previousCount > 1024 ||
+            previousCount * frames != clip.blendshape_weights.size() || source.size() != frames * Count ||
             std::any_of(source.begin(), source.end(), [](float v) { return !std::isfinite(v) || v < 0 || v > 1; })) return false;
-        if (HasExtras(clip)) return true;
-        if (std::any_of(ExtraNames.begin(), ExtraNames.end(), [&](const char* name) {
+        if (HasNamedFamily(clip, channels)) return true;
+        if (previousCount > 1024 - Count || std::any_of(channels.begin(), channels.end(), [&](const char* name) {
             return std::find(clip.blendshape_names.begin(), clip.blendshape_names.end(), name) != clip.blendshape_names.end();
         })) return false;
         for (size_t frame = 0; frame < frames; ++frame)
-            if (source[frame * count + ExtraPresent] != 1.f) return false;
+            if (source[frame * Count + presentColumn] != 1.f) return false;
 
         auto names = clip.blendshape_names;
-        names.insert(names.end(), ExtraNames.begin(), ExtraNames.end());
+        names.insert(names.end(), channels.begin(), channels.end());
         std::vector<float> weights(frames * names.size());
         for (size_t frame = 0; frame < frames; ++frame)
         {
             auto dest = weights.begin() + frame * names.size();
             std::copy_n(clip.blendshape_weights.begin() + frame * previousCount, previousCount, dest);
-            std::copy_n(source.begin() + frame * count, count, dest + previousCount);
+            std::copy_n(source.begin() + frame * Count, Count, dest + previousCount);
         }
         clip.blendshape_names = std::move(names);
         clip.blendshape_weights = std::move(weights);
         return true;
     }
 
+    inline bool AppendExtras(MotionClip& clip, const std::vector<float>& source)
+    {
+        return HasFamily(clip, 8, 10) && AppendNamedFamily(clip, source, ExtraNames, ExtraPresent);
+    }
+
     inline std::string Restore(MotionClip& clip, const std::string& directory,
         const jsonlite::Value* preloadedMetadata = nullptr)
     {
         const bool embedded = HasFamily(clip, 8, 10);
-        if (embedded && (!extraReader || HasExtras(clip))) return "embedded";
+        const bool v2Embedded = HasNamedFamily(clip, V2Names);
+        if ((embedded || v2Embedded) && (!v2Reader || v2Embedded) &&
+            (!extraReader || HasExtras(clip) || v2Embedded)) return "embedded";
         if (clip.blendshape_names.empty()) return "no_facial_tracks";
         std::error_code error;
         const auto root = MotionPathFromUtf8(directory);
         auto source = root / "source_morph.vmd";
         const bool separateMorph = std::filesystem::is_regular_file(source, error);
         if (!separateMorph) source = root / "source.vmd";
-        if (!std::filesystem::is_regular_file(source, error)) return embedded ? "embedded" : "source_vmd_missing";
-        if (!embedded && !reader) return "source_reader_unavailable";
+        if (!std::filesystem::is_regular_file(source, error)) return embedded || v2Embedded ? "embedded" : "source_vmd_missing";
+        if (!embedded && !v2Embedded && !reader && !v2Reader) return "source_reader_unavailable";
         if (!std::isfinite(clip.fps) || clip.fps <= 0 || !clip.total_frames ||
             clip.total_frames > 1000000 || clip.total_frames > static_cast<uint32_t>(INT32_MAX / Names.size())) return "invalid_clip_dimensions";
         jsonlite::Value localMetadata;
@@ -134,22 +146,30 @@ namespace GakuMotion::mouth_source
         if (!std::isfinite(sourceFps) || sourceFps <= 0) return "invalid_source_fps";
         const auto sourcePath = MotionPathToUtf8(source);
         const auto frames = static_cast<int32_t>(clip.total_frames);
-        if (!embedded)
+        bool hasV2 = v2Embedded;
+        if (v2Reader && !hasV2)
+        {
+            std::vector<float> samples(static_cast<size_t>(frames) * V2Names.size());
+            if (v2Reader(sourcePath.c_str(), sourceFps, clip.fps, frames, samples.data(),
+                static_cast<int32_t>(samples.size())) == 0)
+                hasV2 = AppendNamedFamily(clip, samples, V2Names, V2Present);
+        }
+        if (!embedded && reader)
         {
             std::vector<float> samples(static_cast<size_t>(frames) * Names.size());
             const int32_t status = reader(sourcePath.c_str(), sourceFps, clip.fps, frames,
                 samples.data(), static_cast<int32_t>(samples.size()));
-            if (status != 0) return "source_read_failed_" + std::to_string(status);
-            if (!Append(clip, samples)) return "invalid_source_response";
-            if (!HasFamily(clip, 8, 10)) return "source_has_no_mouth_intent";
+            if (status != 0 && !hasV2) return "source_read_failed_" + std::to_string(status);
+            if (status == 0 && !Append(clip, samples) && !hasV2) return "invalid_source_response";
         }
-        if (extraReader && !HasExtras(clip))
+        if (!hasV2 && !HasFamily(clip, 8, 10)) return "source_has_no_mouth_intent";
+        if (!hasV2 && extraReader && !HasExtras(clip))
         {
             std::vector<float> extras(static_cast<size_t>(frames) * ExtraNames.size());
             if (extraReader(sourcePath.c_str(), sourceFps, clip.fps, frames, extras.data(),
                 static_cast<int32_t>(extras.size())) == 0) AppendExtras(clip, extras);
         }
         return (embedded ? "embedded source=" : "restored_from_vmd_in_memory source=") + sourcePath +
-            " source_fps=" + std::to_string(sourceFps) + (HasExtras(clip) ? " extras=available" : "");
+            " source_fps=" + std::to_string(sourceFps) + (hasV2 ? " mouth_v2=available" : HasExtras(clip) ? " extras=available" : "");
     }
 }

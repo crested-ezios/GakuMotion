@@ -144,6 +144,51 @@ static void TestRuntimeMouthSource()
         clip.SampleBlendshapes(0, samples);
         adapted = applied;
     }
+    {
+        using namespace mouth_source;
+        auto v2Clip = clip;
+        std::vector<float> semantics(2 * V2Names.size());
+        semantics[V2Present] = semantics[V2Names.size() + V2Present] = 1.f;
+        semantics[V2I] = .48f;
+        semantics[V2Smile] = .5f;
+        Check(AppendNamedFamily(v2Clip, semantics, V2Names, V2Present), "complete v2 family appends without requiring v1 changes");
+        const auto kept = v2Clip.blendshape_weights;
+        Check(AppendNamedFamily(v2Clip, semantics, V2Names, V2Present) && v2Clip.blendshape_weights == kept,
+            "embedded v2 family survives a repeated restore");
+        auto withSmile = available;
+        withSmile.emplace_back("b_mouth.mouth_002");
+        auto v2 = BindPublishedMouthFit(runtime_mouth_test::Face.faceName, v2Clip.blendshape_names, withSmile);
+        ResolvePublishedMouthSlots(v2, withSmile);
+        v2Clip.SampleBlendshapes(0, samples);
+        samples[fit.unsupportedSlot] = 1.f;
+        adapted.assign(withSmile.size(), .92f);
+        Check(v2.useV2 && TryApplyPublishedMouthFit(v2, samples, "auto", withSmile, adapted) == MikuFitDecision::ExternalMouthV2 &&
+            Near(adapted[9], .15f) && Near(adapted.back(), .075f) && Near(adapted[11], .92f),
+            "known smile and I use their independently fitted outputs despite the old aggregate marker");
+        samples[v2.v2Slots[V2Unsupported]] = .15f;
+        const auto last = adapted;
+        Check(TryApplyPublishedMouthFit(v2, samples, "auto", withSmile, adapted) == MikuFitDecision::UnsupportedSource && adapted == last,
+            "an unknown v2 action still preserves fallback");
+        samples[v2.v2Slots[V2Unsupported]] = 0.f;
+        samples[v2.oldAuthoredSlot] = 1.f;
+        Check(TryApplyPublishedMouthFit(v2, samples, "auto", withSmile, adapted) == MikuFitDecision::NativeAuthored && adapted == last,
+            "an embedded author's native intent prevails over recovered v2 input");
+        samples[v2.oldAuthoredSlot] = 0.f;
+        samples[v2.v2Slots[V2I]] = 0.f;
+        samples[v2.v2Slots[V2Smile]] = 0.f;
+        samples[v2.v2Slots[V2A]] = 1.f;
+        samples[v2.v2Slots[V2CornerDown]] = .2f;
+        Check(TryApplyPublishedMouthFit(v2, samples, "auto", withSmile, adapted) == MikuFitDecision::ExternalSoftA &&
+            Near(adapted[0], .28f) && adapted[8] == 0 && adapted[9] == 0 && adapted.back() == 0,
+            "the reference no-teeth A result survives switching to v2");
+        samples[v2.v2Slots[V2CornerDown]] = 0.f;
+        samples[v2.v2Slots[V2A]] = 0.f;
+        samples[v2.v2Slots[V2WideOpen]] = .8f;
+        Check(TryApplyPublishedMouthFit(v2, samples, "auto", withSmile, adapted) == MikuFitDecision::ExternalMouthV2 &&
+            Near(adapted[0], .60f), "a wide-open action uses the fitted A family in the absence of a vowel");
+        clip.SampleBlendshapes(0, samples);
+        adapted = applied;
+    }
     samples[static_cast<size_t>(fit.unsupportedSlot)] = 0;
     samples[static_cast<size_t>(fit.nativeAuthoredSlot)] = 1;
     Check(TryApplyPublishedMouthFit(fit, samples, "auto", available, adapted) == MikuFitDecision::NativeAuthored && adapted == applied,
