@@ -25,6 +25,7 @@ namespace GakuMotion
 		const int prevLegBasis = legRestBasis;
 		const int prevEyePoseGain = eyePoseRelativeGain;
 		const int prevPreserveAnimator = preserveAnimatorForSecondaryPhysics;
+		const bool prevPhotographyNativeOnly = photographyNativeOnly;
 		const int prevPhysicsBackend = secondaryPhysicsBackend;
 		const bool prevBeforeQuartz = beforeQuartzExperiment;
 		const bool prevSleeveDiagnostics = sleeveMuscleDiagnostics;
@@ -245,6 +246,8 @@ namespace GakuMotion
 				else if (v->stringValue == "native") secondaryPhysicsBackend = 2;
 			}
 		}
+		const auto* photographyNative = root.FindPath("secondary_physics.photography_native_only");
+		photographyNativeOnly = photographyNative && photographyNative->IsBool() && photographyNative->boolValue;
 		// Pre-Quartz sync is internalized as always-on whenever native backend is active.
 		beforeQuartzExperiment = (secondaryPhysicsBackend == 2);
 		sleeveMuscleDiagnostics = false;
@@ -413,6 +416,7 @@ namespace GakuMotion
 		AppendChange(log, "eye_pose_relative_gain", prevEyePoseGain, eyePoseRelativeGain);
 		AppendChange(log, "secondary_physics.preserve_animator", prevPreserveAnimator,
 		             preserveAnimatorForSecondaryPhysics);
+		AppendChange(log, "secondary_physics.photography_native_only", prevPhotographyNativeOnly, photographyNativeOnly);
 		AppendChange(log, "secondary_physics.backend", prevPhysicsBackend, secondaryPhysicsBackend);
 		AppendChange(log, "secondary_physics.before_quartz_experiment", prevBeforeQuartz, beforeQuartzExperiment);
 		AppendChange(log, "secondary_physics.sleeve_muscle_diagnostics", prevSleeveDiagnostics, sleeveMuscleDiagnostics);

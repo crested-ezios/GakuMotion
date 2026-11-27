@@ -218,6 +218,13 @@
 		return requested == 2 && (reason == "native_pending" || reason == "native_pending_stale" ||
 			reason == "body_binding_pending" || reason == "discovering");
 	}
+	int SelectSecondaryPhysicsBackend(int requested, bool native, bool pending, bool photography, bool nativeOnly)
+	{
+		if (requested == 0) return 0;
+		if (native) return 2;
+		if (photography && requested == 2 && (pending || nativeOnly)) return 0;
+		return 1;
+	}
 	void SyncFallbackAnimatorMute(GakuMotion::IdolController& ctrl, void* actor,
 		const GakuMotion::IdolBoneBinding& binding, bool shouldMute)
 	{
@@ -336,11 +343,11 @@
 			useV3 ? g_multiBurstBridge.State(index).reason : legacyOwner ? g_burstBridge.reason : multiUnavailableReason;
 		const bool pending = IsNativePhysicsPending(requested, reason);
 		// Photography keeps its game graph running while we await native consumption.
-		const bool waitForNative = filterSceneForces && pending;
-		const int actual = requested == 0 || waitForNative ? 0 : native ? 2 : 1;
+		const int actual = SelectSecondaryPhysicsBackend(requested, native, pending, filterSceneForces,
+			core.config.photographyNativeOnly);
 		if (slot.actual == 1 && actual != 1) slot.fallback.Restore(ctrl);
 		slot.actual = actual;
-		SyncFallbackAnimatorMute(ctrl, actor, binding->second, !native && !pending);
+		SyncFallbackAnimatorMute(ctrl, actor, binding->second, actual == 1 && !pending);
 		if (slot.actual == 1) slot.fallback.Publish(binding->second, ctrl, dt, frame);
 		const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - dispatchBegin).count();
 		auto& d = slot.diagnostic;
@@ -378,8 +385,8 @@
 				filterSceneForces ? 1 : 0, static_cast<int>(sizeof(bridgeStatus.detail)), bridgeStatus.detail);
 			slot.pausedSampleBackend = slot.actual;
 		}
-		core.formation.slots[index].physicsBackend = native ? "native" : waitForNative ? "native pending: " + reason :
-			slot.actual == 0 ? "off" : "fallback: " + reason;
+		core.formation.slots[index].physicsBackend = actual == 2 ? "native" : actual == 1 ? "fallback: " + reason :
+			requested == 0 ? "off" : pending ? "native pending: " + reason : "native unavailable: " + reason;
 		if (slot.reason != reason)
 		{
 			slot.reason = reason;
