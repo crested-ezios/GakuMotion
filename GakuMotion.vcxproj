@@ -258,12 +258,14 @@
     <ClInclude Include="src\GkWaistSupport.hpp" />
     <ClInclude Include="src\GkControlRequests.hpp" />
     <ClInclude Include="src\GkControlCore.inl" />
+    <ClInclude Include="src\plugin\GkAutoToolsAdapter.hpp" />
   </ItemGroup>
   <!-- ======================================================================
        Header files (include\)
        ====================================================================== -->
   <ItemGroup>
     <ClInclude Include="include\GakuMotionControl.h" />
+    <ClInclude Include="include\GakuAutoToolsRegistry.h" />
     <ClInclude Include="include\GakuMotionSceneNodes.h" />
     <ClInclude Include="include\GakuMotionActor.h" />
     <ClInclude Include="include\GakuCharaAdapter.h" />

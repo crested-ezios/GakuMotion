@@ -25,6 +25,7 @@
 #include "GkBurstBridgeMultiClient.hpp"
 #include "GkFallbackPhysics.hpp"
 #include "GakuPhysicsDiagnostics.h"
+#include "plugin/GkAutoToolsAdapter.hpp"
 #include <windows.h>
 #include <mmsystem.h>
 #include <commdlg.h>
@@ -87,6 +88,128 @@ namespace
 
 #include "plugin/GkPluginProtectedContext.inl"
 #include "plugin/GkPluginHostAndPortraits.inl"
+
+	std::atomic<bool> g_autoToolsShuttingDown{false};
+	std::mutex g_autoToolsAdapterMutex;
+	std::shared_ptr<GakuMotion::autotools::Adapter> g_autoToolsAdapter;
+
+	std::shared_ptr<GakuMotion::autotools::Adapter> EnsureAutoToolsAdapter()
+	{
+		std::lock_guard<std::mutex> lock(g_autoToolsAdapterMutex);
+		if (g_autoToolsShuttingDown.load(std::memory_order_acquire)) return {};
+		if (!g_autoToolsAdapter)
+		{
+			GakuMotion::autotools::AdapterHooks hooks;
+			hooks.queryService = [](const char* name, uint32_t version, uint32_t size, void* out) -> GakuStatus
+			{
+				if (!GakuMotion::host::api.queryService || !GakuMotion::host::api.hostContext)
+					return GAKU_E_UNAVAILABLE;
+				return GakuMotion::host::api.queryService(GakuMotion::host::api.hostContext, name, version, size, out);
+			};
+			hooks.isShuttingDown = []() -> bool
+			{
+				return g_autoToolsShuttingDown.load(std::memory_order_acquire);
+			};
+			hooks.logInfo = [](const char* msg)
+			{
+				if (msg) GakuMotion::host::Info("%s", msg);
+			};
+			hooks.logWarn = [](const char* msg)
+			{
+				if (msg) GakuMotion::host::Warn("%s", msg);
+			};
+			hooks.readSinglePhysics = []() -> GakuMotion::autotools::PhysicsSlotView
+			{
+				return {g_physicsDiagnostic, g_physicsReason};
+			};
+			hooks.readEnsemblePhysics = []() -> std::vector<GakuMotion::autotools::PhysicsSlotView>
+			{
+				std::vector<GakuMotion::autotools::PhysicsSlotView> out;
+				out.reserve(g_ensemblePhysics.size());
+				for (const auto& slot : g_ensemblePhysics)
+					out.push_back({slot.diagnostic, slot.reason});
+				return out;
+			};
+			hooks.readBurstSummary = []() -> GakuMotion::autotools::BurstSummaryView
+			{
+				auto& core = GakuMotion::Core::Instance();
+				GakuMotion::autotools::BurstSummaryView view;
+				view.multiHasCaptureInput = g_multiBurstBridge.HasCaptureInput();
+				view.multiReason = g_multiBurstBridge.reason;
+				const auto& multiRef = g_multiBurstBridge;
+				const size_t slotCount = (std::max)(core.formation.slots.size(), g_ensemblePhysics.size());
+				view.multiSlots.reserve(slotCount);
+				for (size_t i = 0; i < slotCount; ++i)
+				{
+					const auto& ms = multiRef.State(i);
+					GakuMotion::autotools::BurstSlotView sv;
+					sv.token = ms.token;
+					sv.actor = ms.actor;
+					sv.faulted = ms.faulted;
+					sv.outstanding = ms.outstanding;
+					sv.sequence = ms.sequence;
+					sv.generation = ms.generation;
+					sv.minimumFrame = ms.minimumFrame;
+					sv.status = ms.status;
+					sv.perf = ms.perf;
+					sv.reason = ms.reason;
+					view.multiSlots.push_back(std::move(sv));
+				}
+				view.singleHasCaptureInput = g_burstBridge.HasCaptureInput();
+				view.singleReason = g_burstBridge.reason;
+				view.singleStatus = g_burstBridge.status;
+				view.singlePerf = g_burstBridge.perf;
+				view.requestedBackend = core.config.secondaryPhysicsBackend;
+				view.beforeQuartz = core.config.beforeQuartzExperiment;
+				view.sleeveDiagnostics = core.config.sleeveMuscleDiagnostics;
+				if (core.formation.active)
+				{
+					int actual = 0;
+					const int sel = core.formation.selectedSlotIndex;
+					if (sel >= 0 && static_cast<size_t>(sel) < g_ensemblePhysics.size() &&
+						g_ensemblePhysics[static_cast<size_t>(sel)].actor)
+					{
+						actual = g_ensemblePhysics[static_cast<size_t>(sel)].actual;
+					}
+					else
+					{
+						for (const auto& es : g_ensemblePhysics)
+						{
+							if (es.actor) { actual = es.actual; break; }
+						}
+					}
+					view.actualBackend = actual;
+				}
+				else
+				{
+					view.actualBackend = g_physicsActual;
+				}
+				view.dumpTraces = [](const wchar_t* path) -> int
+				{
+					int res = GakuMotion::Core::Instance().formation.active
+						? g_multiBurstBridge.DumpTraces(path)
+						: GBB_E_UNAVAILABLE;
+					if (res == GBB_E_UNAVAILABLE) res = g_burstBridge.DumpTraces(path);
+					return res;
+				};
+				return view;
+			};
+			g_autoToolsAdapter = std::make_shared<GakuMotion::autotools::Adapter>(
+				GakuMotion::Core::Instance(), std::move(hooks));
+		}
+		return g_autoToolsAdapter;
+	}
+
+	void ShutdownAutoToolsAdapter()
+	{
+		g_autoToolsShuttingDown.store(true, std::memory_order_release);
+		std::shared_ptr<GakuMotion::autotools::Adapter> adapter;
+		{
+			std::lock_guard<std::mutex> lock(g_autoToolsAdapterMutex);
+			adapter = std::move(g_autoToolsAdapter);
+		}
+		if (adapter) adapter->Shutdown();
+	}
 } // namespace
 
 #include "plugin/GkPluginNativeInit.inl"
@@ -171,6 +294,7 @@ void MotionShutdown(void*)
 	std::lock_guard<std::mutex> lifecycleLock(g_lifecycleMutex);
 	if (!g_pluginInitialized) return;
 	g_runtimeReady.store(false, std::memory_order_release);
+	ShutdownAutoToolsAdapter();
 		if (g_webPanelBridge) g_webPanelBridge->Invalidate("plugin-shutdown");
 	GakuMotion::host::UnregisterHotkey(kShowGuiActionId);
 	GakuMotion::host::UnregisterHotkey(kReloadOverridesActionId);

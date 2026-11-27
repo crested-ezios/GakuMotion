@@ -2704,6 +2704,7 @@ static void TestInjectionRuntimeBoundary()
 #include "test_ensemble_placement.hpp"
 #include "test_photography_ensemble_probe.hpp"
 #include "test_portrait_cache.hpp"
+#include "test_autotools_adapter.hpp"
 
 struct Slot2MouthReaderCapture
 {
@@ -3265,6 +3266,7 @@ int main(int argc, char** argv)
  TestNativeAudioSettingsPersistence();
  TestSceneActorMetadata();
  TestPortraitCacheUnit();
+ TestAutoToolsAdapter();
  if (!verifyOctoRoot.empty())
  {
   TestOfflineOctoRealCache(MotionPathFromUtf8(verifyOctoRoot), /*required=*/true);

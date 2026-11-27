@@ -4,6 +4,7 @@ bool InitializeMotion()
 {
 	std::lock_guard<std::mutex> lifecycleLock(g_lifecycleMutex);
 	if (g_pluginInitialized) return true;
+	g_autoToolsShuttingDown.store(false, std::memory_order_release);
 	g_burstBridge.Configure(g_hostContext.pluginsRoot, [](void*, int32_t level, const char* message)
 	{
 		auto log = level > 0 ? g_hostContext.logWarn : g_hostContext.logInfo;

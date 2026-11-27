@@ -224,6 +224,7 @@ void MotionTick(void*, float)
 	}
 	if (g_runtimeReady.load(std::memory_order_acquire))
 	{
+		if (auto adapter = EnsureAutoToolsAdapter()) adapter->OnTick();
 		ResolveDeferredManagedTypes();
 		StageLoader::ResolveDeferredTypeObjects();
 		RefreshProtectedContext();

@@ -274,4 +274,5 @@ void MotionRuntimeReady(void*)
 		}
 	}
 	g_runtimeReady.store(true, std::memory_order_release);
+	if (auto adapter = EnsureAutoToolsAdapter()) adapter->OnRuntimeReady();
 }
