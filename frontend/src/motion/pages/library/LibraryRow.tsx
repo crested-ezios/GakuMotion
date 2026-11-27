@@ -173,10 +173,10 @@ export const LibraryRow = React.memo(function LibraryRow({
       }}
       onContextMenu={(event) => onContextMenu(event, entry)}
       className={cn(
-        'group relative flex h-[var(--gaku-row-height,56px)] select-none items-center gap-3.5 rounded-lg border px-3 text-left transition-colors duration-150',
+        'group relative flex h-[var(--gaku-row-height,56px)] select-none items-center gap-3.5 rounded-lg px-3 text-left transition-colors duration-150',
         selected
-          ? 'border-border/70 bg-card'
-          : 'border-transparent hover:border-border/50 hover:bg-card/85',
+          ? 'bg-card shadow-[0_2px_8px_rgba(0,0,0,0.06)] dark:shadow-[0_2px_10px_rgba(0,0,0,0.28)]'
+          : 'hover:bg-card hover:shadow-[0_2px_8px_rgba(0,0,0,0.06)] dark:hover:shadow-[0_2px_10px_rgba(0,0,0,0.28)]',
       )}
     >
       {/* 状态 / 序号：仅响应 Hover（click 后主动 blur，避免鼠标移开后停留在暂停按钮） */}
